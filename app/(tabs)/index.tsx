@@ -1,98 +1,261 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  Modal,
+  TextInput,
+} from "react-native";
+import { useState, useEffect } from "react";
+import { db } from "../../database/db";
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+export default function Home() {
+  const [tasks, setTasks] = useState([
+    { id: 1, title: "Drink water 💧", section: "Morning", completed: false },
+    { id: 2, title: "Complete coding task 💻", section: "Work", completed: false },
+    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false },
+  ]);
 
-export default function HomeScreen() {
+  const [modalVisible, setModalVisible] = useState(false);
+  const [taskName, setTaskName] = useState("");
+  const [selectedSection, setSelectedSection] = useState("Morning");
+
+  // ✅ LOAD FROM DB
+  useEffect(() => {
+    try {
+      const result = db.getAllSync("SELECT * FROM tasks");
+
+      const loadedTasks = result.map((t: any) => ({
+        ...t,
+        completed: t.completed === 1,
+      }));
+
+      if (loadedTasks.length > 0) {
+        setTasks(loadedTasks);
+      }
+    } catch (error) {
+      console.log("DB Load Error:", error);
+    }
+  }, []);
+
+  // ✅ TOGGLE TASK
+  const toggleTask = (id: any) => {
+    setTasks((prev) =>
+      prev.map((task) => {
+        if (task.id === id) {
+          const updated = !task.completed;
+
+          try {
+            db.runSync(
+              "UPDATE tasks SET completed = ? WHERE id = ?",
+              [updated ? 1 : 0, id]
+            );
+          } catch (e) {
+            console.log("Update error:", e);
+          }
+
+          return { ...task, completed: updated };
+        }
+        return task;
+      })
+    );
+  };
+
+  // ✅ CREATE TASK
+  const createTask = () => {
+    if (!taskName.trim()) return;
+
+    try {
+      db.runSync(
+        "INSERT INTO tasks (title, section, completed) VALUES (?, ?, ?)",
+        [taskName, selectedSection, 0]
+      );
+    } catch (error) {
+      console.log("Insert error:", error);
+    }
+
+    const newTask = {
+      id: Date.now(),
+      title: taskName,
+      section: selectedSection,
+      completed: false,
+    };
+
+    setTasks((prev) => [...prev, newTask]);
+
+    setTaskName("");
+    setSelectedSection("Morning");
+    setModalVisible(false);
+  };
+
+  const openModal = () => {
+    setModalVisible(true);
+  };
+
+  const renderSection = (title: string, section: string) => {
+    const sectionTasks = tasks.filter((t) => t.section === section);
+
+    return (
+      <View style={{ padding: 16 }}>
+        <Text style={{ color: "#FFD700", fontSize: 16, marginBottom: 8 }}>
+          {title}
+        </Text>
+
+        <TouchableOpacity
+          onPress={openModal}
+          style={{
+            backgroundColor: "#FFD700",
+            marginBottom: 10,
+            padding: 12,
+            borderRadius: 10,
+          }}
+        >
+          <Text style={{ textAlign: "center", color: "black", fontWeight: "bold" }}>
+            + Add Task
+          </Text>
+        </TouchableOpacity>
+
+        {sectionTasks.map((task) => (
+          <TouchableOpacity
+            key={task.id}
+            onPress={() => toggleTask(task.id)}
+            style={{
+              backgroundColor: "#1E1E1E",
+              padding: 12,
+              borderRadius: 10,
+              marginBottom: 8,
+            }}
+          >
+            <Text
+              style={{
+                color: task.completed ? "#666" : "white",
+                textDecorationLine: task.completed ? "line-through" : "none",
+              }}
+            >
+              {task.title}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  };
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <>
+      <ScrollView style={{ flex: 1, backgroundColor: "black" }}>
+        <Text
+          style={{
+            color: "yellow",
+            fontSize: 20,
+            textAlign: "center",
+            marginTop: 40,
+          }}
+        >
+          ADHD Task Manager 🚀
+        </Text>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+        {renderSection("Morning ☀️", "Morning")}
+        {renderSection("Work 💼", "Work")}
+        {renderSection("Evening 🌙", "Evening")}
+      </ScrollView>
+
+      {/* ✅ MODAL */}
+      <Modal visible={modalVisible} transparent animationType="slide">
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.7)",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <View
+            style={{
+              backgroundColor: "#1E1E1E",
+              padding: 20,
+              borderRadius: 15,
+            }}
+          >
+            <Text style={{ color: "#FFD700", fontSize: 18, marginBottom: 10 }}>
+              New Task ✨
+            </Text>
+
+            <TextInput
+              placeholder="Enter task..."
+              placeholderTextColor="#888"
+              value={taskName}
+              onChangeText={setTaskName}
+              style={{
+                backgroundColor: "#2A2A2A",
+                color: "white",
+                padding: 10,
+                borderRadius: 8,
+                marginBottom: 15,
+              }}
+            />
+
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                marginBottom: 15,
+              }}
+            >
+              {["Morning", "Work", "Evening"].map((sec) => (
+                <TouchableOpacity
+                  key={sec}
+                  onPress={() => setSelectedSection(sec)}
+                  style={{
+                    padding: 8,
+                    borderRadius: 8,
+                    backgroundColor:
+                      selectedSection === sec ? "#FFD700" : "#333",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: selectedSection === sec ? "black" : "white",
+                    }}
+                  >
+                    {sec}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              onPress={createTask}
+              style={{
+                backgroundColor: "#FFD700",
+                padding: 12,
+                borderRadius: 10,
+              }}
+            >
+              <Text
+                style={{
+                  textAlign: "center",
+                  color: "black",
+                  fontWeight: "bold",
+                }}
+              >
+                Save Task
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={() => setModalVisible(false)}>
+              <Text
+                style={{
+                  color: "#888",
+                  textAlign: "center",
+                  marginTop: 10,
+                }}
+              >
+                Cancel
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
-
-const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-  },
-});
