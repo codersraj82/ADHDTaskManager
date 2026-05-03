@@ -30,10 +30,28 @@ const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [currentDuration, setCurrentDuration] = useState(1500);
 
   const [timeModalVisible, setTimeModalVisible] = useState(false);
-const [customHour, setCustomHour] = useState("0");
-const [customMinute, setCustomMinute] = useState("0");
+const [customHour, setCustomHour] = useState("");
+const [customMinute, setCustomMinute] = useState("");
   const [currentTaskForTime, setCurrentTaskForTime] = useState(null);
   const [lastCompletedTaskId, setLastCompletedTaskId] = useState(null);
+  const [showDurationError, setShowDurationError] = useState(null); // store taskId
+
+  const [celebration, setCelebration] = useState({
+  visible: false,
+  message: "",
+  emoji: "🎉",
+  });
+  
+  useEffect(() => {
+  if (celebration.visible) {
+    Animated.spring(modalScale, {
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  } else {
+    modalScale.setValue(0.8);
+  }
+}, [celebration.visible]);
 
   //******Vriables */
 
@@ -44,6 +62,7 @@ const completedTasks = tasks.filter(t => t.completed).length;
 
 const percentage =
   totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+  const modalScale = useRef(new Animated.Value(0.8)).current;
 
   //*****Focus time */
 
@@ -75,7 +94,15 @@ const totalFocusText = `⏱ ${totalFormat(totalHours)}:${totalFormat(totalMinute
   const progress = Math.min(focusTime / currentDuration, 1);
 
 // stroke offset
-const strokeDashoffset = circumference * (1 - progress);
+  const strokeDashoffset = circumference * (1 - progress);
+  
+  let ringColor = "#FFB84D"; // reddish gold
+
+if (progress >= 0.5) {
+  ringColor = "#39FF14"; // green
+} else if (progress >= 0.25) {
+  ringColor = "#00FFFF"; // blue
+}
 
   //******useRef********** */
 
@@ -85,6 +112,7 @@ const strokeDashoffset = circumference * (1 - progress);
   const fabScale = useRef(new Animated.Value(1)).current;
   const taskPositions = useRef({});
   const sectionPositions = useRef({});
+  const shakeAnim = useRef(new Animated.Value(0)).current;
 
   //**************useEffect */
 
@@ -100,7 +128,7 @@ const strokeDashoffset = circumference * (1 - progress);
         if (next >= currentDuration) {
           clearInterval(interval);
           setIsTimerRunning(false);
-          alert("🎉 Focus session complete!");
+          showCelebration("🔥 Amazing focus! You stayed consistent 💪", "⏱");
 
           // add to total focus time
           setTotalFocusTime(total => total + currentDuration);
@@ -154,7 +182,8 @@ const strokeDashoffset = circumference * (1 - progress);
           const updated = !task.completed;
           // 🧠 STOP TIMER IF ACTIVE TASK COMPLETED
           if (updated === true) {
-  setLastCompletedTaskId(task.id);
+            setLastCompletedTaskId(task.id);
+              showCelebration("🎉 Task completed! Keep going 🚀", "✅");
 }
 if (task.id === activeTaskId && updated === true) {
   setIsTimerRunning(false);
@@ -330,6 +359,25 @@ const scrollToTask = (taskId) => {
   });
 };
   
+  const triggerShake = () => {
+  Animated.sequence([
+    Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
+    Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
+    Animated.timing(shakeAnim, { toValue: 6, duration: 50, useNativeDriver: true }),
+    Animated.timing(shakeAnim, { toValue: -6, duration: 50, useNativeDriver: true }),
+    Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
+  ]).start();
+};
+  
+  const showCelebration = (message, emoji = "🎉") => {
+  setCelebration({ visible: true, message, emoji });
+
+  // auto close after 2.5 sec
+  setTimeout(() => {
+    setCelebration((prev) => ({ ...prev, visible: false }));
+  }, 5500);
+};
+  
   
   //*********Component Start UI*** */
 
@@ -414,7 +462,7 @@ const scrollToTask = (taskId) => {
   {/* Task Text */}
   <Text
     style={{
-      color: task.completed ? "#666" : "white",
+      color: task.completed ? "#9ff797" : "white",
       textDecorationLine: task.completed ? "line-through" : "none",
       flex: 1,
     }}
@@ -438,7 +486,13 @@ const scrollToTask = (taskId) => {
   </Text>
 )}
 </View>
-<View style={{ flexDirection: "row", marginTop: 8, gap: 8 }}>
+<Animated.View
+  style={{
+    flexDirection: "row",
+    marginTop: 8,
+    transform: [{ translateX: shakeAnim }],
+  }}
+>
   {[10, 20, 30].map((min) => (
     <TouchableOpacity
       key={min}
@@ -451,14 +505,22 @@ const scrollToTask = (taskId) => {
       style={{
         padding: 6,
         borderRadius: 6,
+        marginRight: 6,
+
         backgroundColor:
-          taskDurations[task.id] === min * 60 ? "#FFD700" : "#333",
+          showDurationError === task.id
+            ? "#552222"
+            : taskDurations[task.id] === min * 60
+            ? "#FFD700"
+            : "#333",
       }}
     >
       <Text
         style={{
           color:
-            taskDurations[task.id] === min * 60 ? "black" : "white",
+            taskDurations[task.id] === min * 60
+              ? "black"
+              : "white",
           fontSize: 12,
         }}
       >
@@ -467,34 +529,67 @@ const scrollToTask = (taskId) => {
     </TouchableOpacity>
   ))}
 
-  {/* Custom */}
+  {/* ✅ CUSTOM BUTTON */}
   <TouchableOpacity
     onPress={() => {
-  setCurrentTaskForTime(task.id);
-  setTimeModalVisible(true);
-}}
+      setCurrentTaskForTime(task.id);
+      setTimeModalVisible(true);
+    }}
     style={{
       padding: 6,
       borderRadius: 6,
-      backgroundColor: "#444",
+
+      backgroundColor:
+        showDurationError === task.id
+          ? "#552222"
+          : "#444",
     }}
   >
-    <Text style={{ color: "#fff", fontSize: 12 }}>⏱ Custom</Text>
+    <Text style={{ color: "#fff", fontSize: 12 }}>
+      ⏱ Custom
+    </Text>
   </TouchableOpacity>
-</View>
+            </Animated.View>
+            
+            
+            {showDurationError === task.id && (
+  <Text
+    style={{
+      color: "#FF6B6B",
+      fontSize: 12,
+      marginTop: 4,
+    }}
+  >
+    ⏱ Please select focus time
+  </Text>
+)}
 
+            
        <Text
-  onPress={() => {
-    if (task.completed) return;
-    startFocus(task.id);
-  }}
+ onPress={() => {
+  if (task.completed) return;
+
+  const duration = taskDurations[task.id];
+
+  if (!duration) {
+    setShowDurationError(task.id);
+    triggerShake();
+
+    // auto hide message
+    setTimeout(() => setShowDurationError(null), 2000);
+
+    return;
+  }
+
+  startFocus(task.id);
+}}
   style={{
-    color: "#FFD700",
-    marginTop: 8,
-    fontWeight: "600",
-  }}
+  color: taskDurations[task.id] ? "#FFD700" : "#f7a0a0",
+  marginTop: 8,
+  fontWeight: "600",
+}}
 >
-  ▶ Start
+ {taskDurations[task.id] ? "▶ Start" : "⏱ Select Time"}
             </Text>
             {taskDurations[task.id] && (
   <Text
@@ -648,25 +743,19 @@ const scrollToTask = (taskId) => {
   />
 
   {/* Progress Ring */}
-  <Circle
-    cx="110"
-    cy="110"
-    r="100"
-    stroke={
-      focusTime < 600
-        ? "#FFD700"   // Gold
-        : focusTime < 1200
-        ? "#00FFFF"   // Fluorescent Blue
-        : "#39FF14"   // Fluorescent Green
-    }
-    strokeWidth="10"
-    fill="none"
-    strokeDasharray={circumference}
-    strokeDashoffset={strokeDashoffset}
-    strokeLinecap="round"
-    rotation="90"        // 🔥 start from top
-    origin="110,110"
-  />
+ <Circle
+  cx="110"
+  cy="110"
+  r="100"
+  stroke={ringColor}
+  strokeWidth="14"
+  fill="none"
+  strokeDasharray={circumference}
+  strokeDashoffset={strokeDashoffset}
+  strokeLinecap="round"
+  rotation="90"
+  origin="110,110"
+/>
 </Svg>
 
       {/* TIMER INSIDE */}
@@ -918,7 +1007,9 @@ const scrollToTask = (taskId) => {
     </View>
   </View>
       </Modal>
-      {activeTaskId && (
+   
+      {/* 🎯 Focus OR ✅ Last Completed Floating Button */}
+{activeTaskId ? (
   <TouchableOpacity
     onPress={() => {
       scrollRef.current?.scrollTo({
@@ -941,7 +1032,25 @@ const scrollToTask = (taskId) => {
       🎯 Focus
     </Text>
   </TouchableOpacity>
-      )}
+) : lastCompletedTaskId ? (
+  <TouchableOpacity
+    onPress={() => scrollToTask(lastCompletedTaskId)}
+    style={{
+      position: "absolute",
+      bottom: 30,
+      right: 20,
+      backgroundColor: "#39FF14",
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      borderRadius: 30,
+      elevation: 5,
+    }}
+  >
+    <Text style={{ color: "black", fontWeight: "bold" }}>
+      ✅ Last Completed
+    </Text>
+  </TouchableOpacity>
+) : null}
       
       <Animated.View
   style={{
@@ -987,7 +1096,67 @@ const scrollToTask = (taskId) => {
       Add Task
     </Text>
   </Pressable>
-</Animated.View>
+      </Animated.View>
+      
+      <Modal visible={celebration.visible} transparent animationType="fade">
+  <View
+    style={{
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.6)",
+      justifyContent: "center",
+      alignItems: "center",
+    }}
+  >
+    <Animated.View
+      style={{
+        transform: [{ scale: modalScale }],
+        backgroundColor: "#1E1E1E",
+        padding: 25,
+        borderRadius: 20,
+        alignItems: "center",
+        width: "80%",
+        borderWidth: 1,
+        borderColor: "#FFD700",
+      }}
+    >
+      {/* Emoji */}
+      <Text style={{ fontSize: 40 }}>
+        {celebration.emoji}
+      </Text>
+
+      {/* Message */}
+      <Text
+        style={{
+          color: "#FFD700",
+          fontSize: 18,
+          textAlign: "center",
+          marginTop: 10,
+          fontWeight: "600",
+        }}
+      >
+        {celebration.message}
+      </Text>
+
+      {/* Button */}
+      <TouchableOpacity
+        onPress={() =>
+          setCelebration((prev) => ({ ...prev, visible: false }))
+        }
+        style={{
+          marginTop: 20,
+          backgroundColor: "#FFD700",
+          paddingVertical: 10,
+          paddingHorizontal: 20,
+          borderRadius: 10,
+        }}
+      >
+        <Text style={{ color: "black", fontWeight: "bold" }}>
+          Continue
+        </Text>
+      </TouchableOpacity>
+    </Animated.View>
+  </View>
+</Modal>
     </>
   );
 }
