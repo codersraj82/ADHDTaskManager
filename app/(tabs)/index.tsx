@@ -16,7 +16,7 @@ import Svg, { Circle } from "react-native-svg";
 export default function Home() {
   const [tasks, setTasks] = useState([
     { id: 1, title: "Drink water 💧", section: "Morning", completed: false },
-    { id: 2, title: "Complete coding task 💻", section: "Work", completed: false },
+    { id: 2, title: "Goto office 💼", section: "Work", completed: false },
     { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false },
   ]);
   const [totalFocusTime, setTotalFocusTime] = useState(0); // seconds
@@ -41,17 +41,27 @@ const [customMinute, setCustomMinute] = useState("");
   message: "",
   emoji: "🎉",
   });
+
+  const [editingTask, setEditingTask] = useState(null);
+const [isEditMode, setIsEditMode] = useState(false);
+  // const [taskTitle, setTaskTitle] = useState(""); 
   
-  useEffect(() => {
-  if (celebration.visible) {
-    Animated.spring(modalScale, {
-      toValue: 1,
-      useNativeDriver: true,
-    }).start();
-  } else {
-    modalScale.setValue(0.8);
-  }
-}, [celebration.visible]);
+  const [deleteTask, setDeleteTask] = useState(null);
+const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [lastDeletedTask, setLastDeletedTask] = useState(null);
+  const [undoTimer, setUndoTimer] = useState(10);
+
+  const [sectionTimes, setSectionTimes] = useState({
+  Morning: { start: "6:00 AM", end: "10:00 AM" },
+  Work: { start: "10:00 AM", end: "6:00 PM" },
+  Evening: { start: "6:00 PM", end: "10:00 PM" },
+});
+
+const [editingSection, setEditingSection] = useState(null);
+const [sectionStartTime, setSectionStartTime] = useState("");
+const [sectionEndTime, setSectionEndTime] = useState("");
+const [sectionTimeModalVisible, setSectionTimeModalVisible] = useState(false);
+ 
 
   //******Vriables */
 
@@ -115,6 +125,42 @@ if (progress >= 0.5) {
   const shakeAnim = useRef(new Animated.Value(0)).current;
 
   //**************useEffect */
+
+useEffect(() => {
+  if (lastDeletedTask) {
+    setUndoTimer(10); // reset to 10
+
+    const interval = setInterval(() => {
+      setUndoTimer(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setLastDeletedTask(null); // hide undo bar
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }
+}, [lastDeletedTask]);
+
+  useEffect(() => {
+  if (isEditMode && editingTask) {
+    setTaskName(editingTask.title)
+  }
+}, [editingTask, isEditMode]);
+
+   useEffect(() => {
+  if (celebration.visible) {
+    Animated.spring(modalScale, {
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  } else {
+    modalScale.setValue(0.8);
+  }
+}, [celebration.visible]);
 
   useEffect(() => {
   let interval;
@@ -378,6 +424,82 @@ const scrollToTask = (taskId) => {
   }, 5500);
 };
   
+  const handleSaveTask = () => {
+  if (!taskName.trim()) return;
+
+  if (isEditMode && editingTask) {
+    // 🔁 UPDATE
+    db.runSync(
+      "UPDATE tasks SET title = ? WHERE id = ?",
+      [taskName, editingTask.id]
+    );
+
+    setTasks(prev =>
+      prev.map(t =>
+        t.id === editingTask.id ? { ...t, title: taskName } : t
+      )
+    );
+  } else {
+    // ➕ CREATE
+    createTask();
+    return;
+  }
+
+  // reset
+  setTaskName("");
+  setEditingTask(null);
+  setIsEditMode(false);
+  setModalVisible(false);
+};
+  
+  const confirmDeleteTask = () => {
+  if (!deleteTask) return;
+
+  // save for undo
+  setLastDeletedTask(deleteTask);
+
+  // delete from DB
+  db.runSync("DELETE FROM tasks WHERE id = ?", [deleteTask.id]);
+
+  // update UI
+  setTasks(prev => prev.filter(t => t.id !== deleteTask.id));
+
+  // close modal
+  setDeleteModalVisible(false);
+  setDeleteTask(null);
+};
+  
+  const handleUndoDelete = () => {
+  if (!lastDeletedTask) return;
+
+  db.runSync(
+    "INSERT INTO tasks (id, title, section) VALUES (?, ?, ?)",
+    [
+      lastDeletedTask.id,
+      lastDeletedTask.title,
+      lastDeletedTask.section,
+    ]
+  );
+
+  setTasks(prev => [...prev, lastDeletedTask]);
+  setLastDeletedTask(null);
+};
+  
+  const handleSaveSectionTime = () => {
+  if (!editingSection) return;
+
+  setSectionTimes(prev => ({
+    ...prev,
+    [editingSection]: {
+      start: sectionStartTime,
+      end: sectionEndTime,
+    },
+  }));
+
+  setSectionTimeModalVisible(false);
+  setEditingSection(null);
+};
+  
   
   //*********Component Start UI*** */
 
@@ -390,9 +512,34 @@ const scrollToTask = (taskId) => {
     sectionPositions.current[section] = event.nativeEvent.layout.y;
   }}
       >
-        <Text style={{ color: "#FFD700", fontSize: 16, marginBottom: 8 }}>
-          {title}
-        </Text>
+       <View style={{ marginBottom: 8 }}>
+
+  {/* Title + Edit */}
+  <View style={{ flexDirection: "row", alignItems: "center" }}>
+    <Text style={{ color: "#FFD700", fontSize: 16 }}>
+      {title}
+    </Text>
+
+    
+  </View>
+
+  {/* Time BELOW title */}
+  <Text style={{ color: "#888", marginTop: 2 }}>
+    {sectionTimes[section]?.start} – {sectionTimes[section]?.end}
+          </Text>
+          <TouchableOpacity
+      onPress={() => {
+        setEditingSection(section);
+        setSectionStartTime(sectionTimes[section].start);
+        setSectionEndTime(sectionTimes[section].end);
+        setSectionTimeModalVisible(true);
+      }}
+      style={{ marginLeft: 8 }}
+    >
+      <Text>✏️</Text>
+    </TouchableOpacity>
+
+</View>
 
 
         {sectionTasks.map((task) => (
@@ -469,6 +616,26 @@ const scrollToTask = (taskId) => {
   >
     {task.title}
               </Text>
+
+              <TouchableOpacity
+      onPress={() => {
+        setEditingTask(task);
+        setIsEditMode(true);
+        setModalVisible(true);
+      }}
+    >
+      <Text>✏️</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+  onPress={() => {
+    setDeleteTask(task);
+    setDeleteModalVisible(true);
+  }}
+>
+  <Text>🗑️</Text>
+</TouchableOpacity>
+
               {lastCompletedTaskId === task.id && (
   <Text
     style={{
@@ -889,7 +1056,7 @@ const scrollToTask = (taskId) => {
             </View>
 
             <TouchableOpacity
-              onPress={createTask}
+              onPress={handleSaveTask} 
               style={{
                 backgroundColor: "#FFD700",
                 padding: 12,
@@ -1075,16 +1242,16 @@ const scrollToTask = (taskId) => {
       overflow: "hidden", // needed for ripple
     }}
   >
-    <Text
+   
+     <Text
       style={{
         color: "black",
         fontSize: 20,
         marginRight: 6,
         fontWeight: "bold",
       }}
-    >
-      +
-    </Text>
+    >+</Text> 
+    
 
     <Text
       style={{
@@ -1093,7 +1260,7 @@ const scrollToTask = (taskId) => {
         fontWeight: "600",
       }}
     >
-      Add Task
+       Add Task
     </Text>
   </Pressable>
       </Animated.View>
@@ -1156,7 +1323,168 @@ const scrollToTask = (taskId) => {
       </TouchableOpacity>
     </Animated.View>
   </View>
+      </Modal>
+      
+      <Modal visible={deleteModalVisible} transparent animationType="fade">
+  <View
+    style={{
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.7)",
+      justifyContent: "center",
+      padding: 20,
+    }}
+  >
+    <View
+      style={{
+        backgroundColor: "#1E1E1E",
+        padding: 20,
+        borderRadius: 15,
+      }}
+    >
+      <Text style={{ color: "#FFD700", fontSize: 18, marginBottom: 10 }}>
+        Delete Task
+      </Text>
+
+      <Text style={{ color: "white", marginBottom: 20 }}>
+        Are you sure you want to delete "{deleteTask?.title}" task?
+      </Text>
+
+      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+        <TouchableOpacity
+          onPress={() => setDeleteModalVisible(false)}
+          style={{
+            padding: 10,
+            borderRadius: 8,
+            backgroundColor: "#333",
+          }}
+        >
+          <Text style={{ color: "white" }}>Cancel</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={confirmDeleteTask}
+          style={{
+            padding: 10,
+            borderRadius: 8,
+            backgroundColor: "#FFD700",
+          }}
+        >
+          <Text style={{ color: "black", fontWeight: "bold" }}>
+            Delete
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  </View>
+      </Modal>
+      {lastDeletedTask && (
+  <View
+    style={{
+      position: "absolute",
+      bottom: 20,
+      left: 20,
+      right: 20,
+      backgroundColor: "#2A2A2A",
+      padding: 12,
+      borderRadius: 10,
+      flexDirection: "row",
+      
+      alignItems: "center",
+    }}
+  >
+   <Text
+  style={{
+    color: "white",
+    flex: 1,           // 🔥 important
+    flexWrap: "wrap",  // 🔥 allows multiline
+    marginRight: 10,
+  }}
+>
+  Task <Text style={{ color: "#FFD700" }}>
+    {lastDeletedTask?.title}
+  </Text>{" "}
+  deleted ({undoTimer}s)
+</Text>
+
+    <TouchableOpacity onPress={handleUndoDelete}>
+      <Text style={{ color: "#FFD700", fontWeight: "bold" }}>
+        UNDO
+      </Text>
+    </TouchableOpacity>
+  </View>
+      )}
+      
+
+      <Modal visible={sectionTimeModalVisible} transparent animationType="slide">
+  <View
+    style={{
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.7)",
+      justifyContent: "center",
+      padding: 20,
+    }}
+  >
+    <View
+      style={{
+        backgroundColor: "#1E1E1E",
+        padding: 20,
+        borderRadius: 15,
+      }}
+    >
+      <Text style={{ color: "#FFD700", fontSize: 18, marginBottom: 10 }}>
+        Edit {editingSection} Time
+      </Text>
+
+      <TextInput
+        value={sectionStartTime}
+        onChangeText={setSectionStartTime}
+        placeholder="Start time"
+        placeholderTextColor="#888"
+        style={{
+          backgroundColor: "#2A2A2A",
+          color: "white",
+          padding: 10,
+          borderRadius: 8,
+          marginBottom: 10,
+        }}
+      />
+
+      <TextInput
+        value={sectionEndTime}
+        onChangeText={setSectionEndTime}
+        placeholder="End time"
+        placeholderTextColor="#888"
+        style={{
+          backgroundColor: "#2A2A2A",
+          color: "white",
+          padding: 10,
+          borderRadius: 8,
+          marginBottom: 15,
+        }}
+      />
+
+      <TouchableOpacity
+        onPress={handleSaveSectionTime}
+        style={{
+          backgroundColor: "#FFD700",
+          padding: 12,
+          borderRadius: 10,
+        }}
+      >
+        <Text style={{ textAlign: "center", color: "black" }}>
+          Save
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity onPress={() => setSectionTimeModalVisible(false)}>
+        <Text style={{ color: "#888", textAlign: "center", marginTop: 10 }}>
+          Cancel
+        </Text>
+      </TouchableOpacity>
+    </View>
+  </View>
 </Modal>
+
     </>
   );
 }
