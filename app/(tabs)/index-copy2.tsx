@@ -8,15 +8,11 @@ import {
   Animated,
   Pressable,
   Dimensions,
-  Image,
 } from "react-native";
 import { useState, useEffect, useRef} from "react";
 import { db, initDB } from "../../database/db";
 import Svg, { Circle } from "react-native-svg";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import * as DocumentPicker from 'expo-document-picker';
-
-import { WebView } from 'react-native-webview'; // For PDF viewing
 
 //*************main component function********* */
 
@@ -86,11 +82,6 @@ const [pickerMode, setPickerMode] = useState(null);
   const [timeAdjusted, setTimeAdjusted] = useState(false);
  
 
-  const [attachmentUri, setAttachmentUri] = useState(null);
-const [attachmentName, setAttachmentName] = useState("");
-const [viewerVisible, setViewerVisible] = useState(false);
-const [currentFile, setCurrentFile] = useState({ uri: null, type: null });
-
   //******Vriables */
 
   // ✅ Daily Progress Calculations
@@ -153,8 +144,6 @@ if (progress >= 0.5) {
   const shakeAnim = useRef(new Animated.Value(0)).current;
 
   //**************useEffect */
-
-
 
   useEffect(() => {
   if (scheduledDateTime) {
@@ -269,31 +258,6 @@ useEffect(() => {
   }
 }, []);
 
-  // ✅ Load everything on start
-useEffect(() => {
-  try {
-    // Load Tasks
-    const taskResult = db.getAllSync("SELECT * FROM tasks");
-    setTasks(taskResult.map(t => ({ ...t, completed: t.completed === 1 })));
-
-    // Load Section Settings
-    const settingsResult = db.getAllSync("SELECT * FROM section_settings");
-    if (settingsResult.length > 0) {
-      const savedTimes = { ...sectionTimes };
-      settingsResult.forEach(row => {
-        savedTimes[row.section_name] = {
-          start: row.start_time || "",
-          end: row.end_time || ""
-        };
-      });
-      setSectionTimes(savedTimes);
-    }
-  } catch (error) {
-    console.log("Load Error:", error);
-  }
-}, []);
-  
-  //*****handler functions*********** */
   // ✅ TOGGLE TASK
   const toggleTask = (id: any) => {
     setTasks((prev) =>
@@ -538,91 +502,89 @@ const scrollToTask = (taskId) => {
 const handleSaveTask = () => {
   if (!taskName.trim()) return;
 
-  // 1. Time Correction Logic
+  // 🔥 ALWAYS CORRECT TIME BEFORE SAVE
   let finalTime = scheduledDateTime;
+
   if (scheduledDateTime) {
     const parsed = parseDateTime(scheduledDateTime);
+
     if (parsed) {
       const dateObj = new Date(parsed);
+
       const corrected = restrictToSection(selectedSection, dateObj);
+
       finalTime = formatDateTime(corrected);
     }
   }
 
   if (isEditMode && editingTask) {
-    // 🔁 UPDATE TASK (Including attachment)
+    // 🔁 UPDATE TASK
     try {
       db.runSync(
         `UPDATE tasks 
-         SET title = ?, section = ?, scheduledTime = ?, details = ?, attachment = ? 
+         SET title = ?, section = ?, scheduledTime = ?, details = ? 
          WHERE id = ?`,
         [
           taskName,
           selectedSection,
-          finalTime, 
+          finalTime, // ✅ use corrected time
           taskDetails,
-          attachmentUri, // 📎 New attachment URI
           editingTask.id,
         ]
-      );
-
-      // 🔄 UPDATE UI STATE
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === editingTask.id
-            ? {
-                ...t,
-                title: taskName,
-                section: selectedSection,
-                scheduledTime: finalTime,
-                details: taskDetails,
-                attachment: attachmentUri, // Sync local state
-              }
-            : t
-        )
       );
     } catch (error) {
       console.log("Update error:", error);
     }
+
+    // 🔄 UPDATE UI
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === editingTask.id
+          ? {
+              ...t,
+              title: taskName,
+              section: selectedSection,
+              scheduledTime: finalTime, // ✅ corrected
+              details: taskDetails,
+            }
+          : t
+      )
+    );
   } else {
-    // ➕ CREATE TASK (Including attachment)
-    const newId = Date.now(); // Unique ID for UI and fallback
+    // ➕ CREATE TASK (WITH CORRECTED TIME)
     try {
       db.runSync(
         `INSERT INTO tasks 
-         (title, section, completed, scheduledTime, details, attachment) 
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         (title, section, completed, scheduledTime, details) 
+         VALUES (?, ?, ?, ?, ?)`,
         [
           taskName,
           selectedSection,
           0,
-          finalTime,
+          finalTime, // ✅ corrected
           taskDetails,
-          attachmentUri, // 📎 New attachment URI
         ]
       );
-
-      const newTask = {
-        id: newId,
-        title: taskName,
-        section: selectedSection,
-        completed: false,
-        scheduledTime: finalTime,
-        details: taskDetails,
-        attachment: attachmentUri, // Sync local state
-      };
-
-      setTasks((prev) => [...prev, newTask]);
     } catch (error) {
       console.log("Insert error:", error);
     }
+
+    const newTask = {
+      id: Date.now(),
+      title: taskName,
+      section: selectedSection,
+      completed: false,
+      scheduledTime: finalTime, // ✅ corrected
+      details: taskDetails,
+    };
+
+    setTasks((prev) => [...prev, newTask]);
   }
 
-  // 🧹 RESET FORM & ATTACHMENT STATE
-  setAttachmentUri(null);
-  setAttachmentName("");
+  // 🔄 RESET FORM
   resetTaskForm();
 };
+  
   
   const confirmDeleteTask = () => {
   if (!deleteTask) return;
@@ -825,45 +787,6 @@ const restrictToSection = (section, dateObj) => {
   console.log("FINAL RESULT:", result);
 
   return result;
-};
-  
-  
-const updateSectionTimesInDB = (section, start, end) => {
-  try {
-    db.runSync(
-      `UPDATE tasks SET sectionStart = ?, sectionEnd = ? WHERE section = ?`,
-      [start, end, section]
-    );
-    console.log(`✅ DB Updated: ${section} [${start} - ${end}]`);
-  } catch (error) {
-    console.log("❌ DB Update Error:", error);
-  }
-};
-  
-  
-const saveSectionConfig = (section, start, end) => {
-  try {
-    db.runSync(
-      `INSERT OR REPLACE INTO section_settings (section_name, start_time, end_time) 
-       VALUES (?, ?, ?)`,
-      [section, start, end]
-    );
-  } catch (e) {
-    console.log("Save Error:", e);
-  }
-};  
-  
-  
-  const pickDocument = async () => {
-  let result = await DocumentPicker.getDocumentAsync({
-    type: ["image/*", "application/pdf"], // Limit to images and PDFs
-    copyToCacheDirectory: true,
-  });
-
-  if (!result.canceled) {
-    setAttachmentUri(result.assets[0].uri);
-    setAttachmentName(result.assets[0].name);
-  }
 };
   
   //*********Component Start UI*** */
@@ -1158,8 +1081,8 @@ const saveSectionConfig = (section, start, end) => {
       <Text style={{ color: "#FF6B6B", fontSize: 12, marginTop: 4 }}>
         ⏱ Please select focus time
       </Text>
-            )}
-            
+    )}
+
     {/* 🔹 START BUTTON */}
     <Text
       onPress={() => {
@@ -1183,36 +1106,15 @@ const saveSectionConfig = (section, start, end) => {
         fontWeight: "600",
       }}
     >
-      {taskDurations[task.id] ? "▶ Start" : "⏱ Select Focus Time"}
-            </Text>
+      {taskDurations[task.id] ? "▶ Start" : "⏱ Select Time"}
+    </Text>
 
-            {taskDurations[task.id] && (
-      <Text style={{ color: "#fa57e4", fontSize: 12, marginTop: 6 }}>
+    {taskDurations[task.id] && (
+      <Text style={{ color: "#00FFFF", fontSize: 12, marginTop: 6 }}>
         ⏱ {formatDuration(taskDurations[task.id])} selected
       </Text>
     )}
-            
-            {/* Inside task.map... check if attachment exists */}
-{task.attachment ? (
-  <TouchableOpacity 
-    onPress={() => {
-      const isPdf = task.attachment.toLowerCase().endsWith('.pdf');
-      setCurrentFile({ uri: task.attachment, type: isPdf ? 'pdf' : 'image' });
-      setViewerVisible(true);
-    }}
-    style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center' }}
-  >
-    <Text style={{ color: "#00FFFF", fontSize: 13, textDecorationLine: 'underline' }}>
-      📎 View Attachment
-    </Text>
   </TouchableOpacity>
-) : null}
-
-
-    
-          </TouchableOpacity>
-          
-          
 ))}
         
 
@@ -1584,31 +1486,7 @@ const saveSectionConfig = (section, start, end) => {
   <Text style={{ color: "#FF6B6B", marginBottom: 10 }}>
     ⚠️ Task time must be within section time
   </Text>
-          )}
-          
-          {/* Inside Task Modal ScrollView */}
-<TouchableOpacity 
-  onPress={pickDocument}
-  style={{
-    backgroundColor: "#333",
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: attachmentUri ? "#39FF14" : "#444",
-    flexDirection: 'row',
-    alignItems: 'center'
-  }}
->
-  <Text style={{ color: "white", flex: 1 }}>
-    {attachmentUri ? `📎 ${attachmentName || "File Selected"}` : "📁 Upload Image or PDF"}
-  </Text>
-  {attachmentUri && (
-    <TouchableOpacity onPress={() => setAttachmentUri(null)}>
-      <Text style={{ color: "#FF6B6B", fontWeight: 'bold' }}>Remove</Text>
-    </TouchableOpacity>
-  )}
-</TouchableOpacity>
+)}
         </ScrollView>
       </Modal>
 
@@ -2015,7 +1893,7 @@ const saveSectionConfig = (section, start, end) => {
   </View>
       </Modal>
       
- {showPicker && (
+  {showPicker && (
   <DateTimePicker
     value={
       pickerMode?.includes("task")
@@ -2025,7 +1903,7 @@ const saveSectionConfig = (section, start, end) => {
     mode={pickerMode?.includes("date") ? "date" : "time"}
     display="default"
     onChange={(event, selectedDate) => {
-      // Handle User Cancel
+      // 1. Handle Cancel
       if (event.type === "dismissed" || !selectedDate) {
         setShowPicker(false);
         setPickerMode(null);
@@ -2037,24 +1915,18 @@ const saveSectionConfig = (section, start, end) => {
       // =====================
       if (pickerMode === "start-date") {
         setSectionTempDate(new Date(selectedDate));
-        setPickerMode("start-time");
+        setPickerMode("start-time"); // Move to time picker
       } 
       else if (pickerMode === "start-time") {
-        const updated = new Date(sectionTempDate);
+        const updated = new Date(sectionTempDate); // Define missing variable
         updated.setHours(selectedDate.getHours());
         updated.setMinutes(selectedDate.getMinutes());
+        
         const formatted = formatDateTime(updated);
-
-        // Update State
         setSectionTimes(prev => ({
           ...prev,
           [editingSection]: { ...prev[editingSection], start: formatted },
         }));
-
-        // Persist to DB independently of tasks
-        const currentEnd = sectionTimes[editingSection]?.end || "";
-        saveSectionConfig(editingSection, formatted, currentEnd);
-
         setShowPicker(false);
         setPickerMode(null);
       }
@@ -2067,27 +1939,21 @@ const saveSectionConfig = (section, start, end) => {
         setPickerMode("end-time");
       } 
       else if (pickerMode === "end-time") {
-        const updated = new Date(sectionTempDate);
+        const updated = new Date(sectionTempDate); // Define missing variable
         updated.setHours(selectedDate.getHours());
         updated.setMinutes(selectedDate.getMinutes());
-        const formatted = formatDateTime(updated);
 
-        // Update State
+        const formatted = formatDateTime(updated);
         setSectionTimes(prev => ({
           ...prev,
           [editingSection]: { ...prev[editingSection], end: formatted },
         }));
-
-        // Persist to DB independently of tasks
-        const currentStart = sectionTimes[editingSection]?.start || "";
-        saveSectionConfig(editingSection, currentStart, formatted);
-
         setShowPicker(false);
         setPickerMode(null);
       }
 
       // =====================
-      // 🔹 TASK LOGIC
+      // 🔹 TASK LOGIC (Keep as is, but ensure it closes)
       // =====================
       else if (pickerMode === "task-date") {
         setTaskTempDate(new Date(selectedDate));
@@ -2098,7 +1964,6 @@ const saveSectionConfig = (section, start, end) => {
         updated.setHours(selectedDate.getHours());
         updated.setMinutes(selectedDate.getMinutes());
 
-        // Apply time restrictions based on section boundaries
         const restricted = restrictToSection(selectedSection, updated);
         setScheduledDateTime(formatDateTime(restricted));
         setTimeAdjusted(updated.getTime() !== restricted.getTime());
@@ -2108,41 +1973,7 @@ const saveSectionConfig = (section, start, end) => {
       }
     }}
   />
-      )}
-      
-      <Modal visible={viewerVisible} animationType="fade" transparent={false}>
-  <View style={{ flex: 1, backgroundColor: 'black' }}>
-    {/* Header */}
-    <View style={{ 
-      flexDirection: 'row', 
-      justifyContent: 'space-between', 
-      padding: 20, 
-      paddingTop: 50,
-      backgroundColor: '#1E1E1E' 
-    }}>
-      <Text style={{ color: 'white', fontSize: 16, fontWeight: 'bold' }}>Attachment Viewer</Text>
-      <TouchableOpacity onPress={() => setViewerVisible(false)}>
-        <Text style={{ color: '#FFD700', fontWeight: 'bold' }}>Close</Text>
-      </TouchableOpacity>
-    </View>
-
-    {/* Content */}
-    <View style={{ flex: 1 }}>
-      {currentFile.type === 'image' ? (
-        <Image 
-          source={{ uri: currentFile.uri }} 
-          style={{ flex: 1, resizeMode: 'contain' }} 
-        />
-      ) : (
-        <WebView 
-          source={{ uri: currentFile.uri }} 
-          style={{ flex: 1 }}
-          originWhitelist={['*']}
-        />
-      )}
-    </View>
-  </View>
-</Modal>
+)}
 
     </>
   );
