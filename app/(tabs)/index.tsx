@@ -102,6 +102,9 @@ const percentage =
   totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
   const modalScale = useRef(new Animated.Value(0.8)).current;
 
+    // 1. Prepare the JSON string for the DB
+  const subtasksJSON = JSON.stringify([]); 
+
   //*****Focus time */
 
   // Convert seconds → readable format
@@ -153,7 +156,36 @@ if (progress >= 0.5) {
   const shakeAnim = useRef(new Animated.Value(0)).current;
 
   //**************useEffect */
+// 🟢 Add this at the very top of your app or in your DB setup file
+useEffect(() => {
+  try {
+    // 1. Create the table if it doesn't exist
+    db.execSync(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        section TEXT,
+        completed INTEGER,
+        scheduledTime TEXT,
+        details TEXT,
+        attachment TEXT,
+        subtasks TEXT DEFAULT '[]'
+      );
+    `);
 
+    // 2. ❗ CRITICAL FOR APK: Check if 'subtasks' column exists (migration)
+    // This prevents the app from crashing on phones that had an older version
+    const tableInfo = db.getAllSync("PRAGMA table_info(tasks)");
+    const hasSubtasks = tableInfo.some(column => column.name === 'subtasks');
+
+    if (!hasSubtasks) {
+      db.execSync("ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]';");
+      console.log("Migration: Added subtasks column");
+    }
+  } catch (e) {
+    console.log("DB Initialization Error:", e);
+  }
+}, []);
 
 
   useEffect(() => {
@@ -333,42 +365,10 @@ if (task.id === activeTaskId && updated === true) {
     );
   };
 
-  // ✅ CREATE TASK
-  const createTask = () => {
-  if (!taskName.trim()) return;
+ 
+ 
 
-  try {
-    db.runSync(
-      `INSERT INTO tasks 
-      (title, section, completed, scheduledTime, details, attachment) 
-      VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        taskName,
-        selectedSection,
-        0,
-        scheduledDateTime,
-        taskDetails,
-        "",
-      ]
-    );
-  } catch (error) {
-    console.log("Insert error:", error);
-  }
 
-  const newTask = {
-    id: Date.now(),
-    title: taskName,
-    section: selectedSection,
-    completed: false,
-    scheduledTime: scheduledDateTime,
-    details: taskDetails,
-  };
-
-  setTasks((prev) => [...prev, newTask]);
-
-  resetTaskForm();
-  };
-  
   const resetTaskForm = () => {
   setTaskName("");
   setTaskDetails("");
@@ -535,10 +535,10 @@ const scrollToTask = (taskId) => {
 };
   
   
-const handleSaveTask = () => {
+  const handleSaveTask = () => {
   if (!taskName.trim()) return;
 
-  // 1. Time Correction Logic
+  // 1. Time Logic (Your original logic)
   let finalTime = scheduledDateTime;
   if (scheduledDateTime) {
     const parsed = parseDateTime(scheduledDateTime);
@@ -549,56 +549,54 @@ const handleSaveTask = () => {
     }
   }
 
+  // 2. Subtasks Logic (Preserve existing or start new)
+  const subtasksToSave = (isEditMode && editingTask?.subtasks) ? editingTask.subtasks : [];
+  const subtasksJSON = JSON.stringify(subtasksToSave);
+
   if (isEditMode && editingTask) {
-    // 🔁 UPDATE TASK (Including attachment)
+    // 🔁 UPDATE TASK
     try {
       db.runSync(
         `UPDATE tasks 
-         SET title = ?, section = ?, scheduledTime = ?, details = ?, attachment = ? 
+         SET title = ?, section = ?, scheduledTime = ?, details = ?, attachment = ?, subtasks = ? 
          WHERE id = ?`,
         [
           taskName,
           selectedSection,
           finalTime, 
           taskDetails,
-          attachmentUri, // 📎 New attachment URI
+          attachmentUri || "",
+          subtasksJSON, 
           editingTask.id,
         ]
       );
 
-      // 🔄 UPDATE UI STATE
       setTasks((prev) =>
         prev.map((t) =>
           t.id === editingTask.id
-            ? {
-                ...t,
-                title: taskName,
-                section: selectedSection,
-                scheduledTime: finalTime,
-                details: taskDetails,
-                attachment: attachmentUri, // Sync local state
-              }
+            ? { ...t, title: taskName, section: selectedSection, scheduledTime: finalTime, details: taskDetails, attachment: attachmentUri, subtasks: subtasksToSave }
             : t
         )
       );
     } catch (error) {
-      console.log("Update error:", error);
+      console.log("APK Update Error:", error);
     }
   } else {
-    // ➕ CREATE TASK (Including attachment)
-    const newId = Date.now(); // Unique ID for UI and fallback
+    // ➕ CREATE TASK
+    const newId = Date.now();
     try {
       db.runSync(
         `INSERT INTO tasks 
-         (title, section, completed, scheduledTime, details, attachment) 
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         (title, section, completed, scheduledTime, details, attachment, subtasks) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           taskName,
           selectedSection,
-          0,
+          0, // completed = false
           finalTime,
           taskDetails,
-          attachmentUri, // 📎 New attachment URI
+          attachmentUri || "",
+          subtasksJSON, 
         ]
       );
 
@@ -609,20 +607,23 @@ const handleSaveTask = () => {
         completed: false,
         scheduledTime: finalTime,
         details: taskDetails,
-        attachment: attachmentUri, // Sync local state
+        attachment: attachmentUri,
+        subtasks: subtasksToSave, // This is the array for React state
       };
 
       setTasks((prev) => [...prev, newTask]);
     } catch (error) {
-      console.log("Insert error:", error);
+      console.log("APK Insert Error:", error);
+      // This is usually where the 'Empty List' bug hides!
     }
   }
 
-  // 🧹 RESET FORM & ATTACHMENT STATE
+  // 🧹 Cleanup
   setAttachmentUri(null);
   setAttachmentName("");
   resetTaskForm();
 };
+  
   
   const confirmDeleteTask = () => {
   if (!deleteTask) return;
@@ -919,13 +920,27 @@ const deleteSubtask = (taskId, subtaskId) => {
 
 // Update your useEffect (Load from DB) to parse the JSON string
 useEffect(() => {
-  const result = db.getAllSync("SELECT * FROM tasks");
-  const loadedTasks = result.map((t) => ({
-    ...t,
-    completed: t.completed === 1,
-    subtasks: t.subtasks ? JSON.parse(t.subtasks) : [], // Parse here!
-  }));
-  setTasks(loadedTasks);
+  try {
+    const result = db.getAllSync("SELECT * FROM tasks");
+
+    const loadedTasks = result.map((t) => ({
+      ...t,
+      completed: t.completed === 1,
+      // 🟢 SAFE PARSE: If subtasks is null or invalid, default to []
+      subtasks: (() => {
+        try {
+          return t.subtasks ? JSON.parse(t.subtasks) : [];
+        } catch (e) {
+          return [];
+        }
+      })(),
+    }));
+
+    setTasks(loadedTasks);
+    // ... rest of your sectionTimes logic
+  } catch (error) {
+    console.log("Load Error:", error);
+  }
 }, []);
   
 
