@@ -26,6 +26,11 @@ export const initDB = () => {
       end_time TEXT
     );
   `);
+  try {
+    db.execSync(`
+  ALTER TABLE tasks ADD COLUMN subtasks TEXT;
+`);
+  } catch (e) {}
 
   try {
     db.execSync(`ALTER TABLE tasks ADD COLUMN attachment TEXT;`);

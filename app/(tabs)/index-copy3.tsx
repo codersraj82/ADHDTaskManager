@@ -1002,417 +1002,335 @@ useEffect(() => {
 
 </View>
 
-        {sectionTasks.map((task) => {
-          const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
-  const totalSubtasks = subtasks.length;
-  const completedSubtasks = subtasks.filter(s => s.completed).length;
-          return (
-            <TouchableOpacity
-              key={task.id}
-              onLayout={(event) => {
-                taskPositions.current[task.id] = event.nativeEvent.layout.y;
-              }}
-              style={{
-    backgroundColor: 
-      activeTaskId === task.id 
-        ? "#0F1F0F" 
-        : task.completed // 🟢 Change here: highlight all completed tasks
-        ? "#1A1A10" // Subtle dark gold background
-        : "#1E1E1E",
+        {sectionTasks.map((task) => (
+  <TouchableOpacity
+    key={task.id}
+    onLayout={(event) => {
+      taskPositions.current[task.id] = event.nativeEvent.layout.y;
+    }}
+    style={{
+      backgroundColor:
+        activeTaskId === task.id
+          ? "#0F1F0F"
+          : lastCompletedTaskId === task.id
+          ? "#2A2A1A"
+          : "#1E1E1E",
 
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 10,
+      padding: 12,
+      borderRadius: 10,
+      marginBottom: 8,
 
-    // ─── BORDER LOGIC ───
-    borderWidth: 
-      activeTaskId === task.id 
-        ? 2 
-        : task.completed // 🟢 Add golden border if completed
-        ? 2 
-        : 0,
+      borderWidth:
+        activeTaskId === task.id
+          ? 2
+          : lastCompletedTaskId === task.id
+          ? 1
+          : 0,
 
-    borderColor: 
-      activeTaskId === task.id 
-        ? "#39FF14" // Active = Neon Green
-        : task.completed 
-        ? "#FFD700" // Completed = Gold
-        : "transparent",
+      borderColor:
+        activeTaskId === task.id
+          ? "#39FF14"
+          : lastCompletedTaskId === task.id
+          ? "#FFD700"
+          : "transparent",
 
-    // ─── GLOW EFFECT (Optional) ───
-    shadowColor: task.completed ? "#FFD700" : "#000",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: task.completed ? 0.5 : 0,
-    shadowRadius: task.completed ? 5 : 0,
-    elevation: task.completed ? 5 : 0,
-  }}
-            >
-              {/* 🔹 ROW 1: MAIN */}
-              <View style={{ 
-  flexDirection: "row", 
-  alignItems: "center", 
-                justifyContent: "space-between",
-  padding:0,
-                  marginBottom: 0,// Tiny gap before the golden line
-                backgroundColor: "#043f23",
-                borderColor: "#fa7d17",
-                borderBottomWidth: 2
-  
-}}>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                {/* Checkbox */}
-                <TouchableOpacity
-                  onPress={() => toggleTask(task.id)}
-                  style={{
-                    width: 30,
-                    height: 30,
-                    borderRadius: 4,
-                    borderWidth: 2,
-                    borderColor: "#FFD700",
-                    marginRight: 10,
-                    justifyContent: "center",
-                    alignItems: "center",
-                    backgroundColor: task.completed ? "#FFD700" : "transparent",
-                  }}
-                >
-                  {task.completed && (
-                    <Text style={{ color: "black", fontSize: 12 }}>✓</Text>
-                  )}
-                </TouchableOpacity>
+      shadowColor: activeTaskId === task.id ? "#39FF14" : "#000",
+      shadowOffset: { width: 0, height: 0 },
+      shadowOpacity: activeTaskId === task.id ? 0.9 : 0,
+      shadowRadius: activeTaskId === task.id ? 10 : 0,
 
-               {/* ─── DISTINGUISHED HEADER ─── */}
+      elevation: activeTaskId === task.id ? 8 : 0,
+    }}
+  >
+    {/* 🔹 ROW 1: MAIN */}
+    <View style={{ flexDirection: "row", alignItems: "center" }}>
+      {/* Checkbox */}
+      <TouchableOpacity
+        onPress={() => toggleTask(task.id)}
+        style={{
+          width: 30,
+          height: 30,
+          borderRadius: 4,
+          borderWidth: 2,
+          borderColor: "#FFD700",
+          marginRight: 10,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: task.completed ? "#FFD700" : "transparent",
+        }}
+      >
+        {task.completed && (
+          <Text style={{ color: "black", fontSize: 12 }}>✓</Text>
+        )}
+      </TouchableOpacity>
 
-  
-  {/* Left Side: Title Group */}
-  <View style={{ flexDirection: "row", alignItems: "center", flex: 1, paddingRight: 10 }}>
-    {/* Optional: If you keep your Checkbox here, place it before the Text */}
-    <Text
-      numberOfLines={2} // Prevents title from breaking the layout
-      style={{
-        color: task.completed ? "#9ff797" : "white",
-        textDecorationLine: task.completed ? "line-through" : "none",
-        fontSize: 17,        // Slightly larger for distinction
-        fontWeight: "700",   // Bold weight
-        flex: 1,
-        letterSpacing: 0.5,
-      }}
-    >
-      {task.title}
-    </Text>
-  </View>
+      {/* Title */}
+      <Text
+        style={{
+          color: task.completed ? "#9ff797" : "white",
+          textDecorationLine: task.completed ? "line-through" : "none",
+          flex: 1,
+        }}
+      >
+        {task.title}
+      </Text>
 
-  {/* Right Side: Action Group */}
-  <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-    
-    {/* Edit Button */}
-    <TouchableOpacity
-      activeOpacity={0.7}
-      onPress={() => {
-        setEditingTask(task);
-        setIsEditMode(true);
-        setTaskName(task.title);
-        setTaskDetails(task.details || "");
-        setScheduledDateTime(task.scheduledTime || "");
-        setSelectedSection(task.section);
-        setModalVisible(true);
-      }}
-      style={{
-        padding: 6,
-        backgroundColor: "rgba(255, 215, 0, 0.1)", // Subtle golden glow
-        borderRadius: 8,
-      }}
-    >
-      <Text style={{ fontSize: 18 }}>✏️</Text>
-    </TouchableOpacity>
+      {/* Edit */}
+      <TouchableOpacity
+        onPress={() => {
+          setEditingTask(task);
+          setIsEditMode(true);
 
-    {/* Delete Button */}
-    <TouchableOpacity
-      activeOpacity={0.7}
-      onPress={() => {
-        setDeleteTask(task);
-        setDeleteModalVisible(true);
-      }}
-      style={{
-        padding: 6,
-        backgroundColor: "rgba(255, 68, 68, 0.1)", // Subtle red glow
-        borderRadius: 8,
-      }}
-    >
-      <Text style={{ fontSize: 18 }}>🗑️</Text>
-    </TouchableOpacity>
-    
-  </View>
-</View>
+          setTaskName(task.title);
+          setTaskDetails(task.details || "");
+          setScheduledDateTime(task.scheduledTime || "");
+          setSelectedSection(task.section);
 
-{/* GOLDEN LINE (Placed immediately after Header) */}
-<View style={{ height: 1.5, backgroundColor: "#FFD700", marginVertical: 8, opacity: 0.5 }} />
-              </View>
+          setModalVisible(true);
+        }}
+      >
+        <Text>✏️</Text>
+      </TouchableOpacity>
 
-              {/* 🔹 DATE & TIME */}
-              {task.scheduledTime ? (
-                <Text style={{ color: "#888", fontSize: 12, marginTop: 6 }}>
-                  {task.scheduledTime}
-                </Text>
-              ) : null}
+      {/* Delete */}
+      <TouchableOpacity
+        onPress={() => {
+          setDeleteTask(task);
+          setDeleteModalVisible(true);
+        }}
+      >
+        <Text>🗑️</Text>
+      </TouchableOpacity>
+    </View>
+
+    {/* 🔹 DATE & TIME */}
+    {task.scheduledTime ? (
+      <Text style={{ color: "#888", fontSize: 12, marginTop: 6 }}>
+        {task.scheduledTime}
+      </Text>
+            ) : null}
             
 
-              {/* 🔹 DETAILS BUTTON */}
-              {task.details ? (
-                <Pressable
-                  onPress={() =>
-                    setExpandedTaskId(
-                      expandedTaskId === task.id ? null : task.id
-                    )
-                  }
-                  style={{ marginTop: 6 }}
-                >
-                  <Text style={{ color: "#FFD700", fontSize: 12 }}>
-                    {expandedTaskId === task.id
-                      ? "Hide Details ▲"
-                      : "Show Details ▼"}
-                  </Text>
-                </Pressable>
-              ) : null}
+    {/* 🔹 DETAILS BUTTON */}
+    {task.details ? (
+      <Pressable
+        onPress={() =>
+          setExpandedTaskId(
+            expandedTaskId === task.id ? null : task.id
+          )
+        }
+        style={{ marginTop: 6 }}
+      >
+        <Text style={{ color: "#FFD700", fontSize: 12 }}>
+          {expandedTaskId === task.id
+            ? "Hide Details ▲"
+            : "Show Details ▼"}
+        </Text>
+      </Pressable>
+    ) : null}
 
-              {/* 🔹 EXPANDED DETAILS */}
-              {expandedTaskId === task.id && task.details ? (
-                <View
-                  style={{
-                    marginTop: 8,
-                    padding: 10,
-                    backgroundColor: "#1E1E1E",
-                    borderRadius: 8,
-                  }}
-                >
-                  <Text style={{ color: "#ccc", fontSize: 13 }}>
-                    {task.details}
-                  </Text>
-                </View>
-              ) : null}
+    {/* 🔹 EXPANDED DETAILS */}
+    {expandedTaskId === task.id && task.details ? (
+      <View
+        style={{
+          marginTop: 8,
+          padding: 10,
+          backgroundColor: "#1E1E1E",
+          borderRadius: 8,
+        }}
+      >
+        <Text style={{ color: "#ccc", fontSize: 13 }}>
+          {task.details}
+        </Text>
+      </View>
+    ) : null}
 
-              <>{/* 2. SUBTASKS (Separate from details) */}
-        <View style={{ paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: '#FFD700', marginVertical: 5 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-            <Text style={{ color: '#1688e6', fontSize: 11, fontWeight: 'bold', letterSpacing: 1 }}>Small Tasks</Text>
-            {totalSubtasks > 0 && (
-              <Text style={{ color: '#888', fontSize: 10 }}>{completedSubtasks}/{totalSubtasks}</Text>
-            )}
-          </View>
+    {/* 🔹 STATUS LABELS */}
+    {lastCompletedTaskId === task.id && (
+      <Text style={{ color: "#FFD700", fontSize: 11, marginTop: 4 }}>
+        ✅ Last completed
+      </Text>
+    )}
 
-          {subtasks.map((sub) => (
-            <View key={sub.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-              <TouchableOpacity 
-                onPress={() => toggleSubtask(task.id, sub.id)}
-                style={{
-                  width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: '#FFD700',
-                  marginRight: 10, backgroundColor: sub.completed ? '#FFD700' : 'transparent',
-                  justifyContent: 'center', alignItems: 'center'
-                }}
-              >
-                {sub.completed && <Text style={{ color: 'black', fontSize: 9 }}>✓</Text>}
-              </TouchableOpacity>
-              <Text style={{ color: sub.completed ? '#666' : 'white', flex: 1, fontSize: 13 }}>{sub.title}</Text>
-              <TouchableOpacity onPress={() => deleteSubtask(task.id, sub.id)}>
-                <Text style={{ color: '#ff4444', marginLeft: 10 }}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
+    {activeTaskId === task.id && (
+      <Text style={{ color: "#39FF14", fontSize: 11 }}>
+        🎯 In Focus
+      </Text>
+    )}
 
-          <TextInput
-            placeholder="+ Add step..."
-            placeholderTextColor="#555"
-            onSubmitEditing={(e) => { addSubtask(task.id, e.nativeEvent.text); e.currentTarget.clear(); }}
-            style={{ color: 'white', fontSize: 13, paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: '#333' }}
-          />
-        </View></>
+            <>
 
-              {/* 🔹 STATUS LABELS */}
-              {lastCompletedTaskId === task.id && (
-                <Text style={{ color: "#FFD700", fontSize: 11, marginTop: 4 }}>
-                  ✅ Last completed
-                </Text>
-              )}
-
-              {activeTaskId === task.id && (
-                <Text style={{ color: "#39FF14", fontSize: 11 }}>
-                  🎯 In Focus
-                </Text>
-              )}
-
-              <>
-
-                {/* 🔹 SUBTASKS SECTION */}
-                {expandedTaskId === task.id && (
-                  <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: '#444' }}>
-                    <Text style={{ color: '#FFD700', fontSize: 12, marginBottom: 5 }}>Subtasks</Text>
+{/* 🔹 SUBTASKS SECTION */}
+{expandedTaskId === task.id && (
+  <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: '#444' }}>
+    <Text style={{ color: '#FFD700', fontSize: 12, marginBottom: 5 }}>Subtasks</Text>
     
-                    {/* List Subtasks */}
-                    {(task.subtasks || []).map((sub) => (
-                      <View key={sub.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-                        <TouchableOpacity
-                          onPress={() => toggleSubtask(task.id, sub.id)}
-                          style={{
-                            width: 20, height: 20, borderRadius: 3, borderWidth: 1,
-                            borderColor: '#FFD700', marginRight: 10,
-                            backgroundColor: sub.completed ? '#FFD700' : 'transparent',
-                            justifyContent: 'center', alignItems: 'center'
-                          }}
-                        >
-                          {sub.completed && <Text style={{ color: 'black', fontSize: 10 }}>✓</Text>}
-                        </TouchableOpacity>
+    {/* List Subtasks */}
+    {(task.subtasks || []).map((sub) => (
+      <View key={sub.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+        <TouchableOpacity 
+          onPress={() => toggleSubtask(task.id, sub.id)}
+          style={{
+            width: 20, height: 20, borderRadius: 3, borderWidth: 1,
+            borderColor: '#FFD700', marginRight: 10,
+            backgroundColor: sub.completed ? '#FFD700' : 'transparent',
+            justifyContent: 'center', alignItems: 'center'
+          }}
+        >
+          {sub.completed && <Text style={{ color: 'black', fontSize: 10 }}>✓</Text>}
+        </TouchableOpacity>
         
-                        <Text style={{ color: sub.completed ? '#666' : 'white', flex: 1, fontSize: 13, textDecorationLine: sub.completed ? 'line-through' : 'none' }}>
-                          {sub.title}
-                        </Text>
+        <Text style={{ color: sub.completed ? '#666' : 'white', flex: 1, fontSize: 13, textDecorationLine: sub.completed ? 'line-through' : 'none' }}>
+          {sub.title}
+        </Text>
 
-                        <TouchableOpacity onPress={() => deleteSubtask(task.id, sub.id)}>
-                          <Text style={{ color: '#ff4444', fontSize: 12 }}>✕</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))}
+        <TouchableOpacity onPress={() => deleteSubtask(task.id, sub.id)}>
+          <Text style={{ color: '#ff4444', fontSize: 12 }}>✕</Text>
+        </TouchableOpacity>
+      </View>
+    ))}
 
-                    {/* Add Subtask Input */}
-                    <TextInput
-                      placeholder="+ Add subtask..."
-                      placeholderTextColor="#666"
-                      onSubmitEditing={(e) => {
-                        addSubtask(task.id, e.nativeEvent.text);
-                        e.currentTarget.clear();
-                      }}
-                      style={{
-                        color: 'white',
-                        fontSize: 13,
-                        backgroundColor: '#2A2A2A',
-                        padding: 5,
-                        borderRadius: 5,
-                        marginTop: 5
-                      }}
-                    />
-                  </View>
-                )}</>
-              {/* 🔹 DURATION BUTTONS */}
-              <Animated.View
-                style={{
-                  flexDirection: "row",
-                  marginTop: 8,
-                  transform: [{ translateX: shakeAnim }],
-                }}
-              >
-                {[10, 20, 30].map((min) => (
-                  <TouchableOpacity
-                    key={min}
-                    onPress={() =>
-                      setTaskDurations((prev) => ({
-                        ...prev,
-                        [task.id]: min * 60,
-                      }))
-                    }
-                    style={{
-                      padding: 6,
-                      borderRadius: 6,
-                      marginRight: 6,
-                      backgroundColor:
-                        showDurationError === task.id
-                          ? "#552222"
-                          : taskDurations[task.id] === min * 60
-                            ? "#FFD700"
-                            : "#333",
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color:
-                          taskDurations[task.id] === min * 60
-                            ? "black"
-                            : "white",
-                        fontSize: 12,
-                      }}
-                    >
-                      {min}m
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+    {/* Add Subtask Input */}
+    <TextInput
+      placeholder="+ Add subtask..."
+      placeholderTextColor="#666"
+      onSubmitEditing={(e) => {
+        addSubtask(task.id, e.nativeEvent.text);
+        e.currentTarget.clear();
+      }}
+      style={{
+        color: 'white',
+        fontSize: 13,
+        backgroundColor: '#2A2A2A',
+        padding: 5,
+        borderRadius: 5,
+        marginTop: 5
+      }}
+    />
+  </View>
+)}</>
+    {/* 🔹 DURATION BUTTONS */}
+    <Animated.View
+      style={{
+        flexDirection: "row",
+        marginTop: 8,
+        transform: [{ translateX: shakeAnim }],
+      }}
+    >
+      {[10, 20, 30].map((min) => (
+        <TouchableOpacity
+          key={min}
+          onPress={() =>
+            setTaskDurations((prev) => ({
+              ...prev,
+              [task.id]: min * 60,
+            }))
+          }
+          style={{
+            padding: 6,
+            borderRadius: 6,
+            marginRight: 6,
+            backgroundColor:
+              showDurationError === task.id
+                ? "#552222"
+                : taskDurations[task.id] === min * 60
+                ? "#FFD700"
+                : "#333",
+          }}
+        >
+          <Text
+            style={{
+              color:
+                taskDurations[task.id] === min * 60
+                  ? "black"
+                  : "white",
+              fontSize: 12,
+            }}
+          >
+            {min}m
+          </Text>
+        </TouchableOpacity>
+      ))}
 
-                <TouchableOpacity
-                  onPress={() => {
-                    setCurrentTaskForTime(task.id);
-                    setTimeModalVisible(true);
-                  }}
-                  style={{
-                    padding: 6,
-                    borderRadius: 6,
-                    backgroundColor:
-                      showDurationError === task.id ? "#552222" : "#444",
-                  }}
-                >
-                  <Text style={{ color: "#fff", fontSize: 12 }}>
-                    ⏱ Custom
-                  </Text>
-                </TouchableOpacity>
-              </Animated.View>
+      <TouchableOpacity
+        onPress={() => {
+          setCurrentTaskForTime(task.id);
+          setTimeModalVisible(true);
+        }}
+        style={{
+          padding: 6,
+          borderRadius: 6,
+          backgroundColor:
+            showDurationError === task.id ? "#552222" : "#444",
+        }}
+      >
+        <Text style={{ color: "#fff", fontSize: 12 }}>
+          ⏱ Custom
+        </Text>
+      </TouchableOpacity>
+    </Animated.View>
 
-              {/* 🔹 ERROR */}
-              {showDurationError === task.id && (
-                <Text style={{ color: "#FF6B6B", fontSize: 12, marginTop: 4 }}>
-                  ⏱ Please select focus time
-                </Text>
-              )}
+    {/* 🔹 ERROR */}
+    {showDurationError === task.id && (
+      <Text style={{ color: "#FF6B6B", fontSize: 12, marginTop: 4 }}>
+        ⏱ Please select focus time
+      </Text>
+            )}
             
-              {/* 🔹 START BUTTON */}
-              <Text
-                onPress={() => {
-                  if (task.completed) return;
+    {/* 🔹 START BUTTON */}
+    <Text
+      onPress={() => {
+        if (task.completed) return;
 
-                  const duration = taskDurations[task.id];
+        const duration = taskDurations[task.id];
 
-                  if (!duration) {
-                    setShowDurationError(task.id);
-                    triggerShake();
+        if (!duration) {
+          setShowDurationError(task.id);
+          triggerShake();
 
-                    setTimeout(() => setShowDurationError(null), 2000);
-                    return;
-                  }
+          setTimeout(() => setShowDurationError(null), 2000);
+          return;
+        }
 
-                  startFocus(task.id);
-                }}
-                style={{
-                  color: taskDurations[task.id] ? "#FFD700" : "#f7a0a0",
-                  marginTop: 8,
-                  fontWeight: "600",
-                }}
-              >
-                {taskDurations[task.id] ? "▶ Start" : "⏱ Select Focus Time"}
-              </Text>
+        startFocus(task.id);
+      }}
+      style={{
+        color: taskDurations[task.id] ? "#FFD700" : "#f7a0a0",
+        marginTop: 8,
+        fontWeight: "600",
+      }}
+    >
+      {taskDurations[task.id] ? "▶ Start" : "⏱ Select Focus Time"}
+            </Text>
 
-              {taskDurations[task.id] && (
-                <Text style={{ color: "#fa57e4", fontSize: 12, marginTop: 6 }}>
-                  ⏱ {formatDuration(taskDurations[task.id])} selected
-                </Text>
-              )}
+            {taskDurations[task.id] && (
+      <Text style={{ color: "#fa57e4", fontSize: 12, marginTop: 6 }}>
+        ⏱ {formatDuration(taskDurations[task.id])} selected
+      </Text>
+    )}
             
-              {/* Inside task.map... check if attachment exists */}
-              {task.attachment ? (
-                <TouchableOpacity
-                  onPress={() => {
-                    const isPdf = task.attachment.toLowerCase().endsWith('.pdf');
-                    setCurrentFile({ uri: task.attachment, type: isPdf ? 'pdf' : 'image' });
-                    setViewerVisible(true);
-                  }}
-                  style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center' }}
-                >
-                  <Text style={{ color: "#00FFFF", fontSize: 13, textDecorationLine: 'underline' }}>
-                    📎 View Attachment
-                  </Text>
-                </TouchableOpacity>
-              ) : null}
+            {/* Inside task.map... check if attachment exists */}
+{task.attachment ? (
+  <TouchableOpacity 
+    onPress={() => {
+      const isPdf = task.attachment.toLowerCase().endsWith('.pdf');
+      setCurrentFile({ uri: task.attachment, type: isPdf ? 'pdf' : 'image' });
+      setViewerVisible(true);
+    }}
+    style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center' }}
+  >
+    <Text style={{ color: "#00FFFF", fontSize: 13, textDecorationLine: 'underline' }}>
+      📎 View Attachment
+    </Text>
+  </TouchableOpacity>
+) : null}
 
 
     
-            </TouchableOpacity>
+          </TouchableOpacity>
           
           
-          );
-        })}
+))}
         
 
        </View>
