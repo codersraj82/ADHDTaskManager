@@ -4,9 +4,8 @@ import * as SQLite from "expo-sqlite";
 export const db = SQLite.openDatabaseSync("tasks.db");
 
 // ✅ INIT FUNCTION
-// ✅ Update in db.js
 export const initDB = () => {
-  // Existing tasks table...
+  // 1️⃣ Create Core Tasks Table (Basic Schema)
   db.execSync(`
     CREATE TABLE IF NOT EXISTS tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -18,7 +17,7 @@ export const initDB = () => {
     );
   `);
 
-  // 🆕 THE PERMANENT SETTINGS TABLE
+  // 2️⃣ Create Section Settings Table
   db.execSync(`
     CREATE TABLE IF NOT EXISTS section_settings (
       section_name TEXT PRIMARY KEY,
@@ -26,13 +25,27 @@ export const initDB = () => {
       end_time TEXT
     );
   `);
-  try {
-    db.execSync(`
-  ALTER TABLE tasks ADD COLUMN subtasks TEXT;
-`);
-  } catch (e) {}
 
-  try {
-    db.execSync(`ALTER TABLE tasks ADD COLUMN attachment TEXT;`);
-  } catch (e) {}
+  // 3️⃣ Pro Migration Logic: Safely Add New Columns
+  // We list all the columns we've added throughout the project here.
+  const migrations = [
+    { name: "subtasks", type: "TEXT" }, // For small tasks JSON
+    { name: "attachment", type: "TEXT" }, // For Image/PDF URIs
+    { name: "notificationId", type: "TEXT" }, // For scheduled Alarm IDs
+  ];
+
+  migrations.forEach((column) => {
+    try {
+      // This command will only run if the column doesn't already exist.
+      // If it exists, SQLite throws an error, which we catch and ignore.
+      db.execSync(
+        `ALTER TABLE tasks ADD COLUMN ${column.name} ${column.type};`,
+      );
+      console.log(`✅ Migration Success: Added ${column.name} column`);
+    } catch (e) {
+      // Column already exists, no action needed
+    }
+  });
+
+  console.log("🚀 Database Initialized Successfully");
 };

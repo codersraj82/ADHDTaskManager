@@ -9,6 +9,7 @@ import {
   Pressable,
   Dimensions,
   Image,
+  Platform,
 } from "react-native";
 import { useState, useEffect, useRef} from "react";
 import { db, initDB } from "../../database/db";
@@ -17,6 +18,7 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from 'expo-document-picker';
 
 import { WebView } from 'react-native-webview'; // For PDF viewing
+import * as Notifications from 'expo-notifications';
 
 //*************main component function********* */
 
@@ -327,43 +329,64 @@ useEffect(() => {
   
   //*****handler functions*********** */
   // ✅ TOGGLE TASK
-  const toggleTask = (id: any) => {
-    setTasks((prev) =>
-      prev.map((task) => {
-        if (task.id === id) {
-          const updated = !task.completed;
-          // 🧠 STOP TIMER IF ACTIVE TASK COMPLETED
-          if (updated === true) {
-            setLastCompletedTaskId(task.id);
-              showCelebration("🎉 Task completed! Keep going 🚀", "✅");
-}
-if (task.id === activeTaskId && updated === true) {
-  setIsTimerRunning(false);
+  const toggleTask = async (id) => {
+  setTasks((prev) =>
+    prev.map((task) => {
+      if (task.id === id) {
+        const updated = !task.completed;
 
-  // save current session into total
-  if (focusTime > 0) {
-    setTotalFocusTime((total) => total + focusTime);
-  }
+        // 1. 🧠 TIMER LOGIC
+        // STOP TIMER IF ACTIVE TASK COMPLETED
+        if (updated === true) {
+          setLastCompletedTaskId(task.id);
+          showCelebration("🎉 Task completed! Keep going 🚀", "✅");
 
-  setFocusTime(0);
-  setActiveTaskId(null);
-}
+          // 🔕 CANCEL PENDING NOTIFICATIONS/ALARMS
+          if (task.notificationId) {
+            try {
+              const ids = JSON.parse(task.notificationId);
+              if (Array.isArray(ids)) {
+                ids.forEach((notifId) => {
+                  Notifications.cancelScheduledNotificationAsync(notifId);
+                });
+                console.log(`Cancelled ${ids.length} reminders for task: ${task.title}`);
+              }
+            } catch (e) {
+              console.log("Error cancelling notifications:", e);
+            }
+          }
+        }
 
-          try {
-            db.runSync(
-              "UPDATE tasks SET completed = ? WHERE id = ?",
-              [updated ? 1 : 0, id]
-            );
-          } catch (e) {
-            console.log("Update error:", e);
+        // Handle focus time session saving
+        if (task.id === activeTaskId && updated === true) {
+          setIsTimerRunning(false);
+
+          // Save current session into total
+          if (focusTime > 0) {
+            setTotalFocusTime((total) => total + focusTime);
           }
 
-          return { ...task, completed: updated };
+          setFocusTime(0);
+          setActiveTaskId(null);
         }
-        return task;
-      })
-    );
-  };
+
+        // 2. 💾 DATABASE UPDATE
+        try {
+          db.runSync(
+            "UPDATE tasks SET completed = ? WHERE id = ?",
+            [updated ? 1 : 0, id]
+          );
+        } catch (e) {
+          console.log("Update error:", e);
+        }
+
+        // 3. 🔄 RETURN UPDATED TASK TO STATE
+        return { ...task, completed: updated };
+      }
+      return task;
+    })
+  );
+};
 
  
  
@@ -535,10 +558,10 @@ const scrollToTask = (taskId) => {
 };
   
   
-  const handleSaveTask = () => {
+  const handleSaveTask = async () => {
   if (!taskName.trim()) return;
 
-  // 1. Time Logic (Your original logic)
+  // 1. 🕒 Time Logic
   let finalTime = scheduledDateTime;
   if (scheduledDateTime) {
     const parsed = parseDateTime(scheduledDateTime);
@@ -549,16 +572,54 @@ const scrollToTask = (taskId) => {
     }
   }
 
-  // 2. Subtasks Logic (Preserve existing or start new)
+  // 2. 🔔 Pro-Style Notification Logic
+  let notificationIdString = "[]";
+  if (finalTime) {
+    try {
+      // If editing, cancel previous alarms first
+      if (isEditMode && editingTask?.notificationId) {
+        const oldIds = JSON.parse(editingTask.notificationId);
+        await Promise.all(oldIds.map(id => Notifications.cancelScheduledNotificationAsync(id)));
+      }
+
+      // Schedule new multi-stage reminders (20, 10, 5, 0 mins)
+      const taskDate = new Date(parseDateTime(finalTime));
+      const intervals = [20, 10, 5, 0];
+      const newIds = [];
+
+      for (let mins of intervals) {
+        const triggerDate = new Date(taskDate.getTime() - mins * 60000);
+        if (triggerDate > new Date()) {
+          const id = await Notifications.scheduleNotificationAsync({
+            content: {
+              title: `🎯 ${taskName}`,
+              body: getAffirmativeMessage(taskName, finalTime, mins),
+              sound: true,
+              vibrate: [0, 250, 250, 250],
+              android: { channelId: 'task-reminders' },
+            },
+            trigger: triggerDate,
+          });
+          newIds.push(id);
+        }
+      }
+      notificationIdString = JSON.stringify(newIds);
+    } catch (e) {
+      console.log("Notification Setup Error:", e);
+    }
+  }
+
+  // 3. 📎 Subtasks Logic
   const subtasksToSave = (isEditMode && editingTask?.subtasks) ? editingTask.subtasks : [];
   const subtasksJSON = JSON.stringify(subtasksToSave);
 
+  // 4. 💾 Database Logic
   if (isEditMode && editingTask) {
     // 🔁 UPDATE TASK
     try {
       db.runSync(
         `UPDATE tasks 
-         SET title = ?, section = ?, scheduledTime = ?, details = ?, attachment = ?, subtasks = ? 
+         SET title = ?, section = ?, scheduledTime = ?, details = ?, attachment = ?, subtasks = ?, notificationId = ? 
          WHERE id = ?`,
         [
           taskName,
@@ -566,7 +627,8 @@ const scrollToTask = (taskId) => {
           finalTime, 
           taskDetails,
           attachmentUri || "",
-          subtasksJSON, 
+          subtasksJSON,
+          notificationIdString, // 🔔 Added
           editingTask.id,
         ]
       );
@@ -574,21 +636,32 @@ const scrollToTask = (taskId) => {
       setTasks((prev) =>
         prev.map((t) =>
           t.id === editingTask.id
-            ? { ...t, title: taskName, section: selectedSection, scheduledTime: finalTime, details: taskDetails, attachment: attachmentUri, subtasks: subtasksToSave }
+            ? { 
+                ...t, 
+                title: taskName, 
+                section: selectedSection, 
+                scheduledTime: finalTime, 
+                details: taskDetails, 
+                attachment: attachmentUri, 
+                subtasks: subtasksToSave,
+                notificationId: notificationIdString
+              }
             : t
         )
       );
     } catch (error) {
-      console.log("APK Update Error:", error);
+      alert("APK Update Error: " + error.message);
     }
   } else {
     // ➕ CREATE TASK
     const newId = Date.now();
     try {
+      // ❗ EXACT MATCH FOR 8 COLUMNS: 
+      // title, section, completed, scheduledTime, details, attachment, subtasks, notificationId
       db.runSync(
         `INSERT INTO tasks 
-         (title, section, completed, scheduledTime, details, attachment, subtasks) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (title, section, completed, scheduledTime, details, attachment, subtasks, notificationId) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           taskName,
           selectedSection,
@@ -596,7 +669,8 @@ const scrollToTask = (taskId) => {
           finalTime,
           taskDetails,
           attachmentUri || "",
-          subtasksJSON, 
+          subtasksJSON,
+          notificationIdString, // 🔔 Added
         ]
       );
 
@@ -608,17 +682,18 @@ const scrollToTask = (taskId) => {
         scheduledTime: finalTime,
         details: taskDetails,
         attachment: attachmentUri,
-        subtasks: subtasksToSave, // This is the array for React state
+        subtasks: subtasksToSave,
+        notificationId: notificationIdString,
       };
 
       setTasks((prev) => [...prev, newTask]);
     } catch (error) {
-      console.log("APK Insert Error:", error);
-      // This is usually where the 'Empty List' bug hides!
+      // 🚨 If this alerts, your DB is missing a column!
+      alert("APK Insert Error: " + error.message);
     }
   }
 
-  // 🧹 Cleanup
+  // 5. 🧹 Cleanup
   setAttachmentUri(null);
   setAttachmentName("");
   resetTaskForm();
@@ -920,30 +995,142 @@ const deleteSubtask = (taskId, subtaskId) => {
 
 // Update your useEffect (Load from DB) to parse the JSON string
 useEffect(() => {
-  try {
-    const result = db.getAllSync("SELECT * FROM tasks");
+  const loadDatabaseData = () => {
+    try {
+      // 1. 📂 LOAD TASKS
+      const result = db.getAllSync("SELECT * FROM tasks");
+      
+      // Ensure result is an array even if table is empty (Zero Task fix)
+      const taskList = result || [];
 
-    const loadedTasks = result.map((t) => ({
-      ...t,
-      completed: t.completed === 1,
-      // 🟢 SAFE PARSE: If subtasks is null or invalid, default to []
-      subtasks: (() => {
-        try {
-          return t.subtasks ? JSON.parse(t.subtasks) : [];
-        } catch (e) {
-          return [];
-        }
-      })(),
-    }));
+      const loadedTasks = taskList.map((t) => ({
+        ...t,
+        completed: t.completed === 1,
+        
+        // 🟢 SAFE PARSE: Subtasks
+        subtasks: (() => {
+          try {
+            return t.subtasks ? JSON.parse(t.subtasks) : [];
+          } catch (e) {
+            return []; // Fallback to empty array
+          }
+        })(),
 
-    setTasks(loadedTasks);
-    // ... rest of your sectionTimes logic
-  } catch (error) {
-    console.log("Load Error:", error);
-  }
+        // 🟢 SAFE PARSE: Notification IDs (New Pro Feature)
+        notificationId: (() => {
+          try {
+            return t.notificationId ? JSON.parse(t.notificationId) : [];
+          } catch (e) {
+            return []; // Fallback to empty array
+          }
+        })(),
+      }));
+
+      // Update task state
+      setTasks(loadedTasks);
+
+      // 2. ⚙️ LOAD SECTION SETTINGS (Time windows)
+      const settingsResult = db.getAllSync("SELECT * FROM section_settings");
+      
+      if (settingsResult && settingsResult.length > 0) {
+        const savedTimes = { ...sectionTimes }; // Start with current state defaults
+        
+        settingsResult.forEach(row => {
+          if (row.section_name && savedTimes[row.section_name]) {
+            savedTimes[row.section_name] = {
+              start: row.start_time || "",
+              end: row.end_time || ""
+            };
+          }
+        });
+        
+        setSectionTimes(savedTimes);
+      }
+      
+      console.log("✅ APK Data Load Complete. Tasks found:", loadedTasks.length);
+
+    } catch (error) {
+      console.log("🚨 Critical Load Error:", error);
+      // NUCLEAR FALLBACK: If DB fails, ensure app doesn't crash
+      setTasks([]); 
+    }
+  };
+
+  loadDatabaseData();
 }, []);
   
+  
+  //**********Notification********* */
+  
+  useEffect(() => {
+  requestPermissions();
+}, []);
 
+const requestPermissions = async () => {
+  const { status } = await Notifications.requestPermissionsAsync();
+  if (status !== 'granted') {
+    alert('Permission for notifications is required to set reminders!');
+  }
+};
+  Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldVibrate: true,
+  }),
+});
+
+// Create the High Priority Channel (Android Only)
+if (Platform.OS === 'android') {
+  Notifications.setNotificationChannelAsync('task-reminders', {
+    name: 'Task Reminders',
+    importance: Notifications.AndroidImportance.MAX,
+    vibrationPattern: [0, 250, 250, 250], // Vibration pattern
+    lightColor: '#FFD700', // Golden light
+    sound: 'default', 
+  });
+}
+
+  const getAffirmativeMessage = (title, time, minutesLeft) => {
+  const sentences = [
+    `You've got this! "${title}" is coming up at ${time}.`,
+    `Ready to shine? "${title}" starts in ${minutesLeft} minutes.`,
+    `Almost time to focus! "${title}" is scheduled for ${time}.`,
+    `Success starts with preparation. "${title}" is in ${minutesLeft} mins.`
+  ];
+  if (minutesLeft === 0) return `It's time! Let's conquer "${title}" right now! 🚀`;
+  
+  return sentences[Math.floor(Math.random() * sentences.length)];
+};
+
+  const scheduleProReminders = async (task) => {
+  if (!task.scheduledTime) return [];
+  const taskDate = new Date(parseDateTime(task.scheduledTime));
+  const now = new Date();
+  
+  const intervals = [20, 10, 5, 0]; // Minutes before task
+  const scheduledIds = [];
+
+  for (let mins of intervals) {
+    const triggerDate = new Date(taskDate.getTime() - mins * 60000);
+
+    // Only schedule if the trigger time is in the future
+    if (triggerDate > now) {
+      const id = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `🎯 ${task.title}`,
+          body: getAffirmativeMessage(task.title, task.scheduledTime, mins),
+          data: { taskId: task.id },
+          android: { channelId: 'task-reminders' }, // Link to pro channel
+        },
+        trigger: triggerDate,
+      });
+      scheduledIds.push(id);
+    }
+  }
+  return scheduledIds; // Returns array of 4 IDs
+};
+  
   
   
   //*********Component Start UI*** */
