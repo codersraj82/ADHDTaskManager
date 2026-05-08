@@ -27,15 +27,20 @@ jobs:
       - name: 5. Prebuild Android Folder
         run: npx expo prebuild --platform android
 
-      - name: 6. Build Standalone Release APK
+      - name: 6. Force JS Bundle into Assets (Failsafe)
+        run: |
+          mkdir -p android/app/src/main/assets
+          npx react-native bundle --platform android --dev false --entry-file index.js --bundle-output android/app/src/main/assets/index.android.bundle --assets-dest android/app/src/main/res
+
+      - name: 7. Build Release APK (Signed as Debug)
         run: |
           cd android
           chmod +x gradlew
-          # This command builds a Release APK but uses the Debug key so it's "Standalone"
+          # This forces a production-ready "Bake" but allows it to run on your phone without a pro key
           ./gradlew assembleRelease -Pandroid.signingConfig.release=debug
 
-      - name: 7. Upload APK
+      - name: 8. Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AdhdApp-Standalone
+          name: AdhdApp-Final-Standalone
           path: android/app/build/outputs/apk/release/app-release.apk
