@@ -169,11 +169,12 @@ useEffect(() => {
       if (status !== 'granted') console.log('Permission for notifications denied');
 
       if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('task-reminders', {
+        await Notifications.setNotificationChannelAsync('adhd-alarms', {
           name: 'Task Reminders',
           importance: Notifications.AndroidImportance.MAX,
           vibrationPattern: [0, 250, 250, 250],
           lightColor: '#FFD700',
+          sound: 'default',
         });
       }
 
@@ -640,7 +641,7 @@ const scrollToTask = (taskId) => {
                   priority: Notifications.AndroidNotificationPriority.MAX, // Force popup
                   vibrate: [0, 250, 250, 250],
                   android: { 
-                    channelId: 'task-reminders', // MUST match your useEffect channel
+                    channelId: 'adhd-alarms', // MUST match your useEffect channel
                     color: '#FFD700',
                     pressAction: { id: 'default' }
                   },
@@ -1071,9 +1072,21 @@ const deleteSubtask = (taskId, subtaskId) => {
   }
   return scheduledIds; // Returns array of 4 IDs
 };
+  const testNotification = async () => {
+  console.log("Scheduling test...");
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: "🔔 TEST WORKING!",
+      body: "If you see this, the notification system is ALIVE.",
+      sound: 'default',
+    },
+    trigger: { seconds: 5 }, // Fiers in 5 seconds
+  });
+  alert("Test scheduled! Close the app now and wait 5 seconds.");
+};
   
-  
-  
+  //********************************** */
+  //***********UI******************** */
   //*********Component Start UI*** */
 
   // ✅ REPLACED: Cleaned of Type Annotations to stop VS Code errors
@@ -1100,7 +1113,11 @@ const renderSection = (title, section) => {
     </Text>
 
     
-  </View>
+          </View>
+          
+          <TouchableOpacity onPress={testNotification} style={{backgroundColor: 'red', padding: 10}}>
+  <Text style={{color: 'white'}}>🚨 TEST NOTIFICATION 🚨</Text>
+</TouchableOpacity>
 
   {/* Time BELOW title */}
  <TouchableOpacity
