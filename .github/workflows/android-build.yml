@@ -24,25 +24,23 @@ jobs:
       - name: 4. Install Dependencies
         run: npm install
 
-      - name: 5. Clean and Prebuild
+      - name: 5. Prebuild Android
         run: npx expo prebuild --platform android --clean
 
-      - name: 6. Brute Force Bundle (Standalone Fix)
-        # This command forces the JS code into the app's internal assets
+      - name: 6. Bundle JavaScript (The "Standalone" Fix)
+        # This command bakes the 'brain' of your app into the APK
         run: |
           mkdir -p android/app/src/main/assets
           npx expo export:embed --platform android --dev false --dest android/app/src/main/assets
 
-      - name: 7. Build Production APK
-        env:
-          NODE_ENV: production
+      - name: 7. Build Standalone Release APK
         run: |
           cd android
           chmod +x gradlew
-          # assembleRelease ensures the app doesn't look for a local server
+          # This builds a Release APK signed with a debug key so you can install it
           ./gradlew assembleRelease -Pandroid.signingConfig.release=debug
 
-      - name: 8. Upload Standalone APK
+      - name: 8. Upload Final APK
         uses: actions/upload-artifact@v4
         with:
           name: ADHD-Manager-Standalone-V2
