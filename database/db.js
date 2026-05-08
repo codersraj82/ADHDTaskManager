@@ -21,13 +21,14 @@ export const initDB = () => {
     );
   `);
 
-  // 2️⃣ 🛡️ The Migration Loop (The Fix)
+  // 2️⃣ 🛡️ The Migration Loop (Improved with Defaults)
   const migrations = [
     { name: "scheduledTime", type: "TEXT" },
     { name: "details", type: "TEXT" },
-    { name: "subtasks", type: "TEXT" },
     { name: "attachment", type: "TEXT" },
-    { name: "notificationId", type: "TEXT" },
+    // Adding default empty arrays for JSON columns
+    { name: "subtasks", type: "TEXT DEFAULT '[]'" },
+    { name: "notificationId", type: "TEXT DEFAULT '[]'" },
   ];
 
   migrations.forEach((column) => {

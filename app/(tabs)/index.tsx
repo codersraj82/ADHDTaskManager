@@ -157,38 +157,116 @@ if (progress >= 0.5) {
   const sectionPositions = useRef({});
   const shakeAnim = useRef(new Animated.Value(0)).current;
 
-  //**************useEffect */
-// 🟢 Add this at the very top of your app or in your DB setup file
+  //**************useEffect************** */
+  //************************************ */
+
+// 🚀 MASTER BOOT SEQUENCE (Run once on startup)
 useEffect(() => {
-  try {
-    // 1. Create the table if it doesn't exist
-    db.execSync(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT,
-        section TEXT,
-        completed INTEGER,
-        scheduledTime TEXT,
-        details TEXT,
-        attachment TEXT,
-        subtasks TEXT DEFAULT '[]'
-      );
-    `);
+  const initializeApp = async () => {
+    try {
+      // 1. Setup Notifications & Channel
+      const { status } = await Notifications.requestPermissionsAsync();
+      if (status !== 'granted') console.log('Permission for notifications denied');
 
-    // 2. ❗ CRITICAL FOR APK: Check if 'subtasks' column exists (migration)
-    // This prevents the app from crashing on phones that had an older version
-    const tableInfo = db.getAllSync("PRAGMA table_info(tasks)");
-    const hasSubtasks = tableInfo.some(column => column.name === 'subtasks');
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('task-reminders', {
+          name: 'Task Reminders',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#FFD700',
+        });
+      }
 
-    if (!hasSubtasks) {
-      db.execSync("ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]';");
-      console.log("Migration: Added subtasks column");
+      // 🔔 ADD THIS: This forces the popup to show even if the app is open
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldVibrate: true,
+      }),
+    });
+
+
+      // 2. Setup Database Schema & Migrations
+      db.execSync(`
+        CREATE TABLE IF NOT EXISTS tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT, section TEXT, completed INTEGER,
+          scheduledTime TEXT, details TEXT, attachment TEXT,
+          subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]' 
+        );
+        CREATE TABLE IF NOT EXISTS section_settings (
+          section_name TEXT PRIMARY KEY,
+          start_time TEXT, end_time TEXT
+        );
+      `);
+
+      // Migration check for missing columns
+      const tableInfo = db.getAllSync("PRAGMA table_info(tasks)");
+      const columnNames = tableInfo.map(c => c.name);
+      if (!columnNames.includes('notificationId')) {
+        db.execSync("ALTER TABLE tasks ADD COLUMN notificationId TEXT DEFAULT '[]';");
+      }
+
+      // 3. Load All Data (Tasks + Section Settings)
+      const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
+      const loadedTasks = taskResult.map(t => ({
+        ...t,
+        completed: t.completed === 1,
+        subtasks: JSON.parse(t.subtasks || "[]"),
+        notificationId: JSON.parse(t.notificationId || "[]")
+      }));
+      setTasks(loadedTasks);
+
+      const settingsResult = db.getAllSync("SELECT * FROM section_settings") || [];
+      if (settingsResult.length > 0) {
+        const savedTimes = { ...sectionTimes };
+        settingsResult.forEach(row => {
+          savedTimes[row.section_name] = {
+            start: row.start_time || "",
+            end: row.end_time || ""
+          };
+        });
+        setSectionTimes(savedTimes);
+      }
+      
+
+      console.log("✅ App fully armed and data loaded.");
+    } catch (e) {
+      console.log("🚨 Master Boot Error:", e);
     }
-  } catch (e) {
-    console.log("DB Initialization Error:", e);
-  }
-}, []);
+  };
 
+  initializeApp();
+}, []);
+  
+
+
+
+
+  useEffect(() => {
+  const checkSystemSchedule = async () => {
+    try {
+      const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+      console.log("------------------------------------------");
+      console.log("📊 Count of system reminders:", scheduled.length);
+      
+      scheduled.forEach((n, index) => {
+        // n.trigger.value is the timestamp for 'date' triggers
+        const triggerTime = n.trigger.type === 'date' || n.trigger.type === 'timeInterval' 
+          ? new Date(n.trigger.value).toLocaleString() 
+          : "Recurring/Calendar Trigger";
+
+        console.log(`${index + 1}. Task: ${n.content.title} | Time: ${triggerTime}`);
+      });
+      console.log("------------------------------------------");
+    } catch (e) {
+      console.log("❌ Error fetching schedule:", e);
+    }
+  };
+
+  checkSystemSchedule(); // 🔑 THIS LINE RUNS THE FUNCTION
+}, []); // Runs once when the component mounts
 
   useEffect(() => {
   if (scheduledDateTime) {
@@ -272,60 +350,9 @@ useEffect(() => {
   const [taskName, setTaskName] = useState("");
   const [selectedSection, setSelectedSection] = useState("Morning");
 
-  // ✅ LOAD FROM DB
-  // ✅ Update the useEffect in Home.js
-useEffect(() => {
-  try {
-    const result = db.getAllSync("SELECT * FROM tasks");
+ 
 
-    const loadedTasks = result.map((t) => ({
-      ...t,
-      completed: t.completed === 1,
-    }));
-
-    if (loadedTasks.length > 0) {
-      setTasks(loadedTasks);
-
-      // 🆕 Extract section times from the tasks themselves
-      const newSectionTimes = { ...sectionTimes };
-      loadedTasks.forEach(task => {
-        if (task.sectionStart || task.sectionEnd) {
-          newSectionTimes[task.section] = {
-            start: task.sectionStart || "",
-            end: task.sectionEnd || ""
-          };
-        }
-      });
-      setSectionTimes(newSectionTimes);
-    }
-  } catch (error) {
-    console.log("DB Load Error:", error);
-  }
-}, []);
-
-  // ✅ Load everything on start
-useEffect(() => {
-  try {
-    // Load Tasks
-    const taskResult = db.getAllSync("SELECT * FROM tasks");
-    setTasks(taskResult.map(t => ({ ...t, completed: t.completed === 1 })));
-
-    // Load Section Settings
-    const settingsResult = db.getAllSync("SELECT * FROM section_settings");
-    if (settingsResult.length > 0) {
-      const savedTimes = { ...sectionTimes };
-      settingsResult.forEach(row => {
-        savedTimes[row.section_name] = {
-          start: row.start_time || "",
-          end: row.end_time || ""
-        };
-      });
-      setSectionTimes(savedTimes);
-    }
-  } catch (error) {
-    console.log("Load Error:", error);
-  }
-}, []);
+  
   
   //*****handler functions*********** */
   // ✅ TOGGLE TASK
@@ -561,7 +588,7 @@ const scrollToTask = (taskId) => {
   const handleSaveTask = async () => {
   if (!taskName.trim()) return;
 
-  // 1. 🕒 Time Logic
+  // 1. Time Correction
   let finalTime = scheduledDateTime;
   if (scheduledDateTime) {
     const parsed = parseDateTime(scheduledDateTime);
@@ -572,132 +599,108 @@ const scrollToTask = (taskId) => {
     }
   }
 
-  // 2. 🔔 Pro-Style Notification Logic
-  let notificationIdString = "[]";
+  // 2. Pro-Style Notification Logic
+  let newScheduledIds = [];
   if (finalTime) {
     try {
-      // If editing, cancel previous alarms first
+      // --- SAFE PREVIOUS ID CLEANUP ---
+      let oldIds = [];
       if (isEditMode && editingTask?.notificationId) {
-        const oldIds = JSON.parse(editingTask.notificationId);
-        await Promise.all(oldIds.map(id => Notifications.cancelScheduledNotificationAsync(id)));
+        const rawIds = editingTask.notificationId;
+        oldIds = Array.isArray(rawIds) ? rawIds : JSON.parse(rawIds || "[]");
+        
+        await Promise.all(
+          oldIds.map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {}))
+        );
       }
 
-      // Schedule new multi-stage reminders (20, 10, 5, 0 mins)
-      const taskDate = new Date(parseDateTime(finalTime));
-      const intervals = [20, 10, 5, 0];
-      const newIds = [];
+      // --- SCHEDULING ---
+      const taskTimestamp = parseDateTime(finalTime);
+      // Added check for null here based on our improved parser
+      if (taskTimestamp && taskTimestamp !== Infinity) {
+        const taskDate = new Date(taskTimestamp);
+        const intervals = [20, 10, 5, 0]; 
 
-      for (let mins of intervals) {
-        const triggerDate = new Date(taskDate.getTime() - mins * 60000);
-        if (triggerDate > new Date()) {
-          const id = await Notifications.scheduleNotificationAsync({
-            content: {
-              title: `🎯 ${taskName}`,
-              body: getAffirmativeMessage(taskName, finalTime, mins),
-              sound: true,
-              vibrate: [0, 250, 250, 250],
-              android: { channelId: 'task-reminders' },
-            },
-            trigger: triggerDate,
-          });
-          newIds.push(id);
+        for (let mins of intervals) {
+          const triggerDate = new Date(taskDate.getTime() - mins * 60000);
+          
+          if (triggerDate.getTime() > Date.now() + 2000) {
+            try {
+              const id = await Notifications.scheduleNotificationAsync({
+                content: {
+                  title: `🎯 ${taskName}`,
+                  body: getAffirmativeMessage(taskName, finalTime, mins),
+                  android: { 
+                    channelId: 'task-reminders', 
+                    priority: 'max' 
+                  },
+                },
+                // ❗ FIXED FOR SDK 53: Must be an object
+                trigger: {
+                  date: triggerDate, 
+                },
+              });
+              newScheduledIds.push(id);
+            } catch (schedError) {
+              console.log(`❌ Error scheduling ${mins}min reminder:`, schedError);
+            }
+          }
         }
       }
-      notificationIdString = JSON.stringify(newIds);
     } catch (e) {
-      console.log("Notification Setup Error:", e);
+      console.log("❌ Notification Scheduling Error:", e);
     }
   }
 
-  // 3. 📎 Subtasks Logic
+  // 3. Database & State Logic
   const subtasksToSave = (isEditMode && editingTask?.subtasks) ? editingTask.subtasks : [];
   const subtasksJSON = JSON.stringify(subtasksToSave);
+  const notificationIdJSON = JSON.stringify(newScheduledIds);
 
-  // 4. 💾 Database Logic
-  if (isEditMode && editingTask) {
-    // 🔁 UPDATE TASK
-    try {
+  try {
+    if (isEditMode && editingTask) {
       db.runSync(
-        `UPDATE tasks 
-         SET title = ?, section = ?, scheduledTime = ?, details = ?, attachment = ?, subtasks = ?, notificationId = ? 
-         WHERE id = ?`,
-        [
-          taskName,
-          selectedSection,
-          finalTime, 
-          taskDetails,
-          attachmentUri || "",
-          subtasksJSON,
-          notificationIdString, // 🔔 Added
-          editingTask.id,
-        ]
+        `UPDATE tasks SET title = ?, section = ?, scheduledTime = ?, details = ?, attachment = ?, subtasks = ?, notificationId = ? WHERE id = ?`,
+        [taskName, selectedSection, finalTime, taskDetails, attachmentUri || "", subtasksJSON, notificationIdJSON, editingTask.id]
       );
 
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === editingTask.id
-            ? { 
-                ...t, 
-                title: taskName, 
-                section: selectedSection, 
-                scheduledTime: finalTime, 
-                details: taskDetails, 
-                attachment: attachmentUri, 
-                subtasks: subtasksToSave,
-                notificationId: notificationIdString
-              }
-            : t
-        )
-      );
-    } catch (error) {
-      alert("APK Update Error: " + error.message);
-    }
-  } else {
-    // ➕ CREATE TASK
-    const newId = Date.now();
-    try {
-      // ❗ EXACT MATCH FOR 8 COLUMNS: 
-      // title, section, completed, scheduledTime, details, attachment, subtasks, notificationId
-      db.runSync(
-        `INSERT INTO tasks 
-         (title, section, completed, scheduledTime, details, attachment, subtasks, notificationId) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          taskName,
-          selectedSection,
-          0, // completed = false
-          finalTime,
-          taskDetails,
-          attachmentUri || "",
-          subtasksJSON,
-          notificationIdString, // 🔔 Added
-        ]
-      );
+      setTasks(prev => prev.map(t => t.id === editingTask.id ? { 
+        ...t, title: taskName, section: selectedSection, scheduledTime: finalTime, 
+        details: taskDetails, attachment: attachmentUri, subtasks: subtasksToSave, 
+        notificationId: newScheduledIds 
+      } : t));
+    }else {
+  const newId = Date.now();
+  
+  // 💾 Save to DB
+  db.runSync(
+    `INSERT INTO tasks (title, section, completed, scheduledTime, details, attachment, subtasks, notificationId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [taskName, selectedSection, 0, finalTime, taskDetails, attachmentUri || "", subtasksJSON, notificationIdJSON]
+  );
 
-      const newTask = {
-        id: newId,
-        title: taskName,
-        section: selectedSection,
-        completed: false,
-        scheduledTime: finalTime,
-        details: taskDetails,
-        attachment: attachmentUri,
-        subtasks: subtasksToSave,
-        notificationId: notificationIdString,
-      };
-
-      setTasks((prev) => [...prev, newTask]);
-    } catch (error) {
-      // 🚨 If this alerts, your DB is missing a column!
-      alert("APK Insert Error: " + error.message);
-    }
+  // ✅ Update State immediately with the new IDs
+  setTasks(prev => [...prev, { 
+    id: newId, 
+    title: taskName, 
+    section: selectedSection, 
+    completed: false, 
+    scheduledTime: finalTime, 
+    details: taskDetails, 
+    attachment: attachmentUri, 
+    subtasks: subtasksToSave, 
+    notificationId: newScheduledIds // 🟢 This turns the dot Green!
+  }]);
+}
+    
+    // Cleanup
+    setAttachmentUri(null);
+    setAttachmentName("");
+    resetTaskForm();
+    console.log("✅ Task Saved & Notifications Scheduled:", newScheduledIds.length);
+  } catch (error) {
+    alert("Database Error: " + error.message);
   }
-
-  // 5. 🧹 Cleanup
-  setAttachmentUri(null);
-  setAttachmentName("");
-  resetTaskForm();
-};
+}; 
   
   
   const confirmDeleteTask = () => {
@@ -791,10 +794,13 @@ const handleSaveSectionTime = () => {
 };
   
 const parseDateTime = (str) => {
-  if (!str) return Infinity;
+  if (!str) return null;
 
   try {
-    const [datePart, timePart, ampm] = str.split(" ");
+    // .trim() handles accidental leading/trailing spaces
+    // .replace(/\s+/g, ' ') handles accidental double spaces
+    const cleanStr = str.trim().replace(/\s+/g, ' ');
+    const [datePart, timePart, ampm] = cleanStr.split(" ");
 
     const [day, monthStr, year] = datePart.split("-");
     const months = {
@@ -802,16 +808,33 @@ const parseDateTime = (str) => {
       JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11
     };
 
+    // Ensure month is uppercase to match the keys above
+    const monthIndex = months[monthStr.toUpperCase()];
+    
+    if (monthIndex === undefined) {
+      console.log("🚨 Month Parsing Failed for:", monthStr);
+      return null;
+    }
+
     let [hours, minutes] = timePart.split(":").map(Number);
 
-    if (ampm === "PM" && hours !== 12) hours += 12;
-    if (ampm === "AM" && hours === 12) hours = 0;
+    // Standard 12-hour to 24-hour conversion
+    if (ampm.toUpperCase() === "PM" && hours !== 12) hours += 12;
+    if (ampm.toUpperCase() === "AM" && hours === 12) hours = 0;
 
-    const date = new Date(year, months[monthStr], day, hours, minutes);
+    const date = new Date(
+      parseInt(year), 
+      monthIndex, 
+      parseInt(day), 
+      hours, 
+      minutes
+    );
 
-    return date.getTime();
-  } catch {
-    return Infinity;
+    const timestamp = date.getTime();
+    return isNaN(timestamp) ? null : timestamp;
+  } catch (e) {
+    console.log("🚨 Parse Error:", e);
+    return null;
   }
 };
   
@@ -993,103 +1016,10 @@ const deleteSubtask = (taskId, subtaskId) => {
   }));
 };
 
-// Update your useEffect (Load from DB) to parse the JSON string
-useEffect(() => {
-  const loadDatabaseData = () => {
-    try {
-      // 1. 📂 LOAD TASKS
-      const result = db.getAllSync("SELECT * FROM tasks");
-      
-      // Ensure result is an array even if table is empty (Zero Task fix)
-      const taskList = result || [];
 
-      const loadedTasks = taskList.map((t) => ({
-        ...t,
-        completed: t.completed === 1,
-        
-        // 🟢 SAFE PARSE: Subtasks
-        subtasks: (() => {
-          try {
-            return t.subtasks ? JSON.parse(t.subtasks) : [];
-          } catch (e) {
-            return []; // Fallback to empty array
-          }
-        })(),
-
-        // 🟢 SAFE PARSE: Notification IDs (New Pro Feature)
-        notificationId: (() => {
-          try {
-            return t.notificationId ? JSON.parse(t.notificationId) : [];
-          } catch (e) {
-            return []; // Fallback to empty array
-          }
-        })(),
-      }));
-
-      // Update task state
-      setTasks(loadedTasks);
-
-      // 2. ⚙️ LOAD SECTION SETTINGS (Time windows)
-      const settingsResult = db.getAllSync("SELECT * FROM section_settings");
-      
-      if (settingsResult && settingsResult.length > 0) {
-        const savedTimes = { ...sectionTimes }; // Start with current state defaults
-        
-        settingsResult.forEach(row => {
-          if (row.section_name && savedTimes[row.section_name]) {
-            savedTimes[row.section_name] = {
-              start: row.start_time || "",
-              end: row.end_time || ""
-            };
-          }
-        });
-        
-        setSectionTimes(savedTimes);
-      }
-      
-      console.log("✅ APK Data Load Complete. Tasks found:", loadedTasks.length);
-
-    } catch (error) {
-      console.log("🚨 Critical Load Error:", error);
-      // NUCLEAR FALLBACK: If DB fails, ensure app doesn't crash
-      setTasks([]); 
-    }
-  };
-
-  loadDatabaseData();
-}, []);
   
   
-  //**********Notification********* */
   
-  useEffect(() => {
-  requestPermissions();
-}, []);
-
-const requestPermissions = async () => {
-  const { status } = await Notifications.requestPermissionsAsync();
-  if (status !== 'granted') {
-    alert('Permission for notifications is required to set reminders!');
-  }
-};
-  Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldVibrate: true,
-  }),
-});
-
-// Create the High Priority Channel (Android Only)
-if (Platform.OS === 'android') {
-  Notifications.setNotificationChannelAsync('task-reminders', {
-    name: 'Task Reminders',
-    importance: Notifications.AndroidImportance.MAX,
-    vibrationPattern: [0, 250, 250, 250], // Vibration pattern
-    lightColor: '#FFD700', // Golden light
-    sound: 'default', 
-  });
-}
 
   const getAffirmativeMessage = (title, time, minutesLeft) => {
   const sentences = [
@@ -1135,18 +1065,14 @@ if (Platform.OS === 'android') {
   
   //*********Component Start UI*** */
 
-  const renderSection = (title: string, section: string) => {
-    const sectionTasks = tasks
-  .filter((t) => t.section === section)
-  .sort((a, b) => {
-    // ✅ 1. Completed tasks go last
-    if (a.completed !== b.completed) {
-      return a.completed ? 1 : -1;
-    }
-
-    // ✅ 2. Sort by time
-    return parseDateTime(a.scheduledTime) - parseDateTime(b.scheduledTime);
-  });
+  // ✅ REPLACED: Cleaned of Type Annotations to stop VS Code errors
+const renderSection = (title, section) => {
+  const sectionTasks = tasks
+    .filter((t) => t.section === section)
+    .sort((a, b) => {
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      return parseDateTime(a.scheduledTime) - parseDateTime(b.scheduledTime);
+    });
 
     return (
       <View style={{ padding: 16 }}
@@ -1206,6 +1132,28 @@ if (Platform.OS === 'android') {
 
         {sectionTasks.map((task) => {
           const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+          // 🔔 Calculate Upcoming Reminders
+ // 🔔 UPDATED Calculation inside renderSection
+const taskTimestamp = parseDateTime(task.scheduledTime);
+const isFutureTask = taskTimestamp && (taskTimestamp + 60000 > Date.now());
+
+const upcomingReminders = [];
+if (task.scheduledTime) {
+  const intervals = [20, 10, 5, 0];
+  intervals.forEach((mins) => {
+    const triggerTime = taskTimestamp - (mins * 60000);
+    // Show if the specific reminder time hasn't passed yet
+    if (triggerTime + 60000 > Date.now()) {
+      const dateObj = new Date(triggerTime);
+      upcomingReminders.push(
+        dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      );
+    }
+  });
+}
+          
+          //********SubTask********/
+
   const totalSubtasks = subtasks.length;
   const completedSubtasks = subtasks.filter(s => s.completed).length;
           return (
@@ -1375,6 +1323,36 @@ if (Platform.OS === 'android') {
                   </Text>
                 </Pressable>
               ) : null}
+
+              {/* 🔔 REMINDER DISPLAY COMPONENT */}
+
+{upcomingReminders.length > 0 ? (
+  <View style={{ 
+    marginTop: 10, padding: 8, borderRadius: 8,
+    backgroundColor: 'rgba(255, 215, 0, 0.05)', 
+    borderWidth: 1, borderColor: 'rgba(255, 215, 0, 0.2)'
+  }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+       <View style={{ 
+          width: 6, height: 6, borderRadius: 3, 
+          backgroundColor: task.notificationId?.length > 0 ? '#39FF14' : '#666',
+          marginRight: 6 
+       }} />
+       <Text style={{ color: '#FFD700', fontSize: 10, fontWeight: 'bold' }}>UPCOMING ALARMS:</Text>
+    </View>
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+      {upcomingReminders.map((time, idx) => (
+        <View key={idx} style={{ backgroundColor: '#333', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+          <Text style={{ color: '#39FF14', fontSize: 10 }}>🔔 {time}</Text>
+        </View>
+      ))}
+    </View>
+  </View>
+) : (task.scheduledTime && !isFutureTask && !task.completed) ? (
+  <Text style={{ color: '#666', fontSize: 10, marginTop: 8 }}>
+    🔕 All reminders passed for this time
+  </Text>
+) : null}
 
               {/* 🔹 EXPANDED DETAILS */}
               {expandedTaskId === task.id && task.details ? (

@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "ADHDTaskManager",
-    "slug": "ADHDTaskManager",
-    "version": "1.0.0",
+    "name": "ADHD Task Pro",
+    "slug": "adhd-task-manager-v2",
+    "version": "1.5.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "adhdtaskmanager",
@@ -12,25 +12,19 @@
       "supportsTablet": true
     },
     "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
-      },
-      "edgeToEdgeEnabled": true,
       "package": "com.justdoit.researchzeal",
+      "versionCode": 2,
       "permissions": [
         "NOTIFICATIONS",
-        "POST_NOTIFICATIONS",
+        "POST_NOTIFICATIONS", 
         "VIBRATE",
         "WAKE_LOCK",
         "SCHEDULE_EXACT_ALARM"
-      ]
-    },
-    "web": {
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#1E1E1E",
+        "foregroundImage": "./assets/images/android-icon-foreground.png"
+      }
     },
     "plugins": [
       "expo-router",
@@ -40,14 +34,10 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
-          "dark": {
-            "backgroundColor": "#000000"
-          }
+          "backgroundColor": "#000000"
         }
       ],
       "expo-sqlite",
-      "expo-document-picker",
       [
         "expo-notifications",
         {
@@ -55,14 +45,10 @@
           "color": "#FFD700"
         }
       ],
+      "expo-document-picker",
       "@react-native-community/datetimepicker"
     ],
-    "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
-    },
     "extra": {
-      "router": {},
       "eas": {
         "projectId": "a6d1a088-74f0-497b-b3b4-6b2c0b15d5d1"
       }
