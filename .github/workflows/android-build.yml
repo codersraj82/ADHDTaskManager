@@ -24,23 +24,26 @@ jobs:
       - name: 4. Install Dependencies
         run: npm install
 
-      - name: 5. Prebuild Android Folder
-        run: npx expo prebuild --platform android
+      - name: 5. Clean and Prebuild
+        run: npx expo prebuild --platform android --clean
 
-      - name: 6. Force Expo Bundle (The Red Screen Fix)
+      - name: 6. Brute Force Bundle (Standalone Fix)
+        # This command forces the JS code into the app's internal assets
         run: |
           mkdir -p android/app/src/main/assets
           npx expo export:embed --platform android --dev false --dest android/app/src/main/assets
 
-      - name: 7. Build Standalone Release APK
+      - name: 7. Build Production APK
+        env:
+          NODE_ENV: production
         run: |
           cd android
           chmod +x gradlew
-          # Build Release APK using the Debug key so it's easy to install locally
+          # assembleRelease ensures the app doesn't look for a local server
           ./gradlew assembleRelease -Pandroid.signingConfig.release=debug
 
       - name: 8. Upload Standalone APK
         uses: actions/upload-artifact@v4
         with:
-          name: ADHD-TaskManager-Final
+          name: ADHD-Manager-Standalone-V2
           path: android/app/build/outputs/apk/release/app-release.apk

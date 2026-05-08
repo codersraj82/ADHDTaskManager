@@ -19,7 +19,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.justdoit.researchzeal",
+      "package": "com.justdoit.researchzeal.standalone",
       "permissions": [
         "NOTIFICATIONS",
         "POST_NOTIFICATIONS",
