@@ -1,7 +1,7 @@
 name: GitHub Actions Android Build
 on:
   push:
-    branches: [ main ] # Ensure this matches your branch name (main or master)
+    branches: [ main ] # Or "master" if that's your branch name
 
 jobs:
   build:
@@ -21,25 +21,22 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 4. Install Dependencies
-        run: npm install
+      - name: 4. Install Expo CLI & Dependencies
+        run: |
+          npm install -g expo-cli
+          npm install
 
       - name: 5. Prebuild Android Folder
         run: npx expo prebuild --platform android
 
-      - name: 6. Bundle JavaScript (Fixes Red Screen)
-        run: |
-          mkdir -p android/app/src/main/assets
-          npx expo export:embed --platform android --dev false --dest android/app/src/main/assets
-
-      - name: 7. Build APK with Gradle
+      - name: 6. Build APK with Gradle
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - name: 8. Upload APK
+      - name: 7. Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AdhdApp-Standalone-APK
+          name: AdhdApp-Build
           path: android/app/build/outputs/apk/debug/app-debug.apk
