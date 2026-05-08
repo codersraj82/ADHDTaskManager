@@ -25,27 +25,18 @@ jobs:
         run: npm install
 
       - name: 5. Prebuild
+        # This creates the android folder with New Arch enabled
         run: npx expo prebuild --platform android --clean
 
-      - name: 6. Brute Force Bundle (Standalone Fix)
-        # We now point specifically to the index.js we created
-        run: |
-          mkdir -p android/app/src/main/assets
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file index.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res/
-
-      - name: 7. Build Standalone Release APK
+      - name: 6. Build Standalone Release APK
+        # We let Gradle handle the bundling automatically here
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleRelease -Pandroid.signingConfig.release=debug
 
-      - name: 8. Upload Working APK
+      - name: 7. Upload Final APK
         uses: actions/upload-artifact@v4
         with:
-          name: ADHD-Manager-Final-Build
+          name: ADHD-Manager-NewArch-Success
           path: android/app/build/outputs/apk/release/app-release.apk
