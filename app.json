@@ -7,7 +7,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "adhdstandalone",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true
     },
@@ -19,7 +19,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.justdoit.researchzeal.app",
+      "package": "com.researchzeal.adhdapp",
       "permissions": [
         "NOTIFICATIONS",
         "POST_NOTIFICATIONS",

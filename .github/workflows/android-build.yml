@@ -24,24 +24,30 @@ jobs:
       - name: 4. Install Dependencies
         run: npm install
 
-      - name: 5. Prebuild Android
+      - name: 5. Prebuild
         run: npx expo prebuild --platform android --clean
 
-      - name: 6. Force JS Bundle (Standalone Mode)
-        # This command takes your 'expo-router/entry' and bakes it into the app
+      - name: 6. Brute Force Bundle (The Standalone Fix)
+        # This manually forces the "Brain" into the Android assets AND resource folders
         run: |
           mkdir -p android/app/src/main/assets
-          npx expo export:embed --platform android --dev false --dest android/app/src/main/assets
+          mkdir -p android/app/src/main/res/raw
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file node_modules/expo-router/entry.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res/
 
-      - name: 7. Build Standalone Release APK
+      - name: 7. Build Production APK
         run: |
           cd android
           chmod +x gradlew
-          # This builds the RELEASE version (Standalone) but uses the Debug key so you can install it
+          # assembleRelease creates a Standalone app that NEVER looks for a server
           ./gradlew assembleRelease -Pandroid.signingConfig.release=debug
 
-      - name: 8. Upload Final APK
+      - name: 8. Upload Working APK
         uses: actions/upload-artifact@v4
         with:
-          name: ADHD-Standalone-FIXED
+          name: ADHD-Manager-BRUTE-FORCE
           path: android/app/build/outputs/apk/release/app-release.apk
