@@ -588,7 +588,7 @@ const scrollToTask = (taskId) => {
   const handleSaveTask = async () => {
   if (!taskName.trim()) return;
 
-  // 1. Time Correction
+  // 1. Time Restriction Logic
   let finalTime = scheduledDateTime;
   if (scheduledDateTime) {
     const parsed = parseDateTime(scheduledDateTime);
@@ -599,45 +599,54 @@ const scrollToTask = (taskId) => {
     }
   }
 
-  // 2. Pro-Style Notification Logic
+  // 2. Pro-Style Notification Scheduling
   let newScheduledIds = [];
   if (finalTime) {
     try {
-      // --- SAFE PREVIOUS ID CLEANUP ---
-      let oldIds = [];
+      // --- CLEANUP OLD NOTIFICATIONS IF EDITING ---
       if (isEditMode && editingTask?.notificationId) {
-        const rawIds = editingTask.notificationId;
-        oldIds = Array.isArray(rawIds) ? rawIds : JSON.parse(rawIds || "[]");
-        
-        await Promise.all(
-          oldIds.map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {}))
-        );
+        let oldIds = [];
+        try {
+          oldIds = typeof editingTask.notificationId === 'string' 
+            ? JSON.parse(editingTask.notificationId) 
+            : editingTask.notificationId;
+          
+          if (Array.isArray(oldIds)) {
+            await Promise.all(
+              oldIds.map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {}))
+            );
+          }
+        } catch (e) { console.log("Cleanup Error:", e); }
       }
 
-      // --- SCHEDULING ---
+      // --- SCHEDULE NEW REMINDERS ---
       const taskTimestamp = parseDateTime(finalTime);
-      // Added check for null here based on our improved parser
       if (taskTimestamp && taskTimestamp !== Infinity) {
         const taskDate = new Date(taskTimestamp);
+        // Reminders at 20, 10, 5, and 0 minutes before
         const intervals = [20, 10, 5, 0]; 
 
         for (let mins of intervals) {
           const triggerDate = new Date(taskDate.getTime() - mins * 60000);
           
+          // Only schedule if the trigger time is at least 2 seconds in the future
           if (triggerDate.getTime() > Date.now() + 2000) {
             try {
               const id = await Notifications.scheduleNotificationAsync({
                 content: {
                   title: `🎯 ${taskName}`,
                   body: getAffirmativeMessage(taskName, finalTime, mins),
+                  sound: 'default', // CRITICAL for standalone sound
+                  priority: Notifications.AndroidNotificationPriority.MAX, // Force popup
+                  vibrate: [0, 250, 250, 250],
                   android: { 
-                    channelId: 'task-reminders', 
-                    priority: 'max' 
+                    channelId: 'task-reminders', // MUST match your useEffect channel
+                    color: '#FFD700',
+                    pressAction: { id: 'default' }
                   },
                 },
-                // ❗ FIXED FOR SDK 53: Must be an object
                 trigger: {
-                  date: triggerDate, 
+                  date: triggerDate, // Correct format for SDK 54/RN 0.81
                 },
               });
               newScheduledIds.push(id);
@@ -648,7 +657,7 @@ const scrollToTask = (taskId) => {
         }
       }
     } catch (e) {
-      console.log("❌ Notification Scheduling Error:", e);
+      console.log("❌ Notification System Error:", e);
     }
   }
 
@@ -659,6 +668,7 @@ const scrollToTask = (taskId) => {
 
   try {
     if (isEditMode && editingTask) {
+      // --- UPDATE EXISTING ---
       db.runSync(
         `UPDATE tasks SET title = ?, section = ?, scheduledTime = ?, details = ?, attachment = ?, subtasks = ?, notificationId = ? WHERE id = ?`,
         [taskName, selectedSection, finalTime, taskDetails, attachmentUri || "", subtasksJSON, notificationIdJSON, editingTask.id]
@@ -669,38 +679,39 @@ const scrollToTask = (taskId) => {
         details: taskDetails, attachment: attachmentUri, subtasks: subtasksToSave, 
         notificationId: newScheduledIds 
       } : t));
-    }else {
-  const newId = Date.now();
-  
-  // 💾 Save to DB
-  db.runSync(
-    `INSERT INTO tasks (title, section, completed, scheduledTime, details, attachment, subtasks, notificationId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [taskName, selectedSection, 0, finalTime, taskDetails, attachmentUri || "", subtasksJSON, notificationIdJSON]
-  );
+    } else {
+      // --- INSERT NEW ---
+      const newId = Date.now();
+      db.runSync(
+        `INSERT INTO tasks (title, section, completed, scheduledTime, details, attachment, subtasks, notificationId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [taskName, selectedSection, 0, finalTime, taskDetails, attachmentUri || "", subtasksJSON, notificationIdJSON]
+      );
 
-  // ✅ Update State immediately with the new IDs
-  setTasks(prev => [...prev, { 
-    id: newId, 
-    title: taskName, 
-    section: selectedSection, 
-    completed: false, 
-    scheduledTime: finalTime, 
-    details: taskDetails, 
-    attachment: attachmentUri, 
-    subtasks: subtasksToSave, 
-    notificationId: newScheduledIds // 🟢 This turns the dot Green!
-  }]);
-}
+      setTasks(prev => [...prev, { 
+        id: newId, 
+        title: taskName, 
+        section: selectedSection, 
+        completed: false, 
+        scheduledTime: finalTime, 
+        details: taskDetails, 
+        attachment: attachmentUri, 
+        subtasks: subtasksToSave, 
+        notificationId: newScheduledIds 
+      }]);
+    }
     
-    // Cleanup
+    // 4. Reset Form & UI
     setAttachmentUri(null);
     setAttachmentName("");
     resetTaskForm();
-    console.log("✅ Task Saved & Notifications Scheduled:", newScheduledIds.length);
+    console.log("✅ Success! Scheduled reminders:", newScheduledIds.length);
+
   } catch (error) {
+    console.log("❌ Database Error:", error);
     alert("Database Error: " + error.message);
   }
-}; 
+};
+  
   
   
   const confirmDeleteTask = () => {
