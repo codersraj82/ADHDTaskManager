@@ -27,20 +27,20 @@ jobs:
       - name: 5. Prebuild Android Folder
         run: npx expo prebuild --platform android
 
-      - name: 6. Force JS Bundle into Assets (Failsafe)
+      - name: 6. Force Expo Bundle (The Red Screen Fix)
         run: |
           mkdir -p android/app/src/main/assets
-          npx react-native bundle --platform android --dev false --entry-file index.js --bundle-output android/app/src/main/assets/index.android.bundle --assets-dest android/app/src/main/res
+          npx expo export:embed --platform android --dev false --dest android/app/src/main/assets
 
-      - name: 7. Build Release APK (Signed as Debug)
+      - name: 7. Build Standalone Release APK
         run: |
           cd android
           chmod +x gradlew
-          # This forces a production-ready "Bake" but allows it to run on your phone without a pro key
+          # Build Release APK using the Debug key so it's easy to install locally
           ./gradlew assembleRelease -Pandroid.signingConfig.release=debug
 
-      - name: 8. Upload APK
+      - name: 8. Upload Standalone APK
         uses: actions/upload-artifact@v4
         with:
-          name: AdhdApp-Final-Standalone
+          name: ADHD-TaskManager-Final
           path: android/app/build/outputs/apk/release/app-release.apk
