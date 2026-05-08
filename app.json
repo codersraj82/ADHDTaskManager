@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "ADHDTaskManager",
-    "slug": "ADHDTaskManager",
+    "name": "ADHD Standalone",
+    "slug": "adhd-standalone",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "adhdtaskmanager",
+    "scheme": "adhdstandalone",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -19,7 +19,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.justdoit.researchzeal.standalone",
+      "package": "com.justdoit.researchzeal.final",
       "permissions": [
         "NOTIFICATIONS",
         "POST_NOTIFICATIONS",
