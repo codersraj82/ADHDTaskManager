@@ -21,6 +21,38 @@ export const initDB = () => {
     );
   `);
 
+  db.execSync(`
+    CREATE TABLE IF NOT EXISTS app_profile (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      name TEXT DEFAULT '',
+      profileImage TEXT DEFAULT '',
+      vibe TEXT DEFAULT '🌿',
+      onboardingComplete INTEGER DEFAULT 0,
+      updatedAt TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_stats (
+      date TEXT PRIMARY KEY,
+      completedTasks INTEGER DEFAULT 0,
+      totalFocusTime INTEGER DEFAULT 0,
+      streakValue INTEGER DEFAULT 0,
+      createdAt TEXT,
+      updatedAt TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS special_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT,
+      note TEXT,
+      createdAt TEXT
+    );
+  `);
+
   // 2️⃣ 🛡️ The Migration Loop (Improved with Defaults)
   const migrations = [
     { name: "scheduledTime", type: "TEXT" },

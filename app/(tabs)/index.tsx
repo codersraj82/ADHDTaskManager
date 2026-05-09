@@ -9,6 +9,7 @@ import {
   Pressable,
   Dimensions,
   Image,
+  Linking,
   Platform,
   StatusBar,
 } from "react-native";
@@ -17,6 +18,8 @@ import { db, initDB } from "../../database/db";
 import Svg, { Circle } from "react-native-svg";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
+import { Directory, File, Paths } from "expo-file-system";
+import * as ImagePicker from "expo-image-picker";
 
 import { WebView } from "react-native-webview"; // For PDF viewing
 import * as Notifications from "expo-notifications";
@@ -33,6 +36,58 @@ const COLORS = {
   success: "#7DFFB3",
   warning: "#FFD166",
   danger: "#FF7B7B",
+};
+
+const DEFAULT_PROFILE = {
+  name: "",
+  profileImage: "",
+  vibe: "🌿",
+  onboardingComplete: false,
+};
+
+const VIBE_OPTIONS = [
+  { emoji: "💪", label: "Strong" },
+  { emoji: "🌿", label: "Calm" },
+  { emoji: "⚡", label: "Energetic" },
+  { emoji: "🧠", label: "Focused" },
+  { emoji: "🌊", label: "Balanced" },
+];
+
+const affirmations = [
+  "Small steps still move you forward 🌱",
+  "Focus is built gently 🧠",
+  "You are capable of consistency 💪",
+  "One task at a time ✨",
+  "Calm mind, clear direction 🌊",
+  "Start small. Momentum will follow 🌱",
+  "Progress matters more than perfection 💪",
+  "Tiny wins create powerful habits 🧠",
+  "You already survived harder days 🌊",
+  "Start with just 5 minutes ⏱",
+];
+
+const MENU_ITEMS = [
+  { key: "profile", label: "Profile Details", icon: "👤" },
+  { key: "special", label: "Special Tasks", icon: "⭐" },
+  { key: "pending", label: "Pending Tasks", icon: "⏳" },
+  { key: "completed", label: "Completed Tasks", icon: "✅" },
+  { key: "calendar", label: "Calendar View", icon: "📅" },
+  { key: "settings", label: "Settings", icon: "⚙️" },
+  { key: "about", label: "About", icon: "ℹ️" },
+  { key: "support", label: "Support This Project", icon: "❤️" },
+];
+
+const getDateKey = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const getYesterdayKey = () => {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  return getDateKey(date);
 };
 
 //*************main component function********* */
@@ -102,6 +157,31 @@ export default function Home() {
   const [attachmentName, setAttachmentName] = useState("");
   const [viewerVisible, setViewerVisible] = useState(false);
   const [currentFile, setCurrentFile] = useState({ uri: null, type: null });
+  const [profile, setProfile] = useState(DEFAULT_PROFILE);
+  const [profileDraftName, setProfileDraftName] = useState("");
+  const [profileDraftVibe, setProfileDraftVibe] = useState(DEFAULT_PROFILE.vibe);
+  const [onboardingVisible, setOnboardingVisible] = useState(false);
+  const [drawerVisible, setDrawerVisible] = useState(false);
+  const [activePage, setActivePage] = useState(null);
+  const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
+  const [dailyStats, setDailyStats] = useState({
+    date: getDateKey(),
+    completedTasks: 0,
+    totalFocusTime: 0,
+    streakValue: 0,
+  });
+  const [productivityStats, setProductivityStats] = useState({
+    currentStreak: 0,
+    bestStreak: 0,
+    lifetimeFocusTime: 0,
+    lifetimeCompletedTasks: 0,
+    lastActiveDate: getDateKey(),
+    lastQualifiedDate: "",
+    showStreak: true,
+  });
+  const [specialTasks, setSpecialTasks] = useState([]);
+  const [specialTaskTitle, setSpecialTaskTitle] = useState("");
+  const [specialTaskNote, setSpecialTaskNote] = useState("");
 
   //******Vriables */
 
@@ -111,7 +191,9 @@ export default function Home() {
   const completedTasks = tasks.filter((t) => t.completed).length;
 
   const percentage =
-    totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+    totalTasks === 0
+      ? 0
+      : Math.min(100, Math.round((dailyStats.completedTasks / totalTasks) * 100));
   const modalScale = useRef(new Animated.Value(0.8)).current;
 
   // 1. Prepare the JSON string for the DB
@@ -166,6 +248,258 @@ export default function Home() {
   const taskPositions = useRef({});
   const sectionPositions = useRef({});
   const shakeAnim = useRef(new Animated.Value(0)).current;
+  const affirmationOpacity = useRef(new Animated.Value(1)).current;
+  const drawerX = useRef(new Animated.Value(-320)).current;
+
+  const saveSetting = (key, value) => {
+    db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
+      key,
+      String(value),
+    ]);
+  };
+
+  const getSettingsMap = () => {
+    const rows = db.getAllSync("SELECT key, value FROM app_settings") || [];
+    return rows.reduce((acc, row) => {
+      acc[row.key] = row.value;
+      return acc;
+    }, {});
+  };
+
+  const ensureDailyStatsRow = (dateKey = getDateKey()) => {
+    db.runSync(
+      `INSERT OR IGNORE INTO daily_stats
+       (date, completedTasks, totalFocusTime, streakValue, createdAt, updatedAt)
+       VALUES (?, 0, 0, 0, datetime('now'), datetime('now'))`,
+      [dateKey]
+    );
+  };
+
+  const getDailyStatsRow = (dateKey = getDateKey()) => {
+    ensureDailyStatsRow(dateKey);
+    const rows =
+      db.getAllSync("SELECT * FROM daily_stats WHERE date = ?", [dateKey]) ||
+      [];
+    return (
+      rows[0] || {
+        date: dateKey,
+        completedTasks: 0,
+        totalFocusTime: 0,
+        streakValue: 0,
+      }
+    );
+  };
+
+  const saveProfile = (nextProfile) => {
+    db.runSync(
+      `INSERT OR REPLACE INTO app_profile
+       (id, name, profileImage, vibe, onboardingComplete, updatedAt)
+       VALUES (1, ?, ?, ?, ?, datetime('now'))`,
+      [
+        nextProfile.name,
+        nextProfile.profileImage || "",
+        nextProfile.vibe || "🌿",
+        nextProfile.onboardingComplete ? 1 : 0,
+      ]
+    );
+    setProfile(nextProfile);
+    setProfileDraftName(nextProfile.name);
+    setProfileDraftVibe(nextProfile.vibe || "🌿");
+  };
+
+  const refreshSpecialTasks = () => {
+    const rows =
+      db.getAllSync("SELECT * FROM special_tasks ORDER BY createdAt DESC") ||
+      [];
+    setSpecialTasks(rows);
+  };
+
+  const checkDailyReset = () => {
+    const today = getDateKey();
+    const settings = getSettingsMap();
+    const lastActiveDate = settings.lastActiveDate || today;
+    const lastQualifiedDate = settings.lastQualifiedDate || "";
+    let currentStreak = Number(settings.currentStreak || 0);
+
+    ensureDailyStatsRow(today);
+
+    if (lastActiveDate !== today) {
+      const streakStillWarm =
+        lastQualifiedDate === today || lastQualifiedDate === getYesterdayKey();
+
+      if (!streakStillWarm) {
+        currentStreak = 0;
+        saveSetting("currentStreak", 0);
+      }
+
+      saveSetting("lastActiveDate", today);
+      const todayRow = getDailyStatsRow(today);
+      setDailyStats({
+        date: today,
+        completedTasks: todayRow.completedTasks || 0,
+        totalFocusTime: todayRow.totalFocusTime || 0,
+        streakValue: todayRow.streakValue || 0,
+      });
+      setTotalFocusTime(todayRow.totalFocusTime || 0);
+      setProductivityStats((prev) => ({
+        ...prev,
+        currentStreak,
+        lastActiveDate: today,
+        lastQualifiedDate,
+      }));
+    }
+  };
+
+  const qualifyTodayForStreak = (nextCompleted, nextFocusTime) => {
+    const today = getDateKey();
+    const settings = getSettingsMap();
+    const alreadyQualified = settings.lastQualifiedDate === today;
+    const meaningfulDay = nextCompleted >= 1 || nextFocusTime >= 300;
+
+    if (!meaningfulDay || alreadyQualified) return;
+
+    const wasYesterday = settings.lastQualifiedDate === getYesterdayKey();
+    const nextStreak = wasYesterday ? Number(settings.currentStreak || 0) + 1 : 1;
+    const nextBest = Math.max(Number(settings.bestStreak || 0), nextStreak);
+
+    saveSetting("currentStreak", nextStreak);
+    saveSetting("bestStreak", nextBest);
+    saveSetting("lastQualifiedDate", today);
+
+    db.runSync("UPDATE daily_stats SET streakValue = ? WHERE date = ?", [
+      nextStreak,
+      today,
+    ]);
+
+    setProductivityStats((prev) => ({
+      ...prev,
+      currentStreak: nextStreak,
+      bestStreak: nextBest,
+      lastQualifiedDate: today,
+    }));
+  };
+
+  const recordDailyCompletion = () => {
+    checkDailyReset();
+    const today = getDateKey();
+    const row = getDailyStatsRow(today);
+    const nextCompleted = (row.completedTasks || 0) + 1;
+    const lifetimeCompletedTasks =
+      productivityStats.lifetimeCompletedTasks + 1;
+
+    db.runSync(
+      `UPDATE daily_stats
+       SET completedTasks = ?, updatedAt = datetime('now')
+       WHERE date = ?`,
+      [nextCompleted, today]
+    );
+    saveSetting("lifetimeCompletedTasks", lifetimeCompletedTasks);
+
+    setDailyStats((prev) => ({
+      ...prev,
+      completedTasks: nextCompleted,
+      totalFocusTime: row.totalFocusTime || prev.totalFocusTime,
+    }));
+    setProductivityStats((prev) => ({
+      ...prev,
+      lifetimeCompletedTasks,
+    }));
+    qualifyTodayForStreak(nextCompleted, row.totalFocusTime || 0);
+  };
+
+  const recordFocusSession = (secondsToAdd) => {
+    if (!secondsToAdd || secondsToAdd <= 0) return;
+
+    checkDailyReset();
+    const today = getDateKey();
+    const row = getDailyStatsRow(today);
+    const nextFocusTime = (row.totalFocusTime || 0) + secondsToAdd;
+    const lifetimeFocusTime =
+      productivityStats.lifetimeFocusTime + secondsToAdd;
+
+    db.runSync(
+      `UPDATE daily_stats
+       SET totalFocusTime = ?, updatedAt = datetime('now')
+       WHERE date = ?`,
+      [nextFocusTime, today]
+    );
+    saveSetting("lifetimeFocusTime", lifetimeFocusTime);
+
+    setTotalFocusTime((total) => total + secondsToAdd);
+    setDailyStats((prev) => ({
+      ...prev,
+      totalFocusTime: nextFocusTime,
+      completedTasks: row.completedTasks || prev.completedTasks,
+    }));
+    setProductivityStats((prev) => ({
+      ...prev,
+      lifetimeFocusTime,
+    }));
+    qualifyTodayForStreak(row.completedTasks || 0, nextFocusTime);
+  };
+
+  const pickProfileImage = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      alert("Photo access is needed to update your profile image.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.85,
+    });
+
+    if (result.canceled || !result.assets?.[0]?.uri) return;
+
+    const pickedUri = result.assets[0].uri;
+    let imageUri = pickedUri;
+
+    try {
+      const profileDir = new Directory(Paths.document, "profile");
+      profileDir.create({ intermediates: true, idempotent: true });
+
+      const extension = pickedUri.split(".").pop()?.split("?")[0] || "jpg";
+      const sourceFile = new File(pickedUri);
+      const avatarFile = new File(
+        profileDir,
+        `avatar-${Date.now()}.${extension}`
+      );
+      sourceFile.copy(avatarFile);
+      imageUri = avatarFile.uri;
+    } catch (e) {
+      console.log("Profile image copy skipped:", e);
+    }
+
+    const nextProfile = { ...profile, profileImage: imageUri };
+    saveProfile(nextProfile);
+  };
+
+  const openDrawer = () => {
+    drawerX.setValue(-320);
+    setDrawerVisible(true);
+    Animated.timing(drawerX, {
+      toValue: 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeDrawer = () => {
+    Animated.timing(drawerX, {
+      toValue: -320,
+      duration: 180,
+      useNativeDriver: true,
+    }).start(() => setDrawerVisible(false));
+  };
+
+  const openSupport = () => {
+    Linking.openURL("https://researchzeal.com").catch(() => {
+      setActivePage("support");
+    });
+  };
 
   //**************useEffect************** */
   //************************************ */
@@ -185,6 +519,32 @@ export default function Home() {
         CREATE TABLE IF NOT EXISTS section_settings (
           section_name TEXT PRIMARY KEY,
           start_time TEXT, end_time TEXT
+        );
+        CREATE TABLE IF NOT EXISTS app_profile (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          name TEXT DEFAULT '',
+          profileImage TEXT DEFAULT '',
+          vibe TEXT DEFAULT '🌿',
+          onboardingComplete INTEGER DEFAULT 0,
+          updatedAt TEXT
+        );
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        );
+        CREATE TABLE IF NOT EXISTS daily_stats (
+          date TEXT PRIMARY KEY,
+          completedTasks INTEGER DEFAULT 0,
+          totalFocusTime INTEGER DEFAULT 0,
+          streakValue INTEGER DEFAULT 0,
+          createdAt TEXT,
+          updatedAt TEXT
+        );
+        CREATE TABLE IF NOT EXISTS special_tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT,
+          note TEXT,
+          createdAt TEXT
         );
       `);
 
@@ -221,6 +581,63 @@ export default function Home() {
         }
 
         console.log("✅ App fully armed and data loaded.");
+        const today = getDateKey();
+        ensureDailyStatsRow(today);
+
+        const profileRows =
+          db.getAllSync("SELECT * FROM app_profile WHERE id = 1") || [];
+        const profileRow = profileRows[0];
+        const nextProfile = profileRow
+          ? {
+              name: profileRow.name || "",
+              profileImage: profileRow.profileImage || "",
+              vibe: profileRow.vibe || "🌿",
+              onboardingComplete: profileRow.onboardingComplete === 1,
+            }
+          : DEFAULT_PROFILE;
+
+        if (!profileRow) {
+          saveProfile(DEFAULT_PROFILE);
+        } else {
+          setProfile(nextProfile);
+          setProfileDraftName(nextProfile.name);
+          setProfileDraftVibe(nextProfile.vibe);
+        }
+        setOnboardingVisible(!nextProfile.onboardingComplete);
+
+        const appSettings = getSettingsMap();
+        const todayRow = getDailyStatsRow(today);
+        const existingCompleted = loadedTasks.filter((t) => t.completed).length;
+        const lifetimeCompletedTasks = Number(
+          appSettings.lifetimeCompletedTasks || existingCompleted
+        );
+        const lifetimeFocusTime = Number(appSettings.lifetimeFocusTime || 0);
+
+        if (!appSettings.lifetimeCompletedTasks) {
+          saveSetting("lifetimeCompletedTasks", lifetimeCompletedTasks);
+        }
+        if (!appSettings.lastActiveDate) {
+          saveSetting("lastActiveDate", today);
+        }
+
+        setDailyStats({
+          date: today,
+          completedTasks: todayRow.completedTasks || 0,
+          totalFocusTime: todayRow.totalFocusTime || 0,
+          streakValue: todayRow.streakValue || 0,
+        });
+        setTotalFocusTime(todayRow.totalFocusTime || 0);
+        setProductivityStats({
+          currentStreak: Number(appSettings.currentStreak || 0),
+          bestStreak: Number(appSettings.bestStreak || 0),
+          lifetimeFocusTime,
+          lifetimeCompletedTasks,
+          lastActiveDate: appSettings.lastActiveDate || today,
+          lastQualifiedDate: appSettings.lastQualifiedDate || "",
+          showStreak: appSettings.showStreak !== "false",
+        });
+        refreshSpecialTasks();
+        checkDailyReset();
       } catch (e) {
         console.log("🚨 Master Boot Error:", e);
       }
@@ -313,8 +730,8 @@ export default function Home() {
             setIsTimerRunning(false);
             showCelebration("🔥 Amazing focus! You stayed consistent 💪", "⏱");
 
-            // add to total focus time
-            setTotalFocusTime((total) => total + currentDuration);
+            // add to daily + lifetime focus time
+            recordFocusSession(currentDuration);
 
             return currentDuration; // lock at max
           }
@@ -334,6 +751,58 @@ export default function Home() {
       useNativeDriver: false, // width animation needs false
     }).start();
   }, [percentage]);
+
+  useEffect(() => {
+    const interval = setInterval(checkDailyReset, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const getContextAffirmations = () => {
+      if (activeTaskId) {
+        return [
+          "Stay with the moment. You're doing great 🎯",
+          "Calm focus beats rushed effort ☁️",
+          "This one task deserves gentle attention ✨",
+        ];
+      }
+      if (tasks.length === 0) {
+        return ["Let's begin with one simple win 🌱", "A tiny first step is enough today ✨"];
+      }
+      if (tasks.filter((task) => !task.completed).length >= 6) {
+        return ["One task at a time is enough today 💙", "You do not need to carry the whole list at once 🌊"];
+      }
+      if (percentage >= 70) {
+        return ["Look how far you've already come 🚀", "Momentum is already on your side ✨"];
+      }
+      return affirmations;
+    };
+
+    const interval = setInterval(() => {
+      const options = getContextAffirmations();
+      const nextOptions = options.filter((item) => item !== currentAffirmation);
+      const next =
+        nextOptions[Math.floor(Math.random() * nextOptions.length)] || options[0];
+
+      Animated.sequence([
+        Animated.timing(affirmationOpacity, {
+          toValue: 0,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+        Animated.timing(affirmationOpacity, {
+          toValue: 1,
+          duration: 260,
+          useNativeDriver: true,
+        }),
+      ]).start();
+
+      setTimeout(() => setCurrentAffirmation(next), 220);
+    }, 6500);
+
+    return () => clearInterval(interval);
+  }, [activeTaskId, currentAffirmation, percentage, tasks]);
+
   const [modalVisible, setModalVisible] = useState(false);
   const [taskName, setTaskName] = useState("");
   const [selectedSection, setSelectedSection] = useState("Morning");
@@ -350,6 +819,7 @@ export default function Home() {
           // STOP TIMER IF ACTIVE TASK COMPLETED
           if (updated === true) {
             setLastCompletedTaskId(task.id);
+            recordDailyCompletion();
             showCelebration("🎉 Task completed! Keep going 🚀", "✅");
 
             // 🔕 CANCEL PENDING NOTIFICATIONS/ALARMS
@@ -378,7 +848,7 @@ export default function Home() {
 
             // Save current session into total
             if (focusTime > 0) {
-              setTotalFocusTime((total) => total + focusTime);
+              recordFocusSession(focusTime);
             }
 
             setFocusTime(0);
@@ -438,7 +908,7 @@ export default function Home() {
     const duration = taskDurations[taskId] || 1500; // default 25 min
 
     if (activeTaskId !== taskId && focusTime > 0) {
-      setTotalFocusTime((total) => total + focusTime);
+      recordFocusSession(focusTime);
     }
 
     setActiveTaskId(taskId);
@@ -462,7 +932,7 @@ export default function Home() {
 
       // If stopping timer → add session to total
       if (prev === true && newState === false) {
-        setTotalFocusTime((total) => total + focusTime);
+        recordFocusSession(focusTime);
       }
 
       return newState;
@@ -1082,6 +1552,115 @@ export default function Home() {
     }
   };
 
+  const saveOnboardingProfile = () => {
+    const name = profileDraftName.trim();
+    if (!name) return;
+
+    const nextProfile = {
+      ...profile,
+      name,
+      vibe: profileDraftVibe || "🌿",
+      onboardingComplete: true,
+    };
+    saveProfile(nextProfile);
+    setOnboardingVisible(false);
+  };
+
+  const saveProfileEdits = () => {
+    const name = profileDraftName.trim() || profile.name || "Friend";
+    saveProfile({
+      ...profile,
+      name,
+      vibe: profileDraftVibe || profile.vibe || "🌿",
+      onboardingComplete: true,
+    });
+  };
+
+  const addSpecialTask = () => {
+    if (!specialTaskTitle.trim()) return;
+
+    db.runSync(
+      `INSERT INTO special_tasks (title, note, createdAt)
+       VALUES (?, ?, datetime('now'))`,
+      [specialTaskTitle.trim(), specialTaskNote.trim()]
+    );
+    setSpecialTaskTitle("");
+    setSpecialTaskNote("");
+    refreshSpecialTasks();
+  };
+
+  const deleteSpecialTask = (id) => {
+    db.runSync("DELETE FROM special_tasks WHERE id = ?", [id]);
+    refreshSpecialTasks();
+  };
+
+  const toggleStreakVisibility = () => {
+    const nextValue = !productivityStats.showStreak;
+    saveSetting("showStreak", nextValue ? "true" : "false");
+    setProductivityStats((prev) => ({ ...prev, showStreak: nextValue }));
+  };
+
+  const resetStreak = () => {
+    saveSetting("currentStreak", 0);
+    saveSetting("lastQualifiedDate", "");
+    setProductivityStats((prev) => ({
+      ...prev,
+      currentStreak: 0,
+      lastQualifiedDate: "",
+    }));
+  };
+
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    const name = profile.name || "Friend";
+    if (hour < 12) return `Good Morning, ${name} ${profile.vibe || "🌿"}`;
+    if (hour < 17) return `Good Afternoon, ${name} ${profile.vibe || "🌿"}`;
+    return `Good Evening, ${name} ${profile.vibe || "🌿"}`;
+  };
+
+  const formatLongDate = () =>
+    new Date().toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+
+  const getStreakLabel = () => {
+    if (!productivityStats.currentStreak) return "🌱 Fresh start today";
+    if (productivityStats.currentStreak === 1) return "🌱 New Beginning";
+    if (productivityStats.currentStreak < 5)
+      return `🔥 ${productivityStats.currentStreak} Day Focus Streak`;
+    if (productivityStats.currentStreak < 10)
+      return `⚡ ${productivityStats.currentStreak} Days Momentum`;
+    return `🚀 ${productivityStats.currentStreak} Days Consistent`;
+  };
+
+  const getMostProductiveSection = () => {
+    const counts = tasks.reduce((acc, task) => {
+      if (task.completed) acc[task.section] = (acc[task.section] || 0) + 1;
+      return acc;
+    }, {});
+    const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    return best ? best[0] : "Building soon";
+  };
+
+  const groupTasksByDate = () => {
+    return tasks.reduce((acc, task) => {
+      const date = task.scheduledTime
+        ? new Date(task.scheduledTime)
+        : null;
+      const key =
+        date && !isNaN(date.getTime())
+          ? date.toLocaleDateString(undefined, {
+              month: "short",
+              day: "numeric",
+            })
+          : "Unscheduled";
+      acc[key] = [...(acc[key] || []), task];
+      return acc;
+    }, {});
+  };
+
   // --- Inside export default function Home() ---
 
   // Helper to update subtasks in DB
@@ -1227,7 +1806,405 @@ export default function Home() {
   //***********UI******************** */
   //*********Component Start UI*** */
 
+  const renderAvatar = (size = "large") => {
+    const avatarSize = size === "small" ? "w-12 h-12" : "w-16 h-16";
+    const textSize = size === "small" ? "text-lg" : "text-2xl";
+
+    return (
+      <TouchableOpacity
+        onPress={pickProfileImage}
+        activeOpacity={0.8}
+        className={`${avatarSize} rounded-full bg-[#123131] border-2 border-[#66b9b9]/50 shadow-lg shadow-[#66b9b9]/20 items-center justify-center overflow-hidden`}
+      >
+        {profile.profileImage ? (
+          <Image source={{ uri: profile.profileImage }} className="w-full h-full" />
+        ) : (
+          <Text className={`${textSize}`}>{profile.vibe || "🌿"}</Text>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderStatPill = (label, value, accent = "#66b9b9") => (
+    <View className="flex-1 bg-[#061414]/45 border border-[#337a7a]/30 rounded-2xl p-3">
+      <Text className="text-[#9FB5B5] text-[10px] font-bold uppercase tracking-widest">
+        {label}
+      </Text>
+      <Text style={{ color: accent }} className="text-base font-black mt-1">
+        {value}
+      </Text>
+    </View>
+  );
+
+  const renderFixedHeader = () => (
+    <View className="absolute top-0 left-0 right-0 z-30 bg-[#061414]/95 pt-10 px-4 pb-4 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]">
+      <View className="flex-row items-center">
+        {renderAvatar("small")}
+        <View className="flex-1 px-3">
+          <Text numberOfLines={1} className="text-[#E8F4F4] text-lg font-black tracking-tight">
+            {getGreeting()}
+          </Text>
+          <Text className="text-[#9FB5B5] text-xs font-semibold mt-0.5">
+            {formatLongDate()}
+          </Text>
+          <Text className="text-[#66b9b9] text-[10px] font-bold uppercase tracking-widest mt-1">
+            Ready to focus today? ✨
+          </Text>
+        </View>
+        <TouchableOpacity
+          onPress={openDrawer}
+          activeOpacity={0.8}
+          className="w-11 h-11 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/30 items-center justify-center"
+        >
+          <Text className="text-[#E8F4F4] text-2xl leading-none">≡</Text>
+        </TouchableOpacity>
+      </View>
+      <Animated.View style={{ opacity: affirmationOpacity }} className="mt-4 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl p-3">
+        <Text className="text-[#E8F4F4] text-sm font-bold leading-5">
+          {currentAffirmation}
+        </Text>
+      </Animated.View>
+    </View>
+  );
+
+  const renderFixedFooter = () => (
+    <View className="absolute bottom-0 left-0 right-0 z-30 bg-[#061414]/95 px-5 pt-3 pb-5 border-t border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20">
+      <View className="flex-row items-center justify-between">
+        <Text className="text-[#9FB5B5] text-xs font-bold">
+          © researchzeal.com
+        </Text>
+        <TouchableOpacity onPress={openSupport} className="bg-[#123131]/70 px-3 py-2 rounded-full border border-[#66b9b9]/25">
+          <Text className="text-[#66b9b9] text-xs font-black">
+            ❤️ Support This Project
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderDrawer = () => (
+    <Modal visible={drawerVisible} transparent animationType="fade">
+      <Pressable onPress={closeDrawer} className="flex-1 bg-[#061414]/80">
+        <Animated.View
+          style={{ transform: [{ translateX: drawerX }] }}
+          className="w-[82%] max-w-[320px] h-full bg-[#0B1F1F] border-r border-[#66b9b9]/30 px-5 pt-14 pb-8 shadow-2xl shadow-[#66b9b9]/20"
+        >
+          <Pressable>
+            <View className="flex-row items-center mb-6">
+              {renderAvatar("small")}
+              <View className="ml-3 flex-1">
+                <Text className="text-[#E8F4F4] font-black text-lg">
+                  {profile.name || "Welcome"}
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs font-semibold">
+                  {getStreakLabel()}
+                </Text>
+              </View>
+            </View>
+            {MENU_ITEMS.map((item) => (
+              <TouchableOpacity
+                key={item.key}
+                activeOpacity={0.82}
+                onPress={() => {
+                  closeDrawer();
+                  setActivePage(item.key);
+                }}
+                className="flex-row items-center bg-[#123131]/55 border border-[#337a7a]/25 rounded-2xl px-4 py-3 mb-2"
+              >
+                <Text className="text-lg mr-3">{item.icon}</Text>
+                <Text className="text-[#E8F4F4] font-bold flex-1">
+                  {item.label}
+                </Text>
+                <Text className="text-[#66b9b9] font-black">›</Text>
+              </TouchableOpacity>
+            ))}
+          </Pressable>
+        </Animated.View>
+      </Pressable>
+    </Modal>
+  );
+
+  const renderTaskMiniCard = (task, tone = "accent") => (
+    <View key={task.id} className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-2xl p-3 mb-2">
+      <Text className="text-[#E8F4F4] font-black">{task.title}</Text>
+      <Text className="text-[#9FB5B5] text-xs mt-1">
+        {task.section} {task.scheduledTime ? `• ${new Date(task.scheduledTime).toLocaleString()}` : "• No schedule yet"}
+      </Text>
+      {tone === "success" && (
+        <Text className="text-[#7DFFB3] text-xs font-bold mt-2">
+          You completed this. That counts. ✨
+        </Text>
+      )}
+    </View>
+  );
+
+  const renderPageContent = () => {
+    const pendingTasks = [...tasks]
+      .filter((task) => !task.completed)
+      .sort(
+        (a, b) =>
+          new Date(a.scheduledTime || 0).getTime() -
+          new Date(b.scheduledTime || 0).getTime()
+      );
+    const completedTaskList = tasks.filter((task) => task.completed);
+    const groupedTasks = groupTasksByDate();
+
+    if (activePage === "profile") {
+      return (
+        <>
+          <View className="items-center mb-5">
+            {renderAvatar()}
+            <Text className="text-[#E8F4F4] text-2xl font-black mt-3">
+              {profile.name || "Your Profile"}
+            </Text>
+            <Text className="text-[#9FB5B5] text-sm mt-1">
+              Gentle focus, your way {profile.vibe || "🌿"}
+            </Text>
+          </View>
+          <TextInput
+            value={profileDraftName}
+            onChangeText={setProfileDraftName}
+            placeholder="Your name"
+            placeholderTextColor={COLORS.muted}
+            className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-3 border border-[#66b9b9]/25 font-semibold"
+          />
+          <View className="flex-row flex-wrap mb-4">
+            {VIBE_OPTIONS.map((vibe) => (
+              <TouchableOpacity
+                key={vibe.emoji}
+                onPress={() => setProfileDraftVibe(vibe.emoji)}
+                className={`px-3 py-2 rounded-full mr-2 mb-2 border ${
+                  profileDraftVibe === vibe.emoji
+                    ? "bg-[#66b9b9] border-[#66b9b9]"
+                    : "bg-[#123131]/70 border-[#337a7a]/35"
+                }`}
+              >
+                <Text className={`font-bold text-xs ${profileDraftVibe === vibe.emoji ? "text-[#061414]" : "text-[#E8F4F4]"}`}>
+                  {vibe.emoji} {vibe.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TouchableOpacity onPress={saveProfileEdits} className="bg-[#66b9b9] p-4 rounded-2xl mb-5 shadow-lg shadow-[#66b9b9]/25">
+            <Text className="text-[#061414] text-center font-black uppercase tracking-widest">
+              Save Profile
+            </Text>
+          </TouchableOpacity>
+          <View className="flex-row gap-2 mb-2">
+            {renderStatPill("Current Streak", productivityStats.currentStreak || "Fresh", COLORS.warning)}
+            {renderStatPill("Best Streak", productivityStats.bestStreak || 0, COLORS.success)}
+          </View>
+          <View className="flex-row gap-2 mb-2">
+            {renderStatPill("Lifetime Focus", formatDuration(productivityStats.lifetimeFocusTime) || "0m")}
+            {renderStatPill("Completed", productivityStats.lifetimeCompletedTasks, COLORS.success)}
+          </View>
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mt-2">
+            <Text className="text-[#E8F4F4] font-black">Weekly Focus</Text>
+            <Text className="text-[#9FB5B5] text-xs mt-2">
+              Calm graph placeholder • More history can grow here without pressure.
+            </Text>
+            <Text className="text-[#66b9b9] text-xs font-bold mt-3">
+              Most productive section: {getMostProductiveSection()}
+            </Text>
+          </View>
+        </>
+      );
+    }
+
+    if (activePage === "special") {
+      return (
+        <>
+          <Text className="text-[#9FB5B5] text-sm mb-4">
+            Keep important goals separate from the busy list. Gentle priorities only.
+          </Text>
+          <TextInput
+            value={specialTaskTitle}
+            onChangeText={setSpecialTaskTitle}
+            placeholder="Important goal"
+            placeholderTextColor={COLORS.muted}
+            className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-3 border border-[#66b9b9]/25 font-semibold"
+          />
+          <TextInput
+            value={specialTaskNote}
+            onChangeText={setSpecialTaskNote}
+            placeholder="Why it matters"
+            placeholderTextColor={COLORS.muted}
+            className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-3 border border-[#66b9b9]/25 font-semibold"
+          />
+          <TouchableOpacity onPress={addSpecialTask} className="bg-[#66b9b9] p-4 rounded-2xl mb-4">
+            <Text className="text-[#061414] text-center font-black uppercase tracking-widest">
+              Add Special Task
+            </Text>
+          </TouchableOpacity>
+          {specialTasks.map((item) => (
+            <View key={item.id} className="bg-[#123131]/65 rounded-2xl p-4 border border-[#FFD166]/25 mb-3">
+              <Text className="text-[#FFD166] font-black">⭐ {item.title}</Text>
+              {item.note ? <Text className="text-[#E8F4F4] text-sm mt-2">{item.note}</Text> : null}
+              <TouchableOpacity onPress={() => deleteSpecialTask(item.id)} className="self-start mt-3">
+                <Text className="text-[#FF7B7B] text-xs font-bold">Remove</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </>
+      );
+    }
+
+    if (activePage === "pending") {
+      return pendingTasks.length ? (
+        pendingTasks.map((task) => renderTaskMiniCard(task))
+      ) : (
+        <Text className="text-[#7DFFB3] font-bold">No pending tasks. Breathe that in. 🌿</Text>
+      );
+    }
+
+    if (activePage === "completed") {
+      return completedTaskList.length ? (
+        completedTaskList.map((task) => renderTaskMiniCard(task, "success"))
+      ) : (
+        <Text className="text-[#9FB5B5] font-bold">Completed wins will appear here.</Text>
+      );
+    }
+
+    if (activePage === "calendar") {
+      return Object.entries(groupedTasks).map(([date, dateTasks]) => (
+        <View key={date} className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+          <Text className="text-[#66b9b9] font-black uppercase tracking-widest text-xs mb-3">
+            {date}
+          </Text>
+          {dateTasks.map((task) => renderTaskMiniCard(task, task.completed ? "success" : "accent"))}
+        </View>
+      ));
+    }
+
+    if (activePage === "settings") {
+      return (
+        <>
+          {[
+            "Theme presets placeholder",
+            "Notification settings placeholder",
+            "Backup progress placeholder",
+            "Restore progress placeholder",
+            "Export focus history placeholder",
+            "Reset app placeholder",
+          ].map((item) => (
+            <View key={item} className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#E8F4F4] font-bold">{item}</Text>
+            </View>
+          ))}
+          <TouchableOpacity onPress={toggleStreakVisibility} className="bg-[#123131]/70 p-4 rounded-2xl border border-[#66b9b9]/25 mb-3">
+            <Text className="text-[#66b9b9] font-black">
+              {productivityStats.showStreak ? "Hide streak badge" : "Show streak badge"}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={resetStreak} className="bg-[#FFD166]/15 p-4 rounded-2xl border border-[#FFD166]/25">
+            <Text className="text-[#FFD166] font-black">Reset streak gently</Text>
+          </TouchableOpacity>
+        </>
+      );
+    }
+
+    if (activePage === "support") {
+      return (
+        <View className="bg-[#123131]/60 rounded-2xl p-5 border border-[#66b9b9]/25">
+          <Text className="text-[#E8F4F4] text-base font-bold leading-6">
+            This app is built to make focus feel kinder. Support link placeholder:
+          </Text>
+          <TouchableOpacity onPress={openSupport} className="bg-[#66b9b9] rounded-2xl p-4 mt-4">
+            <Text className="text-[#061414] text-center font-black">
+              Open researchzeal.com
+            </Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <View className="bg-[#123131]/60 rounded-2xl p-5 border border-[#66b9b9]/25">
+        <Text className="text-[#E8F4F4] text-base font-bold leading-6">
+          ADHD Task Manager is a calm productivity space for gentle starts, focused sessions, and visible wins.
+        </Text>
+        <Text className="text-[#9FB5B5] text-sm mt-3 leading-6">
+          Built with React Native, Expo, SQLite, NativeWind, SVG timers, and local-first progress tracking.
+        </Text>
+      </View>
+    );
+  };
+
   // ✅ REPLACED: Cleaned of Type Annotations to stop VS Code errors
+  const renderPageModal = () => {
+    const activeItem = MENU_ITEMS.find((item) => item.key === activePage);
+    return (
+      <Modal visible={!!activePage} transparent animationType="slide">
+        <View className="flex-1 bg-[#061414]/95 pt-12">
+          <View className="flex-row items-center justify-between px-5 pb-4 border-b border-[#66b9b9]/25">
+            <View className="flex-1 pr-3">
+              <Text className="text-[#E8F4F4] text-2xl font-black">
+                {activeItem?.icon} {activeItem?.label || "About"}
+              </Text>
+              <Text className="text-[#9FB5B5] text-xs font-bold mt-1">
+                Calm details, no pressure.
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => setActivePage(null)} className="bg-[#123131]/80 px-4 py-2 rounded-full border border-[#66b9b9]/30">
+              <Text className="text-[#66b9b9] font-black">Close</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView className="flex-1 px-5 pt-5" contentContainerStyle={{ paddingBottom: 80 }}>
+            {renderPageContent()}
+          </ScrollView>
+        </View>
+      </Modal>
+    );
+  };
+
+  const renderOnboardingModal = () => (
+    <Modal visible={onboardingVisible} transparent animationType="fade">
+      <View className="flex-1 bg-[#061414]/95 justify-center px-5">
+        <View className="bg-[#0B1F1F] rounded-[32px] border border-[#66b9b9]/35 p-6 shadow-2xl shadow-[#66b9b9]/20">
+          <Text className="text-[#E8F4F4] text-2xl font-black text-center">
+            Welcome in 🌿
+          </Text>
+          <Text className="text-[#9FB5B5] text-sm text-center mt-3 leading-6">
+            What should we call you? This helps the app feel a little more human.
+          </Text>
+          <View className="items-center my-5">{renderAvatar()}</View>
+          <TextInput
+            value={profileDraftName}
+            onChangeText={setProfileDraftName}
+            placeholder="Your name"
+            placeholderTextColor={COLORS.muted}
+            className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-4 border border-[#66b9b9]/25 font-semibold"
+          />
+          <Text className="text-[#66b9b9] text-xs font-black uppercase tracking-widest mb-3">
+            Choose your vibe
+          </Text>
+          <View className="flex-row flex-wrap mb-4">
+            {VIBE_OPTIONS.map((vibe) => (
+              <TouchableOpacity
+                key={vibe.emoji}
+                onPress={() => setProfileDraftVibe(vibe.emoji)}
+                className={`px-3 py-2 rounded-full mr-2 mb-2 border ${
+                  profileDraftVibe === vibe.emoji
+                    ? "bg-[#66b9b9] border-[#66b9b9]"
+                    : "bg-[#123131]/70 border-[#337a7a]/35"
+                }`}
+              >
+                <Text className={`font-bold text-xs ${profileDraftVibe === vibe.emoji ? "text-[#061414]" : "text-[#E8F4F4]"}`}>
+                  {vibe.emoji} {vibe.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TouchableOpacity onPress={saveOnboardingProfile} className="bg-[#66b9b9] rounded-2xl p-4 shadow-lg shadow-[#66b9b9]/30">
+            <Text className="text-[#061414] text-center font-black uppercase tracking-widest">
+              Begin Gently
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const renderSection = (title, section) => {
     const sectionTasks = tasks
       .filter((t) => t.section === section)
@@ -1676,37 +2653,60 @@ export default function Home() {
 
   return (
     <>
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
+      {renderFixedHeader()}
       <ScrollView
         ref={scrollRef}
         className="flex-1 bg-[#061414]"
         contentContainerStyle={{
+          paddingTop: 190,
           paddingBottom: 160, // 👈 IMPORTANT - Kept exactly as original
         }}
       >
         <Text
-          className="text-[#E8F4F4] text-[28px] font-black text-center mt-14 tracking-tight"
+          className="hidden"
         >
           ADHD Task Manager <Text className="text-[#66b9b9]">✨</Text>
         </Text>
 
         {/* ✅ Daily Progress Banner */}
-        <View className="bg-[#0B1F1F] p-5 rounded-[28px] mx-4 mt-6 mb-4 border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
+        <View className="bg-[#0B1F1F] p-5 rounded-[28px] mx-4 mb-4 border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
           {/* Top Row */}
           <View className="flex-row justify-between mb-3 items-end">
             <Text className="text-[#E8F4F4] text-lg font-black uppercase tracking-widest">
-              Daily Progress
+              Daily Progress 🚀
             </Text>
 
             {/* RIGHT */}
             <View className="items-end">
               {totalTasks > 0 && (
                 <Text className="text-[#9FB5B5] text-xs font-bold">
-                  {completedTasks} / {totalTasks}
+                  {dailyStats.completedTasks} today / {totalTasks}
                 </Text>
               )}
 
               <Text className="text-[#66b9b9] text-[10px] font-bold mt-1 tracking-widest uppercase">
                 {totalFocusText}
+              </Text>
+            </View>
+          </View>
+
+          <View className="flex-row flex-wrap mb-3">
+            {productivityStats.showStreak && (
+              <View className="bg-[#FFD166]/15 border border-[#FFD166]/25 rounded-full px-3 py-1.5 mr-2 mb-2">
+                <Text className="text-[#FFD166] text-[10px] font-black">
+                  {getStreakLabel()}
+                </Text>
+              </View>
+            )}
+            <View className="bg-[#123131]/70 border border-[#66b9b9]/25 rounded-full px-3 py-1.5 mr-2 mb-2">
+              <Text className="text-[#66b9b9] text-[10px] font-black">
+                ⏱ {formatDuration(dailyStats.totalFocusTime) || "0m"} Focused Today
+              </Text>
+            </View>
+            <View className="bg-[#123131]/70 border border-[#7DFFB3]/25 rounded-full px-3 py-1.5 mr-2 mb-2">
+              <Text className="text-[#7DFFB3] text-[10px] font-black">
+                ✅ {dailyStats.completedTasks} Tasks Completed
               </Text>
             </View>
           </View>
@@ -1729,6 +2729,12 @@ export default function Home() {
               />
             </View>
           )}
+
+          <Text className="text-[#9FB5B5] text-xs font-bold mt-3">
+            {dailyStats.completedTasks > 0 || dailyStats.totalFocusTime > 0
+              ? "Consistency grows quietly 🌱"
+              : "Fresh start today 🌱"}
+          </Text>
         </View>
 
         {activeTaskId && (
@@ -1811,6 +2817,10 @@ export default function Home() {
         {renderSection("Work 💼", "Work")}
         {renderSection("Evening 🌙", "Evening")}
       </ScrollView>
+      {renderFixedFooter()}
+      {renderDrawer()}
+      {renderPageModal()}
+      {renderOnboardingModal()}
 
       {/* ✅ CREATE TASK MODAL */}
       <Modal visible={modalVisible} transparent animationType="slide">
@@ -2004,7 +3014,7 @@ export default function Home() {
         style={{
           transform: [{ scale: fabScale }],
         }}
-        className="absolute bottom-10 right-5"
+        className="absolute bottom-24 right-5"
       >
         <Pressable
           onPress={openModal}
@@ -2084,7 +3094,7 @@ export default function Home() {
       </Modal>
 
       {lastDeletedTask && (
-        <View className="absolute bottom-6 left-5 right-5 bg-[#123131] p-4 rounded-2xl flex-row items-center border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
+        <View className="absolute bottom-24 left-5 right-5 bg-[#123131] p-4 rounded-2xl flex-row items-center border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
           <Text className="text-[#E8F4F4] flex-1 font-medium mr-3 text-xs leading-5">
             Task <Text className="text-[#FFD166] font-bold">{lastDeletedTask?.title}</Text> deleted ({undoTimer}s)
           </Text>
