@@ -634,7 +634,7 @@ const handleSaveTask = async () => {
             const id =
               await Notifications.scheduleNotificationAsync({
                 content: {
-                  title: `🎯 ${task.title}`,
+                  title: `🎯 ${taskName}`,
                   body: getAffirmativeMessage(
                     taskName,
                     taskDate.toLocaleString(),
