@@ -21,12 +21,11 @@ import { WebView } from 'react-native-webview'; // For PDF viewing
 import * as Notifications from 'expo-notifications';
 
 //*************main component function********* */
-
 export default function Home() {
   const [tasks, setTasks] = useState([
-    { id: 1, title: "Drink water 💧", section: "Morning", completed: false },
-    { id: 2, title: "Goto office 💼", section: "Work", completed: false },
-    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false },
+    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [] },
+    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [] },
+    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [] },
   ]);
   const [totalFocusTime, setTotalFocusTime] = useState(0); // seconds
 
@@ -164,31 +163,7 @@ if (progress >= 0.5) {
 useEffect(() => {
   const initializeApp = async () => {
     try {
-      // 1. Setup Notifications & Channel
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') console.log('Permission for notifications denied');
-
-      if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('adhd-alarms', {
-          name: 'Task Reminders',
-          importance: Notifications.AndroidImportance.MAX,
-          vibrationPattern: [0, 250, 250, 250],
-          lightColor: '#FFD700',
-          sound: 'default',
-        });
-      }
-
-      // 🔔 ADD THIS: This forces the popup to show even if the app is open
-    Notifications.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldVibrate: true,
-      }),
-    });
-
-
-      // 2. Setup Database Schema & Migrations
+            // 2. Setup Database Schema & Migrations
       db.execSync(`
         CREATE TABLE IF NOT EXISTS tasks (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1354,6 +1329,8 @@ if (task.scheduledTime) {
 
               {/* 🔔 REMINDER DISPLAY COMPONENT */}
 
+
+              {/* 🔔 REMINDER DISPLAY COMPONENT */}
 {upcomingReminders.length > 0 ? (
   <View style={{ 
     marginTop: 10, padding: 8, borderRadius: 8,
@@ -1362,11 +1339,18 @@ if (task.scheduledTime) {
   }}>
     <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
        <View style={{ 
-          width: 6, height: 6, borderRadius: 3, 
-          backgroundColor: task.notificationId?.length > 0 ? '#39FF14' : '#666',
-          marginRight: 6 
+          width: 8, 
+          height: 8, 
+          borderRadius: 4, 
+          // 🟢 GREEN if IDs exist, 🔴 RED if bubbles show but no IDs (System error), ⚪ GREY otherwise
+          backgroundColor: (task.notificationId && task.notificationId.length > 0) 
+            ? '#39FF14' 
+            : (upcomingReminders.length > 0 ? '#FF4444' : '#666'),
+          marginRight: 8 
        }} />
-       <Text style={{ color: '#FFD700', fontSize: 10, fontWeight: 'bold' }}>UPCOMING ALARMS:</Text>
+       <Text style={{ color: '#FFD700', fontSize: 10, fontWeight: 'bold' }}>
+         {task.notificationId?.length > 0 ? "ALARMS ACTIVE" : "ALARMS OFFLINE"}
+       </Text>
     </View>
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
       {upcomingReminders.map((time, idx) => (
@@ -1375,12 +1359,16 @@ if (task.scheduledTime) {
         </View>
       ))}
     </View>
+    
+    {/* 💡 HELPER: Show a warning if the dot is red */}
+    {(!task.notificationId || task.notificationId.length === 0) && (
+      <Text style={{ color: '#FF4444', fontSize: 9, marginTop: 4 }}>
+        ⚠️ Tap Edit & Save to re-arm alarms
+      </Text>
+    )}
   </View>
-) : (task.scheduledTime && !isFutureTask && !task.completed) ? (
-  <Text style={{ color: '#666', fontSize: 10, marginTop: 8 }}>
-    🔕 All reminders passed for this time
-  </Text>
 ) : null}
+
 
               {/* 🔹 EXPANDED DETAILS */}
               {expandedTaskId === task.id && task.details ? (
@@ -1447,57 +1435,6 @@ if (task.scheduledTime) {
                 </Text>
               )}
 
-              <>
-
-                {/* 🔹 SUBTASKS SECTION */}
-                {expandedTaskId === task.id && (
-                  <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: '#444' }}>
-                    <Text style={{ color: '#FFD700', fontSize: 12, marginBottom: 5 }}>Subtasks</Text>
-    
-                    {/* List Subtasks */}
-                    {(task.subtasks || []).map((sub) => (
-                      <View key={sub.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-                        <TouchableOpacity
-                          onPress={() => toggleSubtask(task.id, sub.id)}
-                          style={{
-                            width: 20, height: 20, borderRadius: 3, borderWidth: 1,
-                            borderColor: '#FFD700', marginRight: 10,
-                            backgroundColor: sub.completed ? '#FFD700' : 'transparent',
-                            justifyContent: 'center', alignItems: 'center'
-                          }}
-                        >
-                          {sub.completed && <Text style={{ color: 'black', fontSize: 10 }}>✓</Text>}
-                        </TouchableOpacity>
-        
-                        <Text style={{ color: sub.completed ? '#666' : 'white', flex: 1, fontSize: 13, textDecorationLine: sub.completed ? 'line-through' : 'none' }}>
-                          {sub.title}
-                        </Text>
-
-                        <TouchableOpacity onPress={() => deleteSubtask(task.id, sub.id)}>
-                          <Text style={{ color: '#ff4444', fontSize: 12 }}>✕</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-
-                    {/* Add Subtask Input */}
-                    <TextInput
-                      placeholder="+ Add subtask..."
-                      placeholderTextColor="#666"
-                      onSubmitEditing={(e) => {
-                        addSubtask(task.id, e.nativeEvent.text);
-                        e.currentTarget.clear();
-                      }}
-                      style={{
-                        color: 'white',
-                        fontSize: 13,
-                        backgroundColor: '#2A2A2A',
-                        padding: 5,
-                        borderRadius: 5,
-                        marginTop: 5
-                      }}
-                    />
-                  </View>
-                )}</>
               {/* 🔹 DURATION BUTTONS */}
               <Animated.View
                 style={{
