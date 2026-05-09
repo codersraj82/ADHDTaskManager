@@ -347,7 +347,9 @@ useEffect(() => {
           // 🔕 CANCEL PENDING NOTIFICATIONS/ALARMS
           if (task.notificationId) {
             try {
-              const ids = JSON.parse(task.notificationId);
+              const ids = Array.isArray(task.notificationId)
+  ? task.notificationId
+  : JSON.parse(task.notificationId || "[]");
               if (Array.isArray(ids)) {
                 ids.forEach((notifId) => {
                   Notifications.cancelScheduledNotificationAsync(notifId);
@@ -632,7 +634,7 @@ const handleSaveTask = async () => {
             const id =
               await Notifications.scheduleNotificationAsync({
                 content: {
-                  title: `🎯 ${taskName}`,
+                  title: `🎯 ${task.title}`,
                   body: getAffirmativeMessage(
                     taskName,
                     taskDate.toLocaleString(),
@@ -656,10 +658,18 @@ const handleSaveTask = async () => {
                 },
 
                 // ✅ CRITICAL FIX
-                trigger: triggerDate,
+                trigger: {
+  type: Notifications.SchedulableTriggerInputTypes.DATE,
+  date: triggerDate,
+},
               });
 
             console.log("✅ Scheduled ID:", id);
+            if (!id) {
+  alert(
+    `❌ Failed to schedule ${mins} minute reminder`
+  );
+}
 
             newScheduledIds.push(id);
           } catch (schedError) {
@@ -1144,15 +1154,39 @@ const deleteSubtask = (taskId, subtaskId) => {
 
     // Only schedule if the trigger time is in the future
     if (triggerDate > now) {
-      const id = await Notifications.scheduleNotificationAsync({
-        content: {
-          title: `🎯 ${task.title}`,
-          body: getAffirmativeMessage(task.title, task.scheduledTime, mins),
-          data: { taskId: task.id },
-          android: { channelId: 'adhd-alarms' }, // Link to pro channel
+      const id =
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: `🎯 ${taskName}`,
+      body: getAffirmativeMessage(
+  task.title,
+  taskDate.toLocaleString(),
+  mins
+),
+      sound: "default",
+
+      priority:
+        Notifications.AndroidNotificationPriority.MAX,
+
+      vibrate: [0, 250, 250, 250],
+
+      android: {
+        channelId: "adhd-alarms",
+        color: "#FFD700",
+        pressAction: {
+          id: "default",
         },
-        trigger: triggerDate,
-      });
+      },
+    },
+
+    trigger: {
+      type:
+        Notifications.SchedulableTriggerInputTypes.DATE,
+      date: triggerDate,
+    },
+  });
+
+console.log("✅ Scheduled notification ID:", id);
       scheduledIds.push(id);
     }
   }
