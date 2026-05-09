@@ -1426,11 +1426,11 @@ if (task.scheduledTime) {
               </View>
 
               {/* 🔹 DATE & TIME */}
-              {{new Date(task.scheduledTime).toLocaleString()} ? (
-                <Text style={{ color: "#888", fontSize: 12, marginTop: 6 }}>
-                  {new Date(task.scheduledTime).toLocaleString()}
-                </Text>
-              ) : null}
+{task.scheduledTime ? (
+  <Text style={{ color: "#888", fontSize: 12, marginTop: 6 }}>
+    {new Date(task.scheduledTime).toLocaleString()}
+  </Text>
+) : null}
             
 
               {/* 🔹 DETAILS BUTTON */}
