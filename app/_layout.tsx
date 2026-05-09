@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { Platform } from "react-native";
 import * as Notifications from "expo-notifications";
 import { initDB } from "../database/db";
+import '../global.css';
 
 // 1. Root Handler: This makes the popup show while you are using the app
 Notifications.setNotificationHandler({
