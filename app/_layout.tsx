@@ -18,27 +18,47 @@ export default function RootLayout() {
     initDB();
 
     async function setupNotifications() {
-      // 2. Request Permissions
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-      }
-      
-      if (finalStatus !== 'granted') return;
+  try {
+    const { status: existingStatus } =
+      await Notifications.getPermissionsAsync();
 
-      // 3. Create the Channel with a specific ID
-      if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('adhd-alarms', {
-          name: 'ADHD Task Reminders',
-          importance: Notifications.AndroidImportance.MAX, // Force it to pop up
-          vibrationPattern: [0, 250, 250, 250],
-          lightColor: '#FFD700',
-          sound: 'default', // Essential for standalone
-        });
-      }
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== "granted") {
+      const { status } =
+        await Notifications.requestPermissionsAsync();
+
+      finalStatus = status;
     }
+
+    if (finalStatus !== "granted") {
+      console.log("❌ Notification permission denied");
+      return;
+    }
+
+    console.log("✅ Notification permission granted");
+
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync(
+        "adhd-alarms",
+        {
+          name: "ADHD Task Reminders",
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: "#FFD700",
+          sound: "default",
+          lockscreenVisibility:
+            Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: true,
+        }
+      );
+
+      console.log("✅ Notification channel created");
+    }
+  } catch (e) {
+    console.log("🚨 Notification Setup Error:", e);
+  }
+}
 
     setupNotifications();
   }, []);

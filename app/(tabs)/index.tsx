@@ -621,9 +621,7 @@ const scrollToTask = (taskId) => {
                     pressAction: { id: 'default' }
                   },
                 },
-                trigger: {
-                  date: triggerDate, // Correct format for SDK 54/RN 0.81
-                },
+               trigger: triggerDate,
               });
               newScheduledIds.push(id);
             } catch (schedError) {
@@ -657,14 +655,34 @@ const scrollToTask = (taskId) => {
       } : t));
     } else {
       // --- INSERT NEW ---
-      const newId = Date.now();
-      db.runSync(
-        `INSERT INTO tasks (title, section, completed, scheduledTime, details, attachment, subtasks, notificationId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [taskName, selectedSection, 0, finalTime, taskDetails, attachmentUri || "", subtasksJSON, notificationIdJSON]
-      );
+      
+    const result = db.runSync(
+  `INSERT INTO tasks (
+    title,
+    section,
+    completed,
+    scheduledTime,
+    details,
+    attachment,
+    subtasks,
+    notificationId
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  [
+    taskName,
+    selectedSection,
+    0,
+    finalTime,
+    taskDetails,
+    attachmentUri || "",
+    subtasksJSON,
+    notificationIdJSON,
+  ]
+);
+
+const insertedId = result.lastInsertRowId;
 
       setTasks(prev => [...prev, { 
-        id: newId, 
+        id: insertedId, 
         title: taskName, 
         section: selectedSection, 
         completed: false, 
@@ -1038,7 +1056,7 @@ const deleteSubtask = (taskId, subtaskId) => {
           title: `🎯 ${task.title}`,
           body: getAffirmativeMessage(task.title, task.scheduledTime, mins),
           data: { taskId: task.id },
-          android: { channelId: 'task-reminders' }, // Link to pro channel
+          android: { channelId: 'adhd-alarms' }, // Link to pro channel
         },
         trigger: triggerDate,
       });
@@ -1047,17 +1065,27 @@ const deleteSubtask = (taskId, subtaskId) => {
   }
   return scheduledIds; // Returns array of 4 IDs
 };
+  
+
   const testNotification = async () => {
   console.log("Scheduling test...");
+
   await Notifications.scheduleNotificationAsync({
     content: {
       title: "🔔 TEST WORKING!",
-      body: "If you see this, the notification system is ALIVE.",
-      sound: 'default',
+      body: "If you see this, notification system works.",
+      sound: "default",
+      priority: Notifications.AndroidNotificationPriority.MAX,
     },
-    trigger: { seconds: 5 }, // Fiers in 5 seconds
+
+    trigger: {
+      type:
+        Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+      seconds: 5,
+    },
   });
-  alert("Test scheduled! Close the app now and wait 5 seconds.");
+
+  alert("Test scheduled! Wait 5 seconds.");
 };
   
   //********************************** */
