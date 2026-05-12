@@ -3158,20 +3158,14 @@ export default function Home() {
 
       {showPicker && (
         <DateTimePicker
-          // ✅ FIX: Use a stable reference to the exact current state
-          value={(() => {
-            if (pickerMode?.includes("task")) {
-              return taskTempDate instanceof Date && !isNaN(taskTempDate.getTime())
-                ? taskTempDate
-                : new Date();
-            } else {
-              return sectionTempDate instanceof Date && !isNaN(sectionTempDate.getTime())
-                ? sectionTempDate
-                : new Date();
-            }
-          })()}
+          // ✅ FIX 1: Stable value mapping without IIFE overhead
+          value={
+            pickerMode?.includes("task") 
+              ? (taskTempDate instanceof Date ? taskTempDate : new Date())
+              : (sectionTempDate instanceof Date ? sectionTempDate : new Date())
+          }
           mode={pickerMode?.includes("date") ? "date" : "time"}
-          display="default"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
           onChange={(event, selectedDate) => {
             // Handle User Cancel
             if (event.type === "dismissed" || !selectedDate) {
@@ -3184,11 +3178,11 @@ export default function Home() {
             // 🔹 SECTION START LOGIC
             // =====================
             if (pickerMode === "start-date") {
-              // ✅ FIX: Update the state, but keep the picker open for time
               setSectionTempDate(selectedDate);
-              // Small delay ensures state updates before switching modes
-              setTimeout(() => setPickerMode("start-time"), 50);
-            } else if (pickerMode === "start-time") {
+              // Small delay is required by Android to prevent the "flicker-close" bug
+              setTimeout(() => setPickerMode("start-time"), 100);
+            } 
+            else if (pickerMode === "start-time") {
               const updated = new Date(sectionTempDate);
               updated.setHours(selectedDate.getHours());
               updated.setMinutes(selectedDate.getMinutes());
@@ -3196,15 +3190,10 @@ export default function Home() {
 
               setSectionTimes((prev) => ({
                 ...prev,
-                [editingSection]: {
-                  ...prev[editingSection],
-                  start: formatted,
-                },
+                [editingSection]: { ...prev[editingSection], start: formatted },
               }));
 
-              const currentEnd = sectionTimes[editingSection]?.end || "";
-              saveSectionConfig(editingSection, formatted, currentEnd);
-
+              saveSectionConfig(editingSection, formatted, sectionTimes[editingSection]?.end || "");
               setShowPicker(false);
               setPickerMode(null);
             }
@@ -3213,10 +3202,10 @@ export default function Home() {
             // 🔹 SECTION END LOGIC
             // =====================
             else if (pickerMode === "end-date") {
-              // ✅ FIX: Keep state stable
               setSectionTempDate(selectedDate);
-              setTimeout(() => setPickerMode("end-time"), 50);
-            } else if (pickerMode === "end-time") {
+              setTimeout(() => setPickerMode("end-time"), 100);
+            } 
+            else if (pickerMode === "end-time") {
               const updated = new Date(sectionTempDate);
               updated.setHours(selectedDate.getHours());
               updated.setMinutes(selectedDate.getMinutes());
@@ -3227,29 +3216,27 @@ export default function Home() {
                 [editingSection]: { ...prev[editingSection], end: formatted },
               }));
 
-              const currentStart = sectionTimes[editingSection]?.start || "";
-              saveSectionConfig(editingSection, currentStart, formatted);
-
+              saveSectionConfig(editingSection, sectionTimes[editingSection]?.start || "", formatted);
               setShowPicker(false);
               setPickerMode(null);
             }
 
             // =====================
-            // 🔹 TASK LOGIC
+            // 🔹 TASK LOGIC (FREED FROM BOUNDS)
             // =====================
             else if (pickerMode === "task-date") {
-              // ✅ FIX: Update temp date and wait for render cycle
               setTaskTempDate(selectedDate);
-              setTimeout(() => setPickerMode("task-time"), 50);
-            } else if (pickerMode === "task-time") {
-              const updated = new Date(taskTempDate);
-              updated.setHours(selectedDate.getHours());
-              updated.setMinutes(selectedDate.getMinutes());
+              setTimeout(() => setPickerMode("task-time"), 100);
+            } 
+            else if (pickerMode === "task-time") {
+              const finalSelection = new Date(taskTempDate);
+              finalSelection.setHours(selectedDate.getHours());
+              finalSelection.setMinutes(selectedDate.getMinutes());
 
-              // Apply time restrictions based on section boundaries
-              const restricted = restrictToSection(selectedSection, updated);
-              setScheduledDateTime(restricted.toISOString());
-              setTimeAdjusted(updated.getTime() !== restricted.getTime());
+              // ✅ FIX 2: REMOVED restrictToSection
+              // Task time is now free to be any time selected
+              setScheduledDateTime(finalSelection.toISOString());
+              setTimeAdjusted(false); // Reset adjustment warning
 
               setShowPicker(false);
               setPickerMode(null);
