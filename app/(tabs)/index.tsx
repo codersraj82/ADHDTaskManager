@@ -10,19 +10,23 @@ import {
   Dimensions,
   Image,
   Linking,
-  Platform,
   StatusBar,
 } from "react-native";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { db, initDB } from "../../database/db";
 import Svg, { Circle } from "react-native-svg";
-import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import { Directory, File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 
 import { WebView } from "react-native-webview"; // For PDF viewing
 import * as Notifications from "expo-notifications";
+import DatePickerModal from "../../components/DatePickerModal";
+import {
+  formatDateTimeForDisplay,
+  formatSqliteDateTime,
+  parseStoredDateTime,
+} from "../../utils/formatDateTime";
 
 const COLORS = {
   bg: "#061414",
@@ -132,11 +136,15 @@ export default function Home() {
   const [editingSection, setEditingSection] = useState(null);
   const [sectionStartTime, setSectionStartTime] = useState("");
   const [sectionEndTime, setSectionEndTime] = useState("");
-  const [tempDate, setTempDate] = useState(new Date());
 
-  const [showPicker, setShowPicker] = useState(false);
-  const [pickerMode, setPickerMode] = useState(null); 
   const [sectionTimeModalVisible, setSectionTimeModalVisible] = useState(false);
+  const [datePickerModal, setDatePickerModal] = useState({
+    visible: false,
+    target: null,
+    section: null,
+    title: "Schedule",
+    value: null,
+  });
   const [scheduledDateTime, setScheduledDateTime] = useState("");
   const [taskDetails, setTaskDetails] = useState("");
   const [taskAttachment, setTaskAttachment] = useState("");
@@ -149,8 +157,6 @@ export default function Home() {
     Evening: { start: "", end: "" },
   });
 
-  const [sectionTempDate, setSectionTempDate] = useState(new Date());
-  const [taskTempDate, setTaskTempDate] = useState(new Date());
   const [timeAdjusted, setTimeAdjusted] = useState(false);
 
   const [attachmentUri, setAttachmentUri] = useState(null);
@@ -878,6 +884,11 @@ export default function Home() {
     setTaskDetails("");
     setScheduledDateTime("");
     setSelectedSection("Morning");
+    setAttachmentUri(null);
+    setAttachmentName("");
+    setTimeAdjusted(false);
+    setTimeError(false);
+    setDetailsHeight(80);
 
     setEditingTask(null);
     setIsEditMode(false);
@@ -890,14 +901,15 @@ export default function Home() {
     setEditingTask(null);
     setIsEditMode(false);
 
-    // ✅ RESET ONLY IF EMPTY (IMPORTANT FIX)
+    // Reset the create form so stale schedule values never reopen the picker.
     setTaskName("");
     setTaskDetails("");
     setSelectedSection("Morning");
-
-    // ❌ DO NOT FORCE RESET EVERY TIME
-    // Only reset if no value already
-    // setScheduledDateTime((prev) => prev || "");
+    setScheduledDateTime("");
+    setAttachmentUri(null);
+    setAttachmentName("");
+    setTimeAdjusted(false);
+    setTimeError(false);
 
     setDetailsHeight(80);
 
@@ -1065,12 +1077,16 @@ export default function Home() {
       let finalTime = "";
 
       if (scheduledDateTime) {
-        const selectedDate = new Date(scheduledDateTime);
+        const selectedDate = parseStoredDateTime(scheduledDateTime);
 
-        const corrected = restrictToSection(selectedSection, selectedDate);
+        if (!selectedDate) {
+          finalTime = "";
+        } else {
 
-        // ✅ SAVE ISO FORMAT
-        finalTime = corrected.toISOString();
+          const corrected = restrictToSection(selectedSection, selectedDate);
+
+          finalTime = formatSqliteDateTime(corrected);
+        }
       }
 
       // =========================
@@ -1100,14 +1116,14 @@ export default function Home() {
       let newScheduledIds = [];
 
       if (finalTime) {
-        const taskDate = new Date(finalTime);
+        const taskDate = parseStoredDateTime(finalTime);
 
         console.log("📅 TASK DATE:", taskDate);
 
         // Reminder intervals
         const intervals = [20, 10, 5, 0];
 
-        for (let mins of intervals) {
+        for (let mins of taskDate ? intervals : []) {
           const triggerDate = new Date(taskDate.getTime() - mins * 60000);
 
           console.log("⏰ Trigger:", triggerDate);
@@ -1336,48 +1352,13 @@ export default function Home() {
     setEditingSection(null);
   };
 
-  const formatDateTime = (date) => {
-    if (!(date instanceof Date) || isNaN(date.getTime())) {
-      console.log("INVALID DATE PASSED:", date);
-      return "";
-    }
-
-    const day = String(date.getDate()).padStart(2, "0");
-
-    const months = [
-      "JAN",
-      "FEB",
-      "MAR",
-      "APR",
-      "MAY",
-      "JUN",
-      "JUL",
-      "AUG",
-      "SEP",
-      "OCT",
-      "NOV",
-      "DEC",
-    ];
-
-    const month = months[date.getMonth()];
-    const year = date.getFullYear();
-
-    let hours = date.getHours();
-    let minutes = date.getMinutes();
-
-    const ampm = hours >= 12 ? "PM" : "AM";
-
-    hours = hours % 12 || 12;
-
-    const minStr = String(minutes).padStart(2, "0");
-
-    return `${day}-${month}-${year} ${hours}:${minStr} ${ampm}`;
-  };
-
   const parseDateTime = (str) => {
     if (!str) return null;
 
     try {
+      const storedDate = parseStoredDateTime(str);
+      if (storedDate) return storedDate.getTime();
+
       // .trim() handles accidental leading/trailing spaces
       // .replace(/\s+/g, ' ') handles accidental double spaces
       const cleanStr = str.trim().replace(/\s+/g, " ");
@@ -1471,6 +1452,11 @@ export default function Home() {
     const getMinutes = (str) => {
       if (!str) return null;
 
+      const storedDate = parseStoredDateTime(str);
+      if (storedDate) {
+        return storedDate.getHours() * 60 + storedDate.getMinutes();
+      }
+
       const parts = str.split(" ");
       const timePart = parts[1] || parts[0];
 
@@ -1528,7 +1514,7 @@ export default function Home() {
     }
   };
 
-  const saveSectionConfig = (section, start, end) => {
+  const saveSectionConfig = useCallback((section, start, end) => {
     try {
       db.runSync(
         `INSERT OR REPLACE INTO section_settings (section_name, start_time, end_time) 
@@ -1538,7 +1524,70 @@ export default function Home() {
     } catch (e) {
       console.log("Save Error:", e);
     }
-  };
+  }, []);
+
+  const openSchedulePicker = useCallback(
+    ({ target, section = null, title = "Schedule", value = null }) => {
+      setDatePickerModal({
+        visible: true,
+        target,
+        section,
+        title,
+        value: parseStoredDateTime(value) || value || new Date(),
+      });
+    },
+    []
+  );
+
+  const closeSchedulePicker = useCallback(() => {
+    setDatePickerModal({
+      visible: false,
+      target: null,
+      section: null,
+      title: "Schedule",
+      value: null,
+    });
+  }, []);
+
+  const handleScheduleConfirm = useCallback(
+    (selectedDate, formattedValue) => {
+      const formatted = formattedValue || formatSqliteDateTime(selectedDate);
+      if (!formatted) {
+        closeSchedulePicker();
+        return;
+      }
+
+      if (datePickerModal.target === "task") {
+        setScheduledDateTime(formatted);
+        setTimeAdjusted(false);
+      }
+
+      if (datePickerModal.target === "section-start" && datePickerModal.section) {
+        const section = datePickerModal.section;
+        const end = sectionTimes[section]?.end || "";
+
+        setSectionTimes((prev) => ({
+          ...prev,
+          [section]: { ...prev[section], start: formatted },
+        }));
+        saveSectionConfig(section, formatted, end);
+      }
+
+      if (datePickerModal.target === "section-end" && datePickerModal.section) {
+        const section = datePickerModal.section;
+        const start = sectionTimes[section]?.start || "";
+
+        setSectionTimes((prev) => ({
+          ...prev,
+          [section]: { ...prev[section], end: formatted },
+        }));
+        saveSectionConfig(section, start, formatted);
+      }
+
+      closeSchedulePicker();
+    },
+    [closeSchedulePicker, datePickerModal, saveSectionConfig, sectionTimes]
+  );
 
   const pickDocument = async () => {
     let result = await DocumentPicker.getDocumentAsync({
@@ -1646,9 +1695,7 @@ export default function Home() {
 
   const groupTasksByDate = () => {
     return tasks.reduce((acc, task) => {
-      const date = task.scheduledTime
-        ? new Date(task.scheduledTime)
-        : null;
+      const date = parseStoredDateTime(task.scheduledTime);
       const key =
         date && !isNaN(date.getTime())
           ? date.toLocaleDateString(undefined, {
@@ -1735,7 +1782,8 @@ export default function Home() {
 
   const scheduleProReminders = async (task) => {
     if (!task.scheduledTime) return [];
-    const taskDate = new Date(task.scheduledTime);
+    const taskDate = parseStoredDateTime(task.scheduledTime);
+    if (!taskDate) return [];
     const now = new Date();
 
     const intervals = [20, 10, 5, 0]; // Minutes before task
@@ -1928,7 +1976,7 @@ export default function Home() {
     <View key={task.id} className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-2xl p-3 mb-2">
       <Text className="text-[#E8F4F4] font-black">{task.title}</Text>
       <Text className="text-[#9FB5B5] text-xs mt-1">
-        {task.section} {task.scheduledTime ? `• ${new Date(task.scheduledTime).toLocaleString()}` : "• No schedule yet"}
+        {task.section} {task.scheduledTime ? `• ${formatDateTimeForDisplay(task.scheduledTime)}` : "• No schedule yet"}
       </Text>
       {tone === "success" && (
         <Text className="text-[#7DFFB3] text-xs font-bold mt-2">
@@ -1943,8 +1991,8 @@ export default function Home() {
       .filter((task) => !task.completed)
       .sort(
         (a, b) =>
-          new Date(a.scheduledTime || 0).getTime() -
-          new Date(b.scheduledTime || 0).getTime()
+          (parseStoredDateTime(a.scheduledTime)?.getTime() || 0) -
+          (parseStoredDateTime(b.scheduledTime)?.getTime() || 0)
       );
     const completedTaskList = tasks.filter((task) => task.completed);
     const groupedTasks = groupTasksByDate();
@@ -2211,8 +2259,8 @@ export default function Home() {
       .sort((a, b) => {
         if (a.completed !== b.completed) return a.completed ? 1 : -1;
         return (
-          new Date(a.scheduledTime || 0).getTime() -
-          new Date(b.scheduledTime || 0).getTime()
+          (parseStoredDateTime(a.scheduledTime)?.getTime() || 0) -
+          (parseStoredDateTime(b.scheduledTime)?.getTime() || 0)
         );
       });
 
@@ -2244,26 +2292,34 @@ export default function Home() {
           <TouchableOpacity
             onPress={() => {
               setEditingSection(section); // ✅ ADD THIS LINE
-              setPickerMode("start-date");
-              setShowPicker(true);
+              openSchedulePicker({
+                target: "section-start",
+                section,
+                title: `${section} Start`,
+                value: sectionTimes[section]?.start,
+              });
             }}
             className="bg-[#0B1F1F] p-3.5 rounded-2xl mb-2 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
           >
             <Text className="text-[#E8F4F4] font-bold text-xs">
-              Start: {sectionTimes[section]?.start || "Select Start Date & Time"}
+              Start: {sectionTimes[section]?.start ? formatDateTimeForDisplay(sectionTimes[section].start) : "Select Start Date & Time"}
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             onPress={() => {
               setEditingSection(section); // ✅ ADD THIS LINE
-              setPickerMode("end-date");
-              setShowPicker(true);
+              openSchedulePicker({
+                target: "section-end",
+                section,
+                title: `${section} End`,
+                value: sectionTimes[section]?.end,
+              });
             }}
             className="bg-[#0B1F1F] p-3.5 rounded-2xl mb-4 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
           >
             <Text className="text-[#E8F4F4] font-bold text-xs">
-              End: {sectionTimes[section]?.end || "Select End Date & Time"}
+              End: {sectionTimes[section]?.end ? formatDateTimeForDisplay(sectionTimes[section].end) : "Select End Date & Time"}
             </Text>
           </TouchableOpacity>
         </View>
@@ -2272,7 +2328,8 @@ export default function Home() {
           const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
           // 🔔 Calculate Upcoming Reminders
           // 🔔 UPDATED Calculation inside renderSection
-          const taskTimestamp = new Date(task.scheduledTime).getTime();
+          const taskDate = parseStoredDateTime(task.scheduledTime);
+          const taskTimestamp = taskDate?.getTime() || 0;
           const isFutureTask =
             taskTimestamp && taskTimestamp + 60000 > Date.now();
 
@@ -2383,7 +2440,7 @@ export default function Home() {
               {/* 🔹 DATE & TIME */}
               {task.scheduledTime ? (
                 <Text className="text-[#9FB5B5] text-xs mt-1 font-semibold">
-                  {new Date(task.scheduledTime).toLocaleString()}
+                  {formatDateTimeForDisplay(task.scheduledTime)}
                 </Text>
               ) : null}
 
@@ -2876,14 +2933,17 @@ export default function Home() {
 
             <TouchableOpacity
               onPress={() => {
-                setPickerMode("task-date");
-                setShowPicker(true);
+                openSchedulePicker({
+                  target: "task",
+                  title: isEditMode ? "Update Schedule" : "Task Schedule",
+                  value: scheduledDateTime,
+                });
               }}
-              className="bg-[#061414]/45 p-4 rounded-2xl mb-3 border border-[#66b9b9]/25"
+              className="bg-[#101416] p-4 rounded-2xl mb-3 border border-[#D9A441]/35"
             >
               <Text className="text-[#E8F4F4] font-semibold text-sm">
                 {scheduledDateTime
-                  ? new Date(scheduledDateTime).toLocaleString()
+                  ? formatDateTimeForDisplay(scheduledDateTime)
                   : "Select Date & Time"}
               </Text>
             </TouchableOpacity>
@@ -3156,95 +3216,13 @@ export default function Home() {
         </View>
       </Modal>
 
-      {showPicker && (
-        <DateTimePicker
-          // ✅ FIX 1: Stable value mapping without IIFE overhead
-          value={
-            pickerMode?.includes("task") 
-              ? (taskTempDate instanceof Date ? taskTempDate : new Date())
-              : (sectionTempDate instanceof Date ? sectionTempDate : new Date())
-          }
-          mode={pickerMode?.includes("date") ? "date" : "time"}
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={(event, selectedDate) => {
-            // Handle User Cancel
-            if (event.type === "dismissed" || !selectedDate) {
-              setShowPicker(false);
-              setPickerMode(null);
-              return;
-            }
-
-            // =====================
-            // 🔹 SECTION START LOGIC
-            // =====================
-            if (pickerMode === "start-date") {
-              setSectionTempDate(selectedDate);
-              // Small delay is required by Android to prevent the "flicker-close" bug
-              setTimeout(() => setPickerMode("start-time"), 100);
-            } 
-            else if (pickerMode === "start-time") {
-              const updated = new Date(sectionTempDate);
-              updated.setHours(selectedDate.getHours());
-              updated.setMinutes(selectedDate.getMinutes());
-              const formatted = formatDateTime(updated);
-
-              setSectionTimes((prev) => ({
-                ...prev,
-                [editingSection]: { ...prev[editingSection], start: formatted },
-              }));
-
-              saveSectionConfig(editingSection, formatted, sectionTimes[editingSection]?.end || "");
-              setShowPicker(false);
-              setPickerMode(null);
-            }
-
-            // =====================
-            // 🔹 SECTION END LOGIC
-            // =====================
-            else if (pickerMode === "end-date") {
-              setSectionTempDate(selectedDate);
-              setTimeout(() => setPickerMode("end-time"), 100);
-            } 
-            else if (pickerMode === "end-time") {
-              const updated = new Date(sectionTempDate);
-              updated.setHours(selectedDate.getHours());
-              updated.setMinutes(selectedDate.getMinutes());
-              const formatted = formatDateTime(updated);
-
-              setSectionTimes((prev) => ({
-                ...prev,
-                [editingSection]: { ...prev[editingSection], end: formatted },
-              }));
-
-              saveSectionConfig(editingSection, sectionTimes[editingSection]?.start || "", formatted);
-              setShowPicker(false);
-              setPickerMode(null);
-            }
-
-            // =====================
-            // 🔹 TASK LOGIC (FREED FROM BOUNDS)
-            // =====================
-            else if (pickerMode === "task-date") {
-              setTaskTempDate(selectedDate);
-              setTimeout(() => setPickerMode("task-time"), 100);
-            } 
-            else if (pickerMode === "task-time") {
-              const finalSelection = new Date(taskTempDate);
-              finalSelection.setHours(selectedDate.getHours());
-              finalSelection.setMinutes(selectedDate.getMinutes());
-
-              // ✅ FIX 2: REMOVED restrictToSection
-              // Task time is now free to be any time selected
-              setScheduledDateTime(finalSelection.toISOString());
-              setTimeAdjusted(false); // Reset adjustment warning
-
-              setShowPicker(false);
-              setPickerMode(null);
-            }
-          }}
-        />
-      )}
-
+      <DatePickerModal
+        visible={datePickerModal.visible}
+        title={datePickerModal.title}
+        value={datePickerModal.value}
+        onCancel={closeSchedulePicker}
+        onConfirm={handleScheduleConfirm}
+      />
       <Modal visible={viewerVisible} animationType="fade" transparent={false}>
         <View className="flex-1 bg-[#061414]">
           {/* Header */}
