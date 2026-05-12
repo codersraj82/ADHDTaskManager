@@ -2660,7 +2660,7 @@ export default function Home() {
         className="flex-1 bg-[#061414]"
         contentContainerStyle={{
           paddingTop: 190,
-          paddingBottom: 160, // 👈 IMPORTANT - Kept exactly as original
+          paddingBottom: 200, // 👈 IMPORTANT - Kept exactly as original
         }}
       >
         <Text
@@ -2985,6 +2985,7 @@ export default function Home() {
       </Modal>
 
       {/* 🎯 Focus OR ✅ Last Completed Floating Button */}
+      {/* 🎯 Focus OR ✅ Last Completed Floating Button */}
       {activeTaskId ? (
         <TouchableOpacity
           onPress={() => {
@@ -2993,7 +2994,7 @@ export default function Home() {
               animated: true,
             });
           }}
-          className="absolute bottom-32 right-6 bg-[#66b9b9] py-3 px-5 rounded-full shadow-2xl shadow-[#66b9b9]/40 border border-[#99bdbd]/70"
+          className="absolute bottom-38 right-6 bg-[#66b9b9] py-3 px-5 rounded-full shadow-2xl shadow-[#66b9b9]/40 border border-[#99bdbd]/70"
         >
           <Text className="text-[#061414] font-black uppercase tracking-widest text-xs">
             🎯 Focus
@@ -3002,7 +3003,7 @@ export default function Home() {
       ) : lastCompletedTaskId ? (
         <TouchableOpacity
           onPress={() => scrollToTask(lastCompletedTaskId)}
-          className="absolute bottom-32 right-6 bg-[#7DFFB3] py-3 px-5 rounded-full shadow-2xl shadow-[#7DFFB3]/35 border border-[#7DFFB3]"
+          className="absolute bottom-38 right-6 bg-[#7DFFB3] py-3 px-5 rounded-full shadow-2xl shadow-[#7DFFB3]/35 border border-[#7DFFB3]"
         >
           <Text className="text-[#061414] font-black uppercase tracking-widest text-xs">
             ✅ Last Completed
@@ -3014,7 +3015,7 @@ export default function Home() {
         style={{
           transform: [{ scale: fabScale }],
         }}
-        className="absolute bottom-24 right-5"
+        className="absolute bottom-20 right-5"
       >
         <Pressable
           onPress={openModal}
@@ -3157,16 +3158,18 @@ export default function Home() {
 
       {showPicker && (
         <DateTimePicker
-          value={
-            pickerMode?.includes("task")
-              ? taskTempDate instanceof Date && !isNaN(taskTempDate.getTime())
+          // ✅ FIX: Use a stable reference to the exact current state
+          value={(() => {
+            if (pickerMode?.includes("task")) {
+              return taskTempDate instanceof Date && !isNaN(taskTempDate.getTime())
                 ? taskTempDate
-                : new Date()
-              : sectionTempDate instanceof Date &&
-                !isNaN(sectionTempDate.getTime())
-              ? sectionTempDate
-              : new Date()
-          }
+                : new Date();
+            } else {
+              return sectionTempDate instanceof Date && !isNaN(sectionTempDate.getTime())
+                ? sectionTempDate
+                : new Date();
+            }
+          })()}
           mode={pickerMode?.includes("date") ? "date" : "time"}
           display="default"
           onChange={(event, selectedDate) => {
@@ -3181,15 +3184,16 @@ export default function Home() {
             // 🔹 SECTION START LOGIC
             // =====================
             if (pickerMode === "start-date") {
-              setSectionTempDate(new Date(selectedDate));
-              setPickerMode("start-time");
+              // ✅ FIX: Update the state, but keep the picker open for time
+              setSectionTempDate(selectedDate);
+              // Small delay ensures state updates before switching modes
+              setTimeout(() => setPickerMode("start-time"), 50);
             } else if (pickerMode === "start-time") {
               const updated = new Date(sectionTempDate);
               updated.setHours(selectedDate.getHours());
               updated.setMinutes(selectedDate.getMinutes());
               const formatted = formatDateTime(updated);
 
-              // Update State
               setSectionTimes((prev) => ({
                 ...prev,
                 [editingSection]: {
@@ -3198,7 +3202,6 @@ export default function Home() {
                 },
               }));
 
-              // Persist to DB independently of tasks
               const currentEnd = sectionTimes[editingSection]?.end || "";
               saveSectionConfig(editingSection, formatted, currentEnd);
 
@@ -3210,21 +3213,20 @@ export default function Home() {
             // 🔹 SECTION END LOGIC
             // =====================
             else if (pickerMode === "end-date") {
-              setSectionTempDate(new Date(selectedDate));
-              setPickerMode("end-time");
+              // ✅ FIX: Keep state stable
+              setSectionTempDate(selectedDate);
+              setTimeout(() => setPickerMode("end-time"), 50);
             } else if (pickerMode === "end-time") {
               const updated = new Date(sectionTempDate);
               updated.setHours(selectedDate.getHours());
               updated.setMinutes(selectedDate.getMinutes());
               const formatted = formatDateTime(updated);
 
-              // Update State
               setSectionTimes((prev) => ({
                 ...prev,
                 [editingSection]: { ...prev[editingSection], end: formatted },
               }));
 
-              // Persist to DB independently of tasks
               const currentStart = sectionTimes[editingSection]?.start || "";
               saveSectionConfig(editingSection, currentStart, formatted);
 
@@ -3236,8 +3238,9 @@ export default function Home() {
             // 🔹 TASK LOGIC
             // =====================
             else if (pickerMode === "task-date") {
-              setTaskTempDate(new Date(selectedDate));
-              setPickerMode("task-time");
+              // ✅ FIX: Update temp date and wait for render cycle
+              setTaskTempDate(selectedDate);
+              setTimeout(() => setPickerMode("task-time"), 50);
             } else if (pickerMode === "task-time") {
               const updated = new Date(taskTempDate);
               updated.setHours(selectedDate.getHours());
