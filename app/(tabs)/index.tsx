@@ -21,6 +21,7 @@ import Svg, { Circle } from "react-native-svg";
 import * as DocumentPicker from "expo-document-picker";
 import { Directory, File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
+import { Feather } from "@expo/vector-icons";
 
 import { WebView } from "react-native-webview"; // For PDF viewing
 import * as Notifications from "expo-notifications";
@@ -287,6 +288,14 @@ export default function Home() {
   const shakeAnim = useRef(new Animated.Value(0)).current;
   const affirmationOpacity = useRef(new Animated.Value(1)).current;
   const drawerX = useRef(new Animated.Value(-320)).current;
+  const focusDismissTimeoutRef = useRef(null);
+  const focusSessionRecordedRef = useRef(false);
+  const sectionChevronAnims = useRef(
+    SECTION_ORDER.reduce((acc, sectionName) => {
+      acc[sectionName] = new Animated.Value(0);
+      return acc;
+    }, {})
+  ).current;
 
   const saveSetting = (key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
@@ -722,17 +731,34 @@ export default function Home() {
 
   useEffect(() => {
     setExpandedSection((prev) => {
-      if (!nearestUpcomingSection) {
-        if (prev === null) return prev;
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        return null;
+      const nextSection = nearestUpcomingSection || null;
+      if (prev === nextSection) return prev;
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      if (prev) {
+        const prevAnim = sectionChevronAnims[prev];
+        if (prevAnim) {
+          Animated.timing(prevAnim, {
+            toValue: 0,
+            duration: 180,
+            useNativeDriver: true,
+          }).start();
+        }
+      }
+      if (nextSection) {
+        const nextAnim = sectionChevronAnims[nextSection];
+        if (nextAnim) {
+          Animated.timing(nextAnim, {
+            toValue: 1,
+            duration: 180,
+            useNativeDriver: true,
+          }).start();
+        }
       }
 
-      if (prev === nearestUpcomingSection) return prev;
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      return nearestUpcomingSection;
+      return nextSection;
     });
-  }, [nearestUpcomingSection]);
+  }, [nearestUpcomingSection, sectionChevronAnims]);
 
   useEffect(() => {
     if (scheduledDateTime) {
@@ -792,6 +818,18 @@ export default function Home() {
 
             // add to daily + lifetime focus time
             recordFocusSession(currentDuration);
+            focusSessionRecordedRef.current = true;
+
+            if (focusDismissTimeoutRef.current) {
+              clearTimeout(focusDismissTimeoutRef.current);
+            }
+            focusDismissTimeoutRef.current = setTimeout(() => {
+              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+              setActiveTaskId(null);
+              setFocusTime(0);
+              focusSessionRecordedRef.current = false;
+              focusDismissTimeoutRef.current = null;
+            }, 700);
 
             return currentDuration; // lock at max
           }
@@ -803,6 +841,15 @@ export default function Home() {
 
     return () => clearInterval(interval);
   }, [isTimerRunning, currentDuration]);
+
+  useEffect(
+    () => () => {
+      if (focusDismissTimeoutRef.current) {
+        clearTimeout(focusDismissTimeoutRef.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     Animated.timing(progressAnim, {
@@ -871,12 +918,34 @@ export default function Home() {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
   }, []);
 
+  const animateSectionChevron = useCallback(
+    (section, expanded) => {
+      const anim = sectionChevronAnims[section];
+      if (!anim) return;
+
+      Animated.timing(anim, {
+        toValue: expanded ? 1 : 0,
+        duration: 180,
+        useNativeDriver: true,
+      }).start();
+    },
+    [sectionChevronAnims]
+  );
+
   const toggleSectionExpansion = useCallback(
     (section) => {
-      runLayoutAnimation();
-      setExpandedSection((prev) => (prev === section ? null : section));
+      setExpandedSection((prev) => {
+        const nextSection = prev === section ? null : section;
+        if (nextSection === prev) return prev;
+
+        runLayoutAnimation();
+        if (prev) animateSectionChevron(prev, false);
+        if (nextSection) animateSectionChevron(nextSection, true);
+
+        return nextSection;
+      });
     },
-    [runLayoutAnimation]
+    [animateSectionChevron, runLayoutAnimation]
   );
 
   const toggleTaskCardExpansion = useCallback(
@@ -925,11 +994,16 @@ export default function Home() {
           // Handle focus time session saving
           if (task.id === activeTaskId && updated === true) {
             setIsTimerRunning(false);
+            if (focusDismissTimeoutRef.current) {
+              clearTimeout(focusDismissTimeoutRef.current);
+              focusDismissTimeoutRef.current = null;
+            }
 
             // Save current session into total
-            if (focusTime > 0) {
+            if (focusTime > 0 && !focusSessionRecordedRef.current) {
               recordFocusSession(focusTime);
             }
+            focusSessionRecordedRef.current = false;
 
             setFocusTime(0);
             setActiveTaskId(null);
@@ -992,6 +1066,12 @@ export default function Home() {
 
   const startFocus = (taskId) => {
     const duration = taskDurations[taskId] || 1500; // default 25 min
+
+    if (focusDismissTimeoutRef.current) {
+      clearTimeout(focusDismissTimeoutRef.current);
+      focusDismissTimeoutRef.current = null;
+    }
+    focusSessionRecordedRef.current = false;
 
     if (activeTaskId !== taskId && focusTime > 0) {
       recordFocusSession(focusTime);
@@ -2334,6 +2414,10 @@ export default function Home() {
     const sectionTasks = sectionTasksMap[section] || [];
     const pendingCount = sectionPendingCounts[section] || 0;
     const isSectionExpanded = expandedSection === section;
+    const chevronRotation = sectionChevronAnims[section].interpolate({
+      inputRange: [0, 1],
+      outputRange: ["0deg", "180deg"],
+    });
 
     return (
       <View
@@ -2357,9 +2441,9 @@ export default function Home() {
                   {pendingCount}
                 </Text>
               ) : null}
-              <Text className="text-[#66b9b9] text-[10px] font-black">
-                {isSectionExpanded ? "^" : "v"}
-              </Text>
+              <Animated.View style={{ transform: [{ rotate: chevronRotation }] }}>
+                <Feather name="chevron-down" size={16} color={COLORS.accent} />
+              </Animated.View>
             </View>
           </TouchableOpacity>
 
@@ -2416,6 +2500,11 @@ export default function Home() {
             const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
             const taskDate = parseStoredDateTime(task.scheduledTime);
             const taskTimestamp = taskDate?.getTime() || 0;
+            const totalSubtasks = subtasks.length;
+            const completedSubtasks = subtasks.filter((s) => s.completed).length;
+            const isTaskExpanded = expandedTaskId === task.id;
+            const hasPendingNotification =
+              Array.isArray(task.notificationId) && task.notificationId.length > 0;
 
             const upcomingReminders = [];
             if (task.scheduledTime) {
@@ -2433,12 +2522,6 @@ export default function Home() {
                 }
               });
             }
-
-            const totalSubtasks = subtasks.length;
-            const completedSubtasks = subtasks.filter((s) => s.completed).length;
-            const isTaskExpanded = expandedTaskId === task.id;
-            const hasPendingNotification =
-              Array.isArray(task.notificationId) && task.notificationId.length > 0;
 
             const cardBgClass = activeTaskId === task.id ? "bg-[#123131]" : task.completed ? "bg-[#0B1F1F]/90 opacity-90" : "bg-[#0B1F1F]";
             const cardBorderClass = activeTaskId === task.id ? "border-[#5EEAD4] border" : task.completed ? "border-[#7DFFB3]/60 border-l-4" : "border-[#337a7a]/35 border";
@@ -2466,9 +2549,9 @@ export default function Home() {
                             : "bg-[#061414]/40 border-[#337a7a]"
                         }`}
                       >
-                        {task.completed && (
-                          <Text className="text-[#061414] text-sm font-bold">âœ“</Text>
-                        )}
+                        {task.completed ? (
+                          <Feather name="check" size={12} color={COLORS.bg} />
+                        ) : null}
                       </TouchableOpacity>
 
                       <View className="flex-row items-center flex-1 pr-2">
@@ -2499,7 +2582,7 @@ export default function Home() {
                           }}
                           className="p-1.5 bg-[#66b9b9]/15 rounded-xl border border-[#66b9b9]/25"
                         >
-                          <Text className="text-sm">âœï¸</Text>
+                          <Feather name="edit-2" size={14} color={COLORS.accent} />
                         </TouchableOpacity>
 
                         <TouchableOpacity
@@ -2511,7 +2594,7 @@ export default function Home() {
                           }}
                           className="p-1.5 bg-[#FF7B7B]/15 rounded-xl border border-[#FF7B7B]/25"
                         >
-                          <Text className="text-sm">ðŸ—‘ï¸</Text>
+                          <Feather name="trash-2" size={14} color={COLORS.danger} />
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -2528,52 +2611,27 @@ export default function Home() {
                       </Text>
                     )}
                     {hasPendingNotification ? (
-                      <Text className="text-[#7DFFB3] text-xs ml-2">ðŸ””</Text>
+                      <Feather name="bell" size={13} color={COLORS.success} />
                     ) : null}
                   </View>
                 </Pressable>
 
+                <TouchableOpacity
+                  onPress={() => toggleTaskCardExpansion(task.id)}
+                  className="mt-2 self-start flex-row items-center"
+                >
+                  <Text className="text-[#66b9b9] text-xs font-bold mr-1.5">
+                    Details
+                  </Text>
+                  <Feather
+                    name={isTaskExpanded ? "chevron-up" : "chevron-down"}
+                    size={14}
+                    color={COLORS.accent}
+                  />
+                </TouchableOpacity>
+
                 {isTaskExpanded && (
                   <>
-                    {upcomingReminders.length > 0 ? (
-                      <View className="mt-3 p-3 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/25 shadow-sm shadow-[#66b9b9]/10">
-                        <View className="flex-row items-center mb-1.5">
-                          <View
-                            className={`w-2 h-2 rounded-full mr-2 ${
-                              hasPendingNotification
-                                ? "bg-[#7DFFB3]"
-                                : upcomingReminders.length > 0
-                                ? "bg-[#FF7B7B]"
-                                : "bg-[#9FB5B5]"
-                            }`}
-                          />
-                          <Text className="text-[#66b9b9] text-[10px] font-bold tracking-widest uppercase">
-                            {hasPendingNotification
-                              ? "ALARMS ACTIVE"
-                              : "ALARMS OFFLINE"}
-                          </Text>
-                        </View>
-                        <View className="flex-row flex-wrap gap-1.5">
-                          {upcomingReminders.map((time, idx) => (
-                            <View
-                              key={idx}
-                              className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35"
-                            >
-                              <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide">
-                                ðŸ”” {time}
-                              </Text>
-                            </View>
-                          ))}
-                        </View>
-
-                        {!hasPendingNotification && (
-                          <Text className="text-[#FF7B7B] text-[9px] mt-1.5 font-bold">
-                            âš ï¸ Tap Edit & Save to re-arm alarms
-                          </Text>
-                        )}
-                      </View>
-                    ) : null}
-
                     {task.details ? (
                       <View className="mt-2 p-3 bg-[#061414]/45 rounded-2xl border border-[#337a7a]/25">
                         <Text className="text-[#E8F4F4] text-xs leading-5">
@@ -2605,9 +2663,9 @@ export default function Home() {
                               sub.completed ? "bg-[#66b9b9]" : "bg-transparent"
                             }`}
                           >
-                            {sub.completed && (
-                              <Text className="text-[#061414] text-[8px] font-bold">âœ“</Text>
-                            )}
+                            {sub.completed ? (
+                              <Feather name="check" size={9} color={COLORS.bg} />
+                            ) : null}
                           </TouchableOpacity>
                           <Text
                             className={`flex-1 text-xs ${
@@ -2620,7 +2678,7 @@ export default function Home() {
                             onPress={() => deleteSubtask(task.id, sub.id)}
                             className="p-1"
                           >
-                            <Text className="text-[#FF7B7B] ml-2 text-xs">âœ•</Text>
+                            <Feather name="x" size={12} color={COLORS.danger} />
                           </TouchableOpacity>
                         </View>
                       ))}
@@ -2635,18 +2693,6 @@ export default function Home() {
                         className="text-[#E8F4F4] text-xs py-1 border-b border-[#66b9b9]/35"
                       />
                     </View>
-
-                    {lastCompletedTaskId === task.id && (
-                      <Text className="text-[#7DFFB3] text-[10px] mt-1 font-bold uppercase tracking-widest">
-                        âœ… Last completed
-                      </Text>
-                    )}
-
-                    {activeTaskId === task.id && (
-                      <Text className="text-[#5EEAD4] text-[10px] mt-1 font-bold uppercase tracking-widest">
-                        ðŸŽ¯ In Focus
-                      </Text>
-                    )}
 
                     <Animated.View
                       style={{ transform: [{ translateX: shakeAnim }] }}
@@ -2693,14 +2739,66 @@ export default function Home() {
                         }`}
                       >
                         <Text className="text-[#E8F4F4] text-[11px] font-bold">
-                          â± Custom
+                          Custom
                         </Text>
                       </TouchableOpacity>
                     </Animated.View>
 
                     {showDurationError === task.id && (
                       <Text className="text-[#FF7B7B] text-[10px] mt-1 font-bold">
-                        â± Please select focus time
+                        Please select focus time
+                      </Text>
+                    )}
+
+                    {upcomingReminders.length > 0 ? (
+                      <View className="mt-3 p-3 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/25 shadow-sm shadow-[#66b9b9]/10">
+                        <View className="flex-row items-center mb-1.5">
+                          <View
+                            className={`w-2 h-2 rounded-full mr-2 ${
+                              hasPendingNotification
+                                ? "bg-[#7DFFB3]"
+                                : upcomingReminders.length > 0
+                                ? "bg-[#FF7B7B]"
+                                : "bg-[#9FB5B5]"
+                            }`}
+                          />
+                          <Text className="text-[#66b9b9] text-[10px] font-bold tracking-widest uppercase">
+                            {hasPendingNotification
+                              ? "ALARMS ACTIVE"
+                              : "ALARMS OFFLINE"}
+                          </Text>
+                        </View>
+                        <View className="flex-row flex-wrap gap-1.5">
+                          {upcomingReminders.map((time, idx) => (
+                            <View
+                              key={idx}
+                              className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35 flex-row items-center"
+                            >
+                              <Feather name="bell" size={10} color={COLORS.success} />
+                              <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide ml-1">
+                                {time}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+
+                        {!hasPendingNotification && (
+                          <Text className="text-[#FF7B7B] text-[9px] mt-1.5 font-bold">
+                            Tap Edit and Save to re-arm alarms
+                          </Text>
+                        )}
+                      </View>
+                    ) : null}
+
+                    {lastCompletedTaskId === task.id && (
+                      <Text className="text-[#7DFFB3] text-[10px] mt-2 font-bold uppercase tracking-widest">
+                        Last completed
+                      </Text>
+                    )}
+
+                    {activeTaskId === task.id && (
+                      <Text className="text-[#5EEAD4] text-[10px] mt-1 font-bold uppercase tracking-widest">
+                        In Focus
                       </Text>
                     )}
 
@@ -2731,13 +2829,13 @@ export default function Home() {
                           taskDurations[task.id] ? "text-[#66b9b9]" : "text-[#9FB5B5]"
                         }`}
                       >
-                        {taskDurations[task.id] ? "â–¶ Start Focus" : "â± Select Focus Time"}
+                        {taskDurations[task.id] ? "Start Focus" : "Select Focus Time"}
                       </Text>
                     </TouchableOpacity>
 
                     {taskDurations[task.id] && (
                       <Text className="text-[#99bdbd] text-[10px] mt-1.5 font-semibold">
-                        â± {formatDuration(taskDurations[task.id])} selected
+                        {formatDuration(taskDurations[task.id])} selected
                       </Text>
                     )}
 
@@ -2756,7 +2854,7 @@ export default function Home() {
                         className="mt-3 flex-row items-center bg-[#123131]/80 self-start p-1.5 px-3 rounded-full border border-[#66b9b9]/25"
                       >
                         <Text className="text-[#66b9b9] text-xs font-bold">
-                          ðŸ“Ž View Attachment
+                          View Attachment
                         </Text>
                       </TouchableOpacity>
                     ) : null}
@@ -3315,4 +3413,5 @@ export default function Home() {
     </>
   );
 }
+
 
