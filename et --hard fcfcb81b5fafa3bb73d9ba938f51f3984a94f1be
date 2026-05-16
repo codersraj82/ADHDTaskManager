@@ -1,0 +1,39 @@
+[33m4f102ce[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;33mtag: [m[1;33mv3.5[m[33m, [m[1;31morigin/main[m[33m)[m Expaandalble view, tasks menu, calender view
+[33mfcfcb81[m[33m ([m[1;33mtag: [m[1;33mv3.4[m[33m)[m UI Date & Time make simple
+[33mfeabe1a[m UI modernization and time picker bug flicker issue
+[33mc06cb80[m[33m ([m[1;33mtag: [m[1;33mv3.2[m[33m)[m UI modernization and time picker bug fix v3.1
+[33mc1e2c14[m[33m ([m[1;33mtag: [m[1;33mv3.1[m[33m)[m streak and focus count added
+[33m9a8a0d2[m[33m ([m[1;33mtag: [m[1;33mv3.0[m[33m)[m Theme changed deep cyan
+[33m9f478d9[m[33m ([m[1;33mtag: [m[1;33mv2.3[m[33m)[m Add notification scheduling debug alert title
+[33mc9d0df2[m Add notification scheduling debug alerts
+[33m8dc8da9[m[33m ([m[1;33mtag: [m[1;33mv2.2[m[33m)[m Fix JSX syntax issue in scheduled time rendering
+[33m137117d[m[33m ([m[1;33mtag: [m[1;33mv2.1[m[33m)[m Fix reminder scheduling using ISO dates and stable notification triggers
+[33m2259a17[m Fix Android notification scheduling and alarm channel issues
+[33maf1f53c[m Fix: Sync channel ID to adhd-alarms, cleanup subtasks, and add expo-font
+[33md3ffa33[m Fix: Sync notification channel ID to adhd-alarms and add test button
+[33m21f18ae[m Fix: Finalized notifications, icons, and tab cleanup
+[33ma9858fd[m Cleanup: Remove duplicate workflow file
+[33m9062027[m Fix: Re-enable NewArch for Reanimated and use standard gradle build
+[33m7ea1d3f[m Fix: Add root index.js and brute force standalone bundle
+[33m85e0cde[m Fix: Disable NewArch and Brute Force JS Bundle
+[33m4181ed4[m Fix: Change package name to avoid Java keyword conflict
+[33mb76fd84[m Fix: Hard-coded standalone release for RN 0.81
+[33ma53ce53[m Fix: New package ID and standalone release build
+[33me4ce257[m Fix: New package ID and production-forced bundle
+[33m0158ac4[m Fix: Final standalone bundle for Expo Router
+[33mc153e8b[m Fix: Force standalone bundle and build release APK
+[33m3080134[m Fix: Build standalone release APK
+[33m6da95d0[m Fix: Add JS bundling to GitHub Action
+[33m27161f1[m commit all
+[33mf727824[m Force adding the workflow file
+[33m76a8439[m Optimize package.json for NativeWind and GitHub builds
+[33m6a4a94f[m[33m ([m[1;33mtag: [m[1;33mv1.9[m[33m)[m fix: resolve column migration typos for scheduledTime and notificationId
+[33m6c75bb9[m[33m ([m[1;33mtag: [m[1;33mv1.8[m[33m)[m fix: add missing plugins and permissions for APK build
+[33m493fca5[m[33m ([m[1;33mtag: [m[1;33mv1.7[m[33m)[m fix: resolve new task scheduling and section time bugs
+[33md0f84a0[m[33m ([m[1;33mtag: [m[1;33mv1.6[m[33m)[m feat: add subtasks, reorganized task header, and attachment viewer
+[33m7045de8[m[33m ([m[1;33mtag: [m[1;33mv1.5[m[33m)[m Release version v1.5
+[33m9d4e699[m[33m ([m[1;33mtag: [m[1;33mv1.4[m[33m)[m  Add edit and delete task functionality
+[33mda2fa39[m[33m ([m[1;33mtag: [m[1;33mv1.3[m[33m)[m v1.3: Added celebration modal, dynamic focus ring color, contextual floating button, duration UX improvements and animations
+[33mb33728f[m[33m ([m[1;33mtag: [m[1;33mv1.1[m[33m)[m v1.1: Added focus timer system, progress tracking, floating UI, auto-scroll, task highlighting and UX improvements
+[33m0ffa3ae[m[33m ([m[1;33mtag: [m[1;33mv1.0[m[33m)[m feat: add task management with SQLite, modal input, and toggle functionality (stable working version without progress banner)
+[33m58d034a[m Initial commit
