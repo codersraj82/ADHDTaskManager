@@ -11,8 +11,11 @@ import {
   Image,
   Linking,
   StatusBar,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from "react-native";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { db, initDB } from "../../database/db";
 import Svg, { Circle } from "react-native-svg";
 import * as DocumentPicker from "expo-document-picker";
@@ -27,6 +30,11 @@ import {
   formatSqliteDateTime,
   parseStoredDateTime,
 } from "../../utils/formatDateTime";
+import { sortTasksForSection, getPendingTaskCount } from "../../utils/sortTasks";
+import {
+  getNearestUpcomingSection,
+  SECTION_ORDER,
+} from "../../utils/sectionHelpers";
 
 const COLORS = {
   bg: "#061414",
@@ -150,6 +158,7 @@ export default function Home() {
   const [taskAttachment, setTaskAttachment] = useState("");
   const [detailsHeight, setDetailsHeight] = useState(80);
   const [expandedTaskId, setExpandedTaskId] = useState(null);
+  const [expandedSection, setExpandedSection] = useState(null);
   const [timeError, setTimeError] = useState(false);
   const [sectionTimes, setSectionTimes] = useState({
     Morning: { start: "", end: "" },
@@ -201,6 +210,28 @@ export default function Home() {
       ? 0
       : Math.min(100, Math.round((dailyStats.completedTasks / totalTasks) * 100));
   const modalScale = useRef(new Animated.Value(0.8)).current;
+
+  const sectionTasksMap = useMemo(() => {
+    const now = new Date();
+    return SECTION_ORDER.reduce((acc, sectionName) => {
+      acc[sectionName] = sortTasksForSection(tasks, sectionName, now);
+      return acc;
+    }, {});
+  }, [tasks]);
+
+  const sectionPendingCounts = useMemo(
+    () =>
+      SECTION_ORDER.reduce((acc, sectionName) => {
+        acc[sectionName] = getPendingTaskCount(tasks, sectionName);
+        return acc;
+      }, {}),
+    [tasks]
+  );
+
+  const nearestUpcomingSection = useMemo(
+    () => getNearestUpcomingSection(tasks),
+    [tasks]
+  );
 
   // 1. Prepare the JSON string for the DB
   const subtasksJSON = JSON.stringify([]); 
@@ -681,6 +712,29 @@ export default function Home() {
   }, []); // Runs once when the component mounts
 
   useEffect(() => {
+    if (
+      Platform.OS === "android" &&
+      UIManager.setLayoutAnimationEnabledExperimental
+    ) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    setExpandedSection((prev) => {
+      if (!nearestUpcomingSection) {
+        if (prev === null) return prev;
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        return null;
+      }
+
+      if (prev === nearestUpcomingSection) return prev;
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      return nearestUpcomingSection;
+    });
+  }, [nearestUpcomingSection]);
+
+  useEffect(() => {
     if (scheduledDateTime) {
       setTimeError(false);
     }
@@ -812,6 +866,26 @@ export default function Home() {
   const [modalVisible, setModalVisible] = useState(false);
   const [taskName, setTaskName] = useState("");
   const [selectedSection, setSelectedSection] = useState("Morning");
+
+  const runLayoutAnimation = useCallback(() => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+  }, []);
+
+  const toggleSectionExpansion = useCallback(
+    (section) => {
+      runLayoutAnimation();
+      setExpandedSection((prev) => (prev === section ? null : section));
+    },
+    [runLayoutAnimation]
+  );
+
+  const toggleTaskCardExpansion = useCallback(
+    (taskId) => {
+      runLayoutAnimation();
+      setExpandedTaskId((prev) => (prev === taskId ? null : taskId));
+    },
+    [runLayoutAnimation]
+  );
 
   //*****handler functions*********** */
   // ✅ TOGGLE TASK
@@ -1305,6 +1379,9 @@ export default function Home() {
 
     // update UI
     setTasks((prev) => prev.filter((t) => t.id !== deleteTask.id));
+    if (expandedTaskId === deleteTask.id) {
+      setExpandedTaskId(null);
+    }
 
     // close modal
     setDeleteModalVisible(false);
@@ -2254,15 +2331,9 @@ export default function Home() {
   );
 
   const renderSection = (title, section) => {
-    const sectionTasks = tasks
-      .filter((t) => t.section === section)
-      .sort((a, b) => {
-        if (a.completed !== b.completed) return a.completed ? 1 : -1;
-        return (
-          (parseStoredDateTime(a.scheduledTime)?.getTime() || 0) -
-          (parseStoredDateTime(b.scheduledTime)?.getTime() || 0)
-        );
-      });
+    const sectionTasks = sectionTasksMap[section] || [];
+    const pendingCount = sectionPendingCounts[section] || 0;
+    const isSectionExpanded = expandedSection === section;
 
     return (
       <View
@@ -2272,438 +2343,428 @@ export default function Home() {
         }}
       >
         <View className="mb-2">
-          {/* Title + Edit */}
-          <View className="flex-row items-center mb-3">
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => toggleSectionExpansion(section)}
+            className="flex-row items-center justify-between mb-3"
+          >
             <Text className="text-[#E8F4F4] text-xl font-black tracking-widest uppercase">
               {title}
             </Text>
-          </View>
-
-          <TouchableOpacity
-            onPress={testNotification}
-            className="bg-[#FF7B7B]/15 p-2.5 rounded-2xl mb-3 shadow-md shadow-[#FF7B7B]/10 border border-[#FF7B7B]/35 items-center"
-          >
-            <Text className="text-[#FF7B7B] font-black text-xs uppercase tracking-widest">
-              🚨 TEST NOTIFICATION 🚨
-            </Text>
+            <View className="flex-row items-center">
+              {pendingCount > 0 ? (
+                <Text className="text-[#9FB5B5] text-[10px] font-bold mr-2">
+                  {pendingCount}
+                </Text>
+              ) : null}
+              <Text className="text-[#66b9b9] text-[10px] font-black">
+                {isSectionExpanded ? "^" : "v"}
+              </Text>
+            </View>
           </TouchableOpacity>
 
-          {/* Time BELOW title */}
-          <TouchableOpacity
-            onPress={() => {
-              setEditingSection(section); // ✅ ADD THIS LINE
-              openSchedulePicker({
-                target: "section-start",
-                section,
-                title: `${section} Start`,
-                value: sectionTimes[section]?.start,
-              });
-            }}
-            className="bg-[#0B1F1F] p-3.5 rounded-2xl mb-2 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
-          >
-            <Text className="text-[#E8F4F4] font-bold text-xs">
-              Start: {sectionTimes[section]?.start ? formatDateTimeForDisplay(sectionTimes[section].start) : "Select Start Date & Time"}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={() => {
-              setEditingSection(section); // ✅ ADD THIS LINE
-              openSchedulePicker({
-                target: "section-end",
-                section,
-                title: `${section} End`,
-                value: sectionTimes[section]?.end,
-              });
-            }}
-            className="bg-[#0B1F1F] p-3.5 rounded-2xl mb-4 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
-          >
-            <Text className="text-[#E8F4F4] font-bold text-xs">
-              End: {sectionTimes[section]?.end ? formatDateTimeForDisplay(sectionTimes[section].end) : "Select End Date & Time"}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {sectionTasks.map((task) => {
-          const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
-          // 🔔 Calculate Upcoming Reminders
-          // 🔔 UPDATED Calculation inside renderSection
-          const taskDate = parseStoredDateTime(task.scheduledTime);
-          const taskTimestamp = taskDate?.getTime() || 0;
-          const isFutureTask =
-            taskTimestamp && taskTimestamp + 60000 > Date.now();
-
-          const upcomingReminders = [];
-          if (task.scheduledTime) {
-            const intervals = [20, 10, 5, 0];
-            intervals.forEach((mins) => {
-              const triggerTime = taskTimestamp - mins * 60000;
-              // Show if the specific reminder time hasn't passed yet
-              if (triggerTime + 60000 > Date.now()) {
-                const dateObj = new Date(triggerTime);
-                upcomingReminders.push(
-                  dateObj.toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })
-                );
-              }
-            });
-          }
-
-          //********SubTask********/
-
-          const totalSubtasks = subtasks.length;
-          const completedSubtasks = subtasks.filter((s) => s.completed).length;
-
-          // 🔥 Card styling logic optimized for NativeWind
-          const cardBgClass = activeTaskId === task.id ? "bg-[#123131]" : task.completed ? "bg-[#0B1F1F]/90 opacity-90" : "bg-[#0B1F1F]";
-          const cardBorderClass = activeTaskId === task.id ? "border-[#5EEAD4] border" : task.completed ? "border-[#7DFFB3]/60 border-l-4" : "border-[#337a7a]/35 border";
-          const cardShadowClass = activeTaskId === task.id ? "shadow-2xl shadow-[#5EEAD4]/20" : task.completed ? "shadow-lg shadow-[#7DFFB3]/10" : "shadow-md shadow-[#66b9b9]/10";
-
-          return (
-            <TouchableOpacity
-              key={task.id}
-              onLayout={(event) => {
-                taskPositions.current[task.id] = event.nativeEvent.layout.y;
-              }}
-              className={`p-4 rounded-[24px] mb-3 ${cardBgClass} ${cardBorderClass} ${cardShadowClass}`}
-            >
-              {/* 🔹 ROW 1: MAIN */}
-              <View className="flex-row items-center justify-between pb-3 mb-2 border-b border-[#337a7a]/25">
-                <View className="flex-row items-center flex-1">
-                  {/* Checkbox */}
-                  <TouchableOpacity
-                    onPress={() => toggleTask(task.id)}
-                    className={`w-7 h-7 rounded-[10px] border-2 mr-3 items-center justify-center ${
-                      task.completed
-                        ? "bg-[#7DFFB3] border-[#7DFFB3]"
-                        : "bg-[#061414]/40 border-[#337a7a]"
-                    }`}
-                  >
-                    {task.completed && (
-                      <Text className="text-[#061414] text-sm font-bold">✓</Text>
-                    )}
-                  </TouchableOpacity>
-
-                  {/* ─── DISTINGUISHED HEADER ─── */}
-
-                  {/* Left Side: Title Group */}
-                  <View className="flex-row items-center flex-1 pr-2">
-                    {/* Optional: If you keep your Checkbox here, place it before the Text */}
-                    <Text
-                      numberOfLines={2} // Prevents title from breaking the layout
-                      className={`text-base font-bold flex-1 tracking-wide ${
-                        task.completed
-                          ? "text-[#9FB5B5] line-through"
-                          : "text-[#E8F4F4]"
-                      }`}
-                    >
-                      {task.title}
-                    </Text>
-                  </View>
-
-                  {/* Right Side: Action Group */}
-                  <View className="flex-row items-center space-x-3">
-                    {/* Edit Button */}
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      onPress={() => {
-                        setEditingTask(task);
-                        setIsEditMode(true);
-                        setTaskName(task.title);
-                        setTaskDetails(task.details || "");
-                        setScheduledDateTime(task.scheduledTime || "");
-                        setSelectedSection(task.section);
-                        setModalVisible(true);
-                      }}
-                      className="p-1.5 bg-[#66b9b9]/15 rounded-xl border border-[#66b9b9]/25"
-                    >
-                      <Text className="text-sm">✏️</Text>
-                    </TouchableOpacity>
-
-                    {/* Delete Button */}
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      onPress={() => {
-                        setDeleteTask(task);
-                        setDeleteModalVisible(true);
-                      }}
-                      className="p-1.5 bg-[#FF7B7B]/15 rounded-xl border border-[#FF7B7B]/25"
-                    >
-                      <Text className="text-sm">🗑️</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-
-              {/* 🔹 DATE & TIME */}
-              {task.scheduledTime ? (
-                <Text className="text-[#9FB5B5] text-xs mt-1 font-semibold">
-                  {formatDateTimeForDisplay(task.scheduledTime)}
-                </Text>
-              ) : null}
-
-              {/* 🔹 DETAILS BUTTON */}
-              {task.details ? (
-                <Pressable
-                  onPress={() =>
-                    setExpandedTaskId(
-                      expandedTaskId === task.id ? null : task.id
-                    )
-                  }
-                  className="mt-2"
-                >
-                  <Text className="text-[#66b9b9] text-xs font-bold">
-                    {expandedTaskId === task.id
-                      ? "Hide Details ▲"
-                      : "Show Details ▼"}
-                  </Text>
-                </Pressable>
-              ) : null}
-
-              {/* 🔔 REMINDER DISPLAY COMPONENT */}
-              {upcomingReminders.length > 0 ? (
-                <View className="mt-3 p-3 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/25 shadow-sm shadow-[#66b9b9]/10">
-                  <View className="flex-row items-center mb-1.5">
-                    <View
-                      className={`w-2 h-2 rounded-full mr-2 ${
-                        Array.isArray(task.notificationId) &&
-                        task.notificationId.length > 0
-                          ? "bg-[#7DFFB3]"
-                          : upcomingReminders.length > 0
-                          ? "bg-[#FF7B7B]"
-                          : "bg-[#9FB5B5]"
-                      }`}
-                    />
-                    <Text className="text-[#66b9b9] text-[10px] font-bold tracking-widest uppercase">
-                      {Array.isArray(task.notificationId) &&
-                      task.notificationId.length > 0
-                        ? "ALARMS ACTIVE"
-                        : "ALARMS OFFLINE"}
-                    </Text>
-                  </View>
-                  <View className="flex-row flex-wrap gap-1.5">
-                    {upcomingReminders.map((time, idx) => (
-                      <View
-                        key={idx}
-                        className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35"
-                      >
-                        <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide">
-                          🔔 {time}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-
-                  {/* 💡 HELPER: Show a warning if the dot is red */}
-                  {(!Array.isArray(task.notificationId) ||
-                    task.notificationId.length === 0) && (
-                    <Text className="text-[#FF7B7B] text-[9px] mt-1.5 font-bold">
-                      ⚠️ Tap Edit & Save to re-arm alarms
-                    </Text>
-                  )}
-                </View>
-              ) : null}
-
-              {/* 🔹 EXPANDED DETAILS */}
-              {expandedTaskId === task.id && task.details ? (
-                <View className="mt-2 p-3 bg-[#061414]/45 rounded-2xl border border-[#337a7a]/25">
-                  <Text className="text-[#E8F4F4] text-xs leading-5">
-                    {task.details}
-                  </Text>
-                </View>
-              ) : null}
-
-              <>
-                {/* 2. SUBTASKS (Separate from details) */}
-                <View className="pl-3 border-l-2 border-[#66b9b9]/35 my-2 mt-3">
-                  <View className="flex-row justify-between mb-2">
-                    <Text className="text-[#99bdbd] text-[10px] font-bold tracking-widest uppercase">
-                      Sub-Tasks
-                    </Text>
-                    {totalSubtasks > 0 && (
-                      <Text className="text-[#9FB5B5] text-[10px] font-bold">
-                        {completedSubtasks}/{totalSubtasks}
-                      </Text>
-                    )}
-                  </View>
-
-                  {subtasks.map((sub) => (
-                    <View
-                      key={sub.id}
-                      className="flex-row items-center mb-2"
-                    >
-                      <TouchableOpacity
-                        onPress={() => toggleSubtask(task.id, sub.id)}
-                        className={`w-4 h-4 rounded-[4px] border border-[#66b9b9] mr-2 justify-center items-center ${
-                          sub.completed ? "bg-[#66b9b9]" : "bg-transparent"
-                        }`}
-                      >
-                        {sub.completed && (
-                          <Text className="text-[#061414] text-[8px] font-bold">✓</Text>
-                        )}
-                      </TouchableOpacity>
-                      <Text
-                        className={`flex-1 text-xs ${
-                          sub.completed ? "text-[#9FB5B5] line-through" : "text-[#E8F4F4]"
-                        }`}
-                      >
-                        {sub.title}
-                      </Text>
-                      <TouchableOpacity
-                        onPress={() => deleteSubtask(task.id, sub.id)}
-                        className="p-1"
-                      >
-                        <Text className="text-[#FF7B7B] ml-2 text-xs">✕</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-
-                  <TextInput
-                    placeholder="+ Add step..."
-                    placeholderTextColor={COLORS.muted}
-                    onSubmitEditing={(e) => {
-                      addSubtask(task.id, e.nativeEvent.text);
-                      e.currentTarget.clear();
-                    }}
-                    className="text-[#E8F4F4] text-xs py-1 border-b border-[#66b9b9]/35"
-                  />
-                </View>
-              </>
-
-              {/* 🔹 STATUS LABELS */}
-              {lastCompletedTaskId === task.id && (
-                <Text className="text-[#7DFFB3] text-[10px] mt-1 font-bold uppercase tracking-widest">
-                  ✅ Last completed
-                </Text>
-              )}
-
-              {activeTaskId === task.id && (
-                <Text className="text-[#5EEAD4] text-[10px] mt-1 font-bold uppercase tracking-widest">
-                  🎯 In Focus
-                </Text>
-              )}
-
-              {/* 🔹 DURATION BUTTONS */}
-              <Animated.View
-                style={{ transform: [{ translateX: shakeAnim }] }}
-                className="flex-row mt-3 items-center flex-wrap"
-              >
-                {[10, 20, 30].map((min) => (
-                  <TouchableOpacity
-                    key={min}
-                    onPress={() =>
-                      setTaskDurations((prev) => ({
-                        ...prev,
-                        [task.id]: min * 60,
-                      }))
-                    }
-                    className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
-                      showDurationError === task.id
-                        ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
-                        : taskDurations[task.id] === min * 60
-                        ? "bg-[#66b9b9] border-[#66b9b9]"
-                        : "bg-[#123131]/80 border-[#337a7a]/40"
-                    }`}
-                  >
-                    <Text
-                      className={`text-[11px] font-bold ${
-                        taskDurations[task.id] === min * 60
-                          ? "text-[#061414]"
-                          : "text-[#E8F4F4]"
-                      }`}
-                    >
-                      {min}m
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-
-                <TouchableOpacity
-                  onPress={() => {
-                    setCurrentTaskForTime(task.id);
-                    setTimeModalVisible(true);
-                  }}
-                  className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
-                    showDurationError === task.id
-                      ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
-                      : "bg-[#123131]/80 border-[#337a7a]/40"
-                  }`}
-                >
-                  <Text className="text-[#E8F4F4] text-[11px] font-bold">
-                    ⏱ Custom
-                  </Text>
-                </TouchableOpacity>
-              </Animated.View>
-
-              {/* 🔹 ERROR */}
-              {showDurationError === task.id && (
-                <Text className="text-[#FF7B7B] text-[10px] mt-1 font-bold">
-                  ⏱ Please select focus time
-                </Text>
-              )}
-
-              {/* 🔹 START BUTTON */}
+          {isSectionExpanded && (
+            <>
               <TouchableOpacity
-                onPress={() => {
-                  if (task.completed) return;
-
-                  const duration = taskDurations[task.id];
-
-                  if (!duration) {
-                    setShowDurationError(task.id);
-                    triggerShake();
-
-                    setTimeout(() => setShowDurationError(null), 2000);
-                    return;
-                  }
-
-                  startFocus(task.id);
-                }}
-                className={`mt-2 self-start px-3 py-2 rounded-full border ${
-                  taskDurations[task.id]
-                    ? "bg-[#66b9b9]/15 border-[#66b9b9]/40"
-                    : "bg-[#123131]/70 border-[#337a7a]/35"
-                }`}
+                onPress={testNotification}
+                className="bg-[#FF7B7B]/15 p-2.5 rounded-2xl mb-3 shadow-md shadow-[#FF7B7B]/10 border border-[#FF7B7B]/35 items-center"
               >
-                <Text
-                  className={`font-bold text-xs uppercase tracking-widest ${
-                    taskDurations[task.id] ? "text-[#66b9b9]" : "text-[#9FB5B5]"
-                  }`}
-                >
-                  {taskDurations[task.id] ? "▶ Start Focus" : "⏱ Select Focus Time"}
+                <Text className="text-[#FF7B7B] font-black text-xs uppercase tracking-widest">
+                  TEST NOTIFICATION
                 </Text>
               </TouchableOpacity>
 
-              {taskDurations[task.id] && (
-                <Text className="text-[#99bdbd] text-[10px] mt-1.5 font-semibold">
-                  ⏱ {formatDuration(taskDurations[task.id])} selected
+              <TouchableOpacity
+                onPress={() => {
+                  setEditingSection(section);
+                  openSchedulePicker({
+                    target: "section-start",
+                    section,
+                    title: `${section} Start`,
+                    value: sectionTimes[section]?.start,
+                  });
+                }}
+                className="bg-[#0B1F1F] p-3.5 rounded-2xl mb-2 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
+              >
+                <Text className="text-[#E8F4F4] font-bold text-xs">
+                  Start: {sectionTimes[section]?.start ? formatDateTimeForDisplay(sectionTimes[section].start) : "Select Start Date & Time"}
                 </Text>
-              )}
+              </TouchableOpacity>
 
-              {/* Inside task.map... check if attachment exists */}
-              {task.attachment ? (
-                <TouchableOpacity
-                  onPress={() => {
-                    const isPdf = task.attachment
-                      .toLowerCase()
-                      .endsWith(".pdf");
-                    setCurrentFile({
-                      uri: task.attachment,
-                      type: isPdf ? "pdf" : "image",
-                    });
-                    setViewerVisible(true);
-                  }}
-                  className="mt-3 flex-row items-center bg-[#123131]/80 self-start p-1.5 px-3 rounded-full border border-[#66b9b9]/25"
-                >
-                  <Text className="text-[#66b9b9] text-xs font-bold">
-                    📎 View Attachment
-                  </Text>
-                </TouchableOpacity>
-              ) : null}
-            </TouchableOpacity>
-          );
-        })}
+              <TouchableOpacity
+                onPress={() => {
+                  setEditingSection(section);
+                  openSchedulePicker({
+                    target: "section-end",
+                    section,
+                    title: `${section} End`,
+                    value: sectionTimes[section]?.end,
+                  });
+                }}
+                className="bg-[#0B1F1F] p-3.5 rounded-2xl mb-4 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
+              >
+                <Text className="text-[#E8F4F4] font-bold text-xs">
+                  End: {sectionTimes[section]?.end ? formatDateTimeForDisplay(sectionTimes[section].end) : "Select End Date & Time"}
+                </Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+
+        {isSectionExpanded &&
+          sectionTasks.map((task) => {
+            const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+            const taskDate = parseStoredDateTime(task.scheduledTime);
+            const taskTimestamp = taskDate?.getTime() || 0;
+
+            const upcomingReminders = [];
+            if (task.scheduledTime) {
+              const intervals = [20, 10, 5, 0];
+              intervals.forEach((mins) => {
+                const triggerTime = taskTimestamp - mins * 60000;
+                if (triggerTime + 60000 > Date.now()) {
+                  const dateObj = new Date(triggerTime);
+                  upcomingReminders.push(
+                    dateObj.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  );
+                }
+              });
+            }
+
+            const totalSubtasks = subtasks.length;
+            const completedSubtasks = subtasks.filter((s) => s.completed).length;
+            const isTaskExpanded = expandedTaskId === task.id;
+            const hasPendingNotification =
+              Array.isArray(task.notificationId) && task.notificationId.length > 0;
+
+            const cardBgClass = activeTaskId === task.id ? "bg-[#123131]" : task.completed ? "bg-[#0B1F1F]/90 opacity-90" : "bg-[#0B1F1F]";
+            const cardBorderClass = activeTaskId === task.id ? "border-[#5EEAD4] border" : task.completed ? "border-[#7DFFB3]/60 border-l-4" : "border-[#337a7a]/35 border";
+            const cardShadowClass = activeTaskId === task.id ? "shadow-2xl shadow-[#5EEAD4]/20" : task.completed ? "shadow-lg shadow-[#7DFFB3]/10" : "shadow-md shadow-[#66b9b9]/10";
+
+            return (
+              <View
+                key={task.id}
+                onLayout={(event) => {
+                  taskPositions.current[task.id] = event.nativeEvent.layout.y;
+                }}
+                className={`p-4 rounded-[24px] mb-3 ${cardBgClass} ${cardBorderClass} ${cardShadowClass}`}
+              >
+                <Pressable onPress={() => toggleTaskCardExpansion(task.id)}>
+                  <View className="flex-row items-center justify-between pb-3 mb-2 border-b border-[#337a7a]/25">
+                    <View className="flex-row items-center flex-1">
+                      <TouchableOpacity
+                        onPress={(event) => {
+                          event.stopPropagation?.();
+                          toggleTask(task.id);
+                        }}
+                        className={`w-7 h-7 rounded-[10px] border-2 mr-3 items-center justify-center ${
+                          task.completed
+                            ? "bg-[#7DFFB3] border-[#7DFFB3]"
+                            : "bg-[#061414]/40 border-[#337a7a]"
+                        }`}
+                      >
+                        {task.completed && (
+                          <Text className="text-[#061414] text-sm font-bold">âœ“</Text>
+                        )}
+                      </TouchableOpacity>
+
+                      <View className="flex-row items-center flex-1 pr-2">
+                        <Text
+                          numberOfLines={2}
+                          className={`text-base font-bold flex-1 tracking-wide ${
+                            task.completed
+                              ? "text-[#9FB5B5] line-through"
+                              : "text-[#E8F4F4]"
+                          }`}
+                        >
+                          {task.title}
+                        </Text>
+                      </View>
+
+                      <View className="flex-row items-center space-x-3">
+                        <TouchableOpacity
+                          activeOpacity={0.7}
+                          onPress={(event) => {
+                            event.stopPropagation?.();
+                            setEditingTask(task);
+                            setIsEditMode(true);
+                            setTaskName(task.title);
+                            setTaskDetails(task.details || "");
+                            setScheduledDateTime(task.scheduledTime || "");
+                            setSelectedSection(task.section);
+                            setModalVisible(true);
+                          }}
+                          className="p-1.5 bg-[#66b9b9]/15 rounded-xl border border-[#66b9b9]/25"
+                        >
+                          <Text className="text-sm">âœï¸</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          activeOpacity={0.7}
+                          onPress={(event) => {
+                            event.stopPropagation?.();
+                            setDeleteTask(task);
+                            setDeleteModalVisible(true);
+                          }}
+                          className="p-1.5 bg-[#FF7B7B]/15 rounded-xl border border-[#FF7B7B]/25"
+                        >
+                          <Text className="text-sm">ðŸ—‘ï¸</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+
+                  <View className="flex-row items-center justify-between mt-1">
+                    {task.scheduledTime ? (
+                      <Text className="text-[#9FB5B5] text-xs font-semibold">
+                        {formatDateTimeForDisplay(task.scheduledTime)}
+                      </Text>
+                    ) : (
+                      <Text className="text-[#9FB5B5] text-xs font-semibold">
+                        No schedule yet
+                      </Text>
+                    )}
+                    {hasPendingNotification ? (
+                      <Text className="text-[#7DFFB3] text-xs ml-2">ðŸ””</Text>
+                    ) : null}
+                  </View>
+                </Pressable>
+
+                {isTaskExpanded && (
+                  <>
+                    {upcomingReminders.length > 0 ? (
+                      <View className="mt-3 p-3 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/25 shadow-sm shadow-[#66b9b9]/10">
+                        <View className="flex-row items-center mb-1.5">
+                          <View
+                            className={`w-2 h-2 rounded-full mr-2 ${
+                              hasPendingNotification
+                                ? "bg-[#7DFFB3]"
+                                : upcomingReminders.length > 0
+                                ? "bg-[#FF7B7B]"
+                                : "bg-[#9FB5B5]"
+                            }`}
+                          />
+                          <Text className="text-[#66b9b9] text-[10px] font-bold tracking-widest uppercase">
+                            {hasPendingNotification
+                              ? "ALARMS ACTIVE"
+                              : "ALARMS OFFLINE"}
+                          </Text>
+                        </View>
+                        <View className="flex-row flex-wrap gap-1.5">
+                          {upcomingReminders.map((time, idx) => (
+                            <View
+                              key={idx}
+                              className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35"
+                            >
+                              <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide">
+                                ðŸ”” {time}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+
+                        {!hasPendingNotification && (
+                          <Text className="text-[#FF7B7B] text-[9px] mt-1.5 font-bold">
+                            âš ï¸ Tap Edit & Save to re-arm alarms
+                          </Text>
+                        )}
+                      </View>
+                    ) : null}
+
+                    {task.details ? (
+                      <View className="mt-2 p-3 bg-[#061414]/45 rounded-2xl border border-[#337a7a]/25">
+                        <Text className="text-[#E8F4F4] text-xs leading-5">
+                          {task.details}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    <View className="pl-3 border-l-2 border-[#66b9b9]/35 my-2 mt-3">
+                      <View className="flex-row justify-between mb-2">
+                        <Text className="text-[#99bdbd] text-[10px] font-bold tracking-widest uppercase">
+                          Sub-Tasks
+                        </Text>
+                        {totalSubtasks > 0 && (
+                          <Text className="text-[#9FB5B5] text-[10px] font-bold">
+                            {completedSubtasks}/{totalSubtasks}
+                          </Text>
+                        )}
+                      </View>
+
+                      {subtasks.map((sub) => (
+                        <View
+                          key={sub.id}
+                          className="flex-row items-center mb-2"
+                        >
+                          <TouchableOpacity
+                            onPress={() => toggleSubtask(task.id, sub.id)}
+                            className={`w-4 h-4 rounded-[4px] border border-[#66b9b9] mr-2 justify-center items-center ${
+                              sub.completed ? "bg-[#66b9b9]" : "bg-transparent"
+                            }`}
+                          >
+                            {sub.completed && (
+                              <Text className="text-[#061414] text-[8px] font-bold">âœ“</Text>
+                            )}
+                          </TouchableOpacity>
+                          <Text
+                            className={`flex-1 text-xs ${
+                              sub.completed ? "text-[#9FB5B5] line-through" : "text-[#E8F4F4]"
+                            }`}
+                          >
+                            {sub.title}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() => deleteSubtask(task.id, sub.id)}
+                            className="p-1"
+                          >
+                            <Text className="text-[#FF7B7B] ml-2 text-xs">âœ•</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+
+                      <TextInput
+                        placeholder="+ Add step..."
+                        placeholderTextColor={COLORS.muted}
+                        onSubmitEditing={(e) => {
+                          addSubtask(task.id, e.nativeEvent.text);
+                          e.currentTarget.clear();
+                        }}
+                        className="text-[#E8F4F4] text-xs py-1 border-b border-[#66b9b9]/35"
+                      />
+                    </View>
+
+                    {lastCompletedTaskId === task.id && (
+                      <Text className="text-[#7DFFB3] text-[10px] mt-1 font-bold uppercase tracking-widest">
+                        âœ… Last completed
+                      </Text>
+                    )}
+
+                    {activeTaskId === task.id && (
+                      <Text className="text-[#5EEAD4] text-[10px] mt-1 font-bold uppercase tracking-widest">
+                        ðŸŽ¯ In Focus
+                      </Text>
+                    )}
+
+                    <Animated.View
+                      style={{ transform: [{ translateX: shakeAnim }] }}
+                      className="flex-row mt-3 items-center flex-wrap"
+                    >
+                      {[10, 20, 30].map((min) => (
+                        <TouchableOpacity
+                          key={min}
+                          onPress={() =>
+                            setTaskDurations((prev) => ({
+                              ...prev,
+                              [task.id]: min * 60,
+                            }))
+                          }
+                          className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
+                            showDurationError === task.id
+                              ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
+                              : taskDurations[task.id] === min * 60
+                              ? "bg-[#66b9b9] border-[#66b9b9]"
+                              : "bg-[#123131]/80 border-[#337a7a]/40"
+                          }`}
+                        >
+                          <Text
+                            className={`text-[11px] font-bold ${
+                              taskDurations[task.id] === min * 60
+                                ? "text-[#061414]"
+                                : "text-[#E8F4F4]"
+                            }`}
+                          >
+                            {min}m
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+
+                      <TouchableOpacity
+                        onPress={() => {
+                          setCurrentTaskForTime(task.id);
+                          setTimeModalVisible(true);
+                        }}
+                        className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
+                          showDurationError === task.id
+                            ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
+                            : "bg-[#123131]/80 border-[#337a7a]/40"
+                        }`}
+                      >
+                        <Text className="text-[#E8F4F4] text-[11px] font-bold">
+                          â± Custom
+                        </Text>
+                      </TouchableOpacity>
+                    </Animated.View>
+
+                    {showDurationError === task.id && (
+                      <Text className="text-[#FF7B7B] text-[10px] mt-1 font-bold">
+                        â± Please select focus time
+                      </Text>
+                    )}
+
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (task.completed) return;
+
+                        const duration = taskDurations[task.id];
+
+                        if (!duration) {
+                          setShowDurationError(task.id);
+                          triggerShake();
+
+                          setTimeout(() => setShowDurationError(null), 2000);
+                          return;
+                        }
+
+                        startFocus(task.id);
+                      }}
+                      className={`mt-2 self-start px-3 py-2 rounded-full border ${
+                        taskDurations[task.id]
+                          ? "bg-[#66b9b9]/15 border-[#66b9b9]/40"
+                          : "bg-[#123131]/70 border-[#337a7a]/35"
+                      }`}
+                    >
+                      <Text
+                        className={`font-bold text-xs uppercase tracking-widest ${
+                          taskDurations[task.id] ? "text-[#66b9b9]" : "text-[#9FB5B5]"
+                        }`}
+                      >
+                        {taskDurations[task.id] ? "â–¶ Start Focus" : "â± Select Focus Time"}
+                      </Text>
+                    </TouchableOpacity>
+
+                    {taskDurations[task.id] && (
+                      <Text className="text-[#99bdbd] text-[10px] mt-1.5 font-semibold">
+                        â± {formatDuration(taskDurations[task.id])} selected
+                      </Text>
+                    )}
+
+                    {task.attachment ? (
+                      <TouchableOpacity
+                        onPress={() => {
+                          const isPdf = task.attachment
+                            .toLowerCase()
+                            .endsWith(".pdf");
+                          setCurrentFile({
+                            uri: task.attachment,
+                            type: isPdf ? "pdf" : "image",
+                          });
+                          setViewerVisible(true);
+                        }}
+                        className="mt-3 flex-row items-center bg-[#123131]/80 self-start p-1.5 px-3 rounded-full border border-[#66b9b9]/25"
+                      >
+                        <Text className="text-[#66b9b9] text-xs font-bold">
+                          ðŸ“Ž View Attachment
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </>
+                )}
+              </View>
+            );
+          })}
       </View>
     );
   };
@@ -3254,3 +3315,4 @@ export default function Home() {
     </>
   );
 }
+
