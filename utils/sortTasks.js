@@ -49,7 +49,9 @@ const compareCompletedTasks = (a, b) => {
 
 export const sortTasksForSection = (tasks, section, now = new Date()) => {
   const nowTime = now.getTime();
-  const sectionTasks = tasks.filter((task) => task.section === section);
+  const sectionTasks = tasks.filter(
+    (task) => task.section === section && !task.isPinned
+  );
 
   const pendingTasks = [];
   const completedTodayTasks = [];
@@ -73,7 +75,12 @@ export const sortTasksForSection = (tasks, section, now = new Date()) => {
 
 export const getPendingTaskCount = (tasks, section) =>
   tasks.reduce((count, task) => {
-    if (task.section !== section || task.completed) return count;
+    if (task.section !== section || task.completed || task.isPinned) return count;
     return count + 1;
   }, 0);
 
+export const sortPinnedTasks = (tasks, now = new Date()) => {
+  const nowTime = now.getTime();
+  const pinned = tasks.filter((task) => task.isPinned && !task.completed);
+  return pinned.sort((a, b) => comparePendingTasks(a, b, nowTime));
+};

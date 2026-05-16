@@ -18,7 +18,7 @@ const compareByTimeThenId = (a, b) => {
 
 export const getNearestUpcomingSection = (tasks, now = new Date()) => {
   const nowTime = now.getTime();
-  const pendingTasks = tasks.filter((task) => !task.completed);
+  const pendingTasks = tasks.filter((task) => !task.completed && !task.isPinned);
 
   if (!pendingTasks.length) return null;
 
@@ -36,4 +36,3 @@ export const getNearestUpcomingSection = (tasks, now = new Date()) => {
   const fallback = [...pendingTasks].sort(compareByTimeThenId)[0];
   return fallback?.section ?? null;
 };
-

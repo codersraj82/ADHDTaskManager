@@ -31,7 +31,11 @@ import {
   formatSqliteDateTime,
   parseStoredDateTime,
 } from "../../utils/formatDateTime";
-import { sortTasksForSection, getPendingTaskCount } from "../../utils/sortTasks";
+import {
+  sortTasksForSection,
+  getPendingTaskCount,
+  sortPinnedTasks,
+} from "../../utils/sortTasks";
 import {
   getNearestUpcomingSection,
   SECTION_ORDER,
@@ -106,9 +110,9 @@ const getYesterdayKey = () => {
 //*************main component function********* */
 export default function Home() {
   const [tasks, setTasks] = useState([
-    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [] },
-    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [] },
-    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [] },
+    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [], isPinned: false },
+    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [], isPinned: false },
+    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [], isPinned: false },
   ]);
   const [totalFocusTime, setTotalFocusTime] = useState(0); // seconds
 
@@ -159,6 +163,7 @@ export default function Home() {
   const [taskAttachment, setTaskAttachment] = useState("");
   const [detailsHeight, setDetailsHeight] = useState(80);
   const [expandedTaskId, setExpandedTaskId] = useState(null);
+  const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
   const [timeError, setTimeError] = useState(false);
   const [sectionTimes, setSectionTimes] = useState({
@@ -234,6 +239,9 @@ export default function Home() {
     [tasks]
   );
 
+  const pinnedTasks = useMemo(() => sortPinnedTasks(tasks), [tasks]);
+  const pinnedTaskCount = pinnedTasks.length;
+
   // 1. Prepare the JSON string for the DB
   const subtasksJSON = JSON.stringify([]); 
 
@@ -290,12 +298,14 @@ export default function Home() {
   const drawerX = useRef(new Animated.Value(-320)).current;
   const focusDismissTimeoutRef = useRef(null);
   const focusSessionRecordedRef = useRef(false);
+  const hasAutoExpandedInitialSection = useRef(false);
   const sectionChevronAnims = useRef(
     SECTION_ORDER.reduce((acc, sectionName) => {
       acc[sectionName] = new Animated.Value(0);
       return acc;
     }, {})
   ).current;
+  const pinnedChevronAnim = useRef(new Animated.Value(0)).current;
 
   const saveSetting = (key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
@@ -560,7 +570,8 @@ export default function Home() {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT, section TEXT, completed INTEGER,
           scheduledTime TEXT, details TEXT, attachment TEXT,
-          subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]' 
+          subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
+          isPinned INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS section_settings (
           section_name TEXT PRIMARY KEY,
@@ -602,6 +613,9 @@ export default function Home() {
             "ALTER TABLE tasks ADD COLUMN notificationId TEXT DEFAULT '[]';"
           );
         }
+        if (!columnNames.includes("isPinned")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN isPinned INTEGER DEFAULT 0;");
+        }
 
         // 3. Load All Data (Tasks + Section Settings)
         const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
@@ -610,6 +624,7 @@ export default function Home() {
           completed: t.completed === 1,
           subtasks: JSON.parse(t.subtasks || "[]"),
           notificationId: JSON.parse(t.notificationId || "[]"),
+          isPinned: t.isPinned === 1,
         }));
         setTasks(loadedTasks);
 
@@ -730,9 +745,38 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (isPinnedSectionExpanded || activeTaskId || !nearestUpcomingSection) return;
+
     setExpandedSection((prev) => {
-      const nextSection = nearestUpcomingSection || null;
-      if (prev === nextSection) return prev;
+      if (prev) return prev;
+      if (hasAutoExpandedInitialSection.current) return prev;
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      const nextAnim = sectionChevronAnims[nearestUpcomingSection];
+      if (nextAnim) {
+        Animated.timing(nextAnim, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }).start();
+      }
+      hasAutoExpandedInitialSection.current = true;
+      return nearestUpcomingSection;
+    });
+  }, [
+    activeTaskId,
+    isPinnedSectionExpanded,
+    nearestUpcomingSection,
+    sectionChevronAnims,
+  ]);
+
+  useEffect(() => {
+    if (!activeTaskId || isPinnedSectionExpanded) return;
+    const activeTask = tasks.find((task) => task.id === activeTaskId);
+    if (!activeTask || activeTask.isPinned) return;
+
+    setExpandedSection((prev) => {
+      if (prev === activeTask.section) return prev;
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       if (prev) {
@@ -745,20 +789,19 @@ export default function Home() {
           }).start();
         }
       }
-      if (nextSection) {
-        const nextAnim = sectionChevronAnims[nextSection];
-        if (nextAnim) {
-          Animated.timing(nextAnim, {
-            toValue: 1,
-            duration: 180,
-            useNativeDriver: true,
-          }).start();
-        }
+
+      const nextAnim = sectionChevronAnims[activeTask.section];
+      if (nextAnim) {
+        Animated.timing(nextAnim, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }).start();
       }
 
-      return nextSection;
+      return activeTask.section;
     });
-  }, [nearestUpcomingSection, sectionChevronAnims]);
+  }, [activeTaskId, isPinnedSectionExpanded, sectionChevronAnims, tasks]);
 
   useEffect(() => {
     if (scheduledDateTime) {
@@ -939,14 +982,57 @@ export default function Home() {
         if (nextSection === prev) return prev;
 
         runLayoutAnimation();
+        if (isPinnedSectionExpanded) {
+          setIsPinnedSectionExpanded(false);
+          Animated.timing(pinnedChevronAnim, {
+            toValue: 0,
+            duration: 180,
+            useNativeDriver: true,
+          }).start();
+        }
         if (prev) animateSectionChevron(prev, false);
         if (nextSection) animateSectionChevron(nextSection, true);
+        if (nextSection) {
+          hasAutoExpandedInitialSection.current = true;
+        }
 
         return nextSection;
       });
     },
-    [animateSectionChevron, runLayoutAnimation]
+    [animateSectionChevron, isPinnedSectionExpanded, pinnedChevronAnim, runLayoutAnimation]
   );
+
+  const togglePinnedSection = useCallback(() => {
+    runLayoutAnimation();
+    setIsPinnedSectionExpanded((prev) => {
+      const next = !prev;
+      Animated.timing(pinnedChevronAnim, {
+        toValue: next ? 1 : 0,
+        duration: 180,
+        useNativeDriver: true,
+      }).start();
+      if (next) {
+        setExpandedSection((current) => {
+          if (current) {
+            animateSectionChevron(current, false);
+          }
+          return null;
+        });
+      }
+      return next;
+    });
+  }, [animateSectionChevron, pinnedChevronAnim, runLayoutAnimation]);
+
+  useEffect(() => {
+    if (!isPinnedSectionExpanded || pinnedTaskCount > 0) return;
+    runLayoutAnimation();
+    setIsPinnedSectionExpanded(false);
+    Animated.timing(pinnedChevronAnim, {
+      toValue: 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [isPinnedSectionExpanded, pinnedChevronAnim, pinnedTaskCount, runLayoutAnimation]);
 
   const toggleTaskCardExpansion = useCallback(
     (taskId) => {
@@ -963,6 +1049,7 @@ export default function Home() {
       prev.map((task) => {
         if (task.id === id) {
           const updated = !task.completed;
+          const nextPinned = updated ? false : !!task.isPinned;
 
           // 1. 🧠 TIMER LOGIC
           // STOP TIMER IF ACTIVE TASK COMPLETED
@@ -1011,8 +1098,9 @@ export default function Home() {
 
           // 2. 💾 DATABASE UPDATE
           try {
-            db.runSync("UPDATE tasks SET completed = ? WHERE id = ?", [
+            db.runSync("UPDATE tasks SET completed = ?, isPinned = ? WHERE id = ?", [
               updated ? 1 : 0,
+              nextPinned ? 1 : 0,
               id,
             ]);
           } catch (e) {
@@ -1020,11 +1108,103 @@ export default function Home() {
           }
 
           // 3. 🔄 RETURN UPDATED TASK TO STATE
-          return { ...task, completed: updated };
+          return { ...task, completed: updated, isPinned: nextPinned };
         }
         return task;
       })
     );
+  };
+
+  const togglePinnedTask = useCallback((taskId) => {
+    setTasks((prev) =>
+      prev.map((task) => {
+        if (task.id !== taskId || task.completed) return task;
+        const nextPinned = !task.isPinned;
+
+        try {
+          db.runSync("UPDATE tasks SET isPinned = ? WHERE id = ?", [
+            nextPinned ? 1 : 0,
+            taskId,
+          ]);
+        } catch (error) {
+          console.log("Pin update error:", error);
+          return task;
+        }
+
+        return { ...task, isPinned: nextPinned };
+      })
+    );
+  }, []);
+
+  const recreateCompletedTask = async (task) => {
+    if (!task || !task.completed) return;
+
+    try {
+      const newScheduledTime = formatSqliteDateTime(new Date());
+      const sourceSubtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+      const recreatedSubtasks = sourceSubtasks.map((subtask) => ({
+        id: Date.now() + Math.floor(Math.random() * 100000),
+        title: subtask.title,
+        completed: false,
+      }));
+      const shouldCopyNotifications =
+        Array.isArray(task.notificationId) && task.notificationId.length > 0;
+      const recreatedNotificationIds = shouldCopyNotifications
+        ? await scheduleProReminders({
+            ...task,
+            scheduledTime: newScheduledTime,
+          })
+        : [];
+
+      const result = db.runSync(
+        `INSERT INTO tasks (
+        title,
+        section,
+        completed,
+        scheduledTime,
+        details,
+        attachment,
+        subtasks,
+        notificationId,
+        isPinned
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          task.title || "Task",
+          task.section || "Morning",
+          0,
+          newScheduledTime,
+          task.details || "",
+          task.attachment || "",
+          JSON.stringify(recreatedSubtasks),
+          JSON.stringify(recreatedNotificationIds),
+          0,
+        ]
+      );
+
+      const newTaskId = result.lastInsertRowId;
+      setTasks((prev) => [
+        ...prev,
+        {
+          ...task,
+          id: newTaskId,
+          completed: false,
+          scheduledTime: newScheduledTime,
+          subtasks: recreatedSubtasks,
+          notificationId: recreatedNotificationIds,
+          isPinned: false,
+        },
+      ]);
+
+      if (taskDurations[task.id]) {
+        setTaskDurations((prev) => ({
+          ...prev,
+          [newTaskId]: taskDurations[task.id],
+        }));
+      }
+    } catch (error) {
+      console.log("Repeat task error:", error);
+    }
   };
 
   const resetTaskForm = () => {
@@ -1166,20 +1346,77 @@ export default function Home() {
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
 
-    const sectionY = sectionPositions.current[task.section] || 0;
-    const taskY = taskPositions.current[taskId] || 0;
+    let changedExpansion = false;
+    const targetSectionKey = task.isPinned ? "Pinned" : task.section;
 
-    const absoluteY = sectionY + taskY;
+    if (task.isPinned) {
+      if (!isPinnedSectionExpanded) {
+        changedExpansion = true;
+        runLayoutAnimation();
+        setIsPinnedSectionExpanded(true);
+        Animated.timing(pinnedChevronAnim, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }).start();
+      }
+      setExpandedSection((current) => {
+        if (!current) return current;
+        changedExpansion = true;
+        animateSectionChevron(current, false);
+        return null;
+      });
+    } else {
+      if (isPinnedSectionExpanded) {
+        changedExpansion = true;
+        runLayoutAnimation();
+        setIsPinnedSectionExpanded(false);
+        Animated.timing(pinnedChevronAnim, {
+          toValue: 0,
+          duration: 180,
+          useNativeDriver: true,
+        }).start();
+      }
 
-    const screenHeight = Dimensions.get("window").height;
-    const cardHeight = 110;
+      setExpandedSection((current) => {
+        if (current === task.section) return current;
+        changedExpansion = true;
+        runLayoutAnimation();
+        if (current) {
+          animateSectionChevron(current, false);
+        }
+        animateSectionChevron(task.section, true);
+        hasAutoExpandedInitialSection.current = true;
+        return task.section;
+      });
+    }
 
-    const centerY = absoluteY - screenHeight / 2 + cardHeight / 2;
+    setTimeout(
+      () => {
+        const sectionY = sectionPositions.current[targetSectionKey] || 0;
+        const taskY = taskPositions.current[taskId] || 0;
 
-    scrollRef.current?.scrollTo({
-      y: centerY > 0 ? centerY : 0,
-      animated: true,
-    });
+        if (!taskY) {
+          scrollRef.current?.scrollTo({
+            y: sectionY > 0 ? sectionY : 0,
+            animated: true,
+          });
+          return;
+        }
+
+        const absoluteY = sectionY + taskY;
+
+        const screenHeight = Dimensions.get("window").height;
+        const cardHeight = 110;
+        const centerY = absoluteY - screenHeight / 2 + cardHeight / 2;
+
+        scrollRef.current?.scrollTo({
+          y: centerY > 0 ? centerY : 0,
+          animated: true,
+        });
+      },
+      changedExpansion ? 280 : 80
+    );
   };
 
   const triggerShake = () => {
@@ -1355,7 +1592,8 @@ export default function Home() {
              details = ?, 
              attachment = ?, 
              subtasks = ?, 
-             notificationId = ?
+             notificationId = ?,
+             isPinned = ?
          WHERE id = ?`,
           [
             taskName,
@@ -1365,6 +1603,7 @@ export default function Home() {
             attachmentUri || "",
             subtasksJSON,
             notificationIdJSON,
+            editingTask.isPinned ? 1 : 0,
             editingTask.id,
           ]
         );
@@ -1381,6 +1620,7 @@ export default function Home() {
                   attachment: attachmentUri,
                   subtasks: subtasksToSave,
                   notificationId: newScheduledIds,
+                  isPinned: !!t.isPinned,
                 }
               : t
           )
@@ -1399,9 +1639,10 @@ export default function Home() {
           details,
           attachment,
           subtasks,
-          notificationId
+          notificationId,
+          isPinned
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             taskName,
             selectedSection,
@@ -1411,6 +1652,7 @@ export default function Home() {
             attachmentUri || "",
             subtasksJSON,
             notificationIdJSON,
+            0,
           ]
         );
 
@@ -1428,6 +1670,7 @@ export default function Home() {
             attachment: attachmentUri,
             subtasks: subtasksToSave,
             notificationId: newScheduledIds,
+            isPinned: false,
           },
         ]);
       }
@@ -1471,11 +1714,32 @@ export default function Home() {
   const handleUndoDelete = () => {
     if (!lastDeletedTask) return;
 
-    db.runSync("INSERT INTO tasks (id, title, section) VALUES (?, ?, ?)", [
-      lastDeletedTask.id,
-      lastDeletedTask.title,
-      lastDeletedTask.section,
-    ]);
+    db.runSync(
+      `INSERT INTO tasks (
+        id,
+        title,
+        section,
+        completed,
+        scheduledTime,
+        details,
+        attachment,
+        subtasks,
+        notificationId,
+        isPinned
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        lastDeletedTask.id,
+        lastDeletedTask.title,
+        lastDeletedTask.section,
+        lastDeletedTask.completed ? 1 : 0,
+        lastDeletedTask.scheduledTime || "",
+        lastDeletedTask.details || "",
+        lastDeletedTask.attachment || "",
+        JSON.stringify(lastDeletedTask.subtasks || []),
+        JSON.stringify(lastDeletedTask.notificationId || []),
+        lastDeletedTask.isPinned ? 1 : 0,
+      ]
+    );
 
     setTasks((prev) => [...prev, lastDeletedTask]);
     setLastDeletedTask(null);
@@ -1953,7 +2217,7 @@ export default function Home() {
       if (triggerDate > now) {
         const id = await Notifications.scheduleNotificationAsync({
           content: {
-            title: `🎯 ${taskName}`,
+            title: `🎯 ${task.title}`,
             body: getAffirmativeMessage(
               task.title,
               taskDate.toLocaleString(),
@@ -2129,7 +2393,7 @@ export default function Home() {
     </Modal>
   );
 
-  const renderTaskMiniCard = (task, tone = "accent") => (
+  const renderTaskMiniCard = (task, tone = "accent", allowRepeat = false) => (
     <View key={task.id} className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-2xl p-3 mb-2">
       <Text className="text-[#E8F4F4] font-black">{task.title}</Text>
       <Text className="text-[#9FB5B5] text-xs mt-1">
@@ -2139,6 +2403,17 @@ export default function Home() {
         <Text className="text-[#7DFFB3] text-xs font-bold mt-2">
           You completed this. That counts. ✨
         </Text>
+      )}
+      {allowRepeat && (
+        <TouchableOpacity
+          onPress={() => recreateCompletedTask(task)}
+          className="self-start mt-2 flex-row items-center bg-[#66b9b9]/15 px-2.5 py-1.5 rounded-full border border-[#66b9b9]/30"
+        >
+          <Feather name="rotate-cw" size={12} color={COLORS.accent} />
+          <Text className="text-[#66b9b9] text-[10px] font-black ml-1.5 uppercase tracking-widest">
+            Repeat
+          </Text>
+        </TouchableOpacity>
       )}
     </View>
   );
@@ -2264,7 +2539,7 @@ export default function Home() {
 
     if (activePage === "completed") {
       return completedTaskList.length ? (
-        completedTaskList.map((task) => renderTaskMiniCard(task, "success"))
+        completedTaskList.map((task) => renderTaskMiniCard(task, "success", true))
       ) : (
         <Text className="text-[#9FB5B5] font-bold">Completed wins will appear here.</Text>
       );
@@ -2411,10 +2686,20 @@ export default function Home() {
   );
 
   const renderSection = (title, section) => {
-    const sectionTasks = sectionTasksMap[section] || [];
-    const pendingCount = sectionPendingCounts[section] || 0;
-    const isSectionExpanded = expandedSection === section;
-    const chevronRotation = sectionChevronAnims[section].interpolate({
+    const isPinnedVirtualSection = section === "Pinned";
+    const sectionTasks = isPinnedVirtualSection
+      ? pinnedTasks
+      : sectionTasksMap[section] || [];
+    const pendingCount = isPinnedVirtualSection
+      ? pinnedTaskCount
+      : sectionPendingCounts[section] || 0;
+    const isSectionExpanded = isPinnedVirtualSection
+      ? isPinnedSectionExpanded
+      : expandedSection === section;
+    const chevronAnim = isPinnedVirtualSection
+      ? pinnedChevronAnim
+      : sectionChevronAnims[section];
+    const chevronRotation = chevronAnim.interpolate({
       inputRange: [0, 1],
       outputRange: ["0deg", "180deg"],
     });
@@ -2429,14 +2714,18 @@ export default function Home() {
         <View className="mb-2">
           <TouchableOpacity
             activeOpacity={0.85}
-            onPress={() => toggleSectionExpansion(section)}
+            onPress={() =>
+              isPinnedVirtualSection
+                ? togglePinnedSection()
+                : toggleSectionExpansion(section)
+            }
             className="flex-row items-center justify-between mb-3"
           >
             <Text className="text-[#E8F4F4] text-xl font-black tracking-widest uppercase">
               {title}
             </Text>
             <View className="flex-row items-center">
-              {pendingCount > 0 ? (
+              {isPinnedVirtualSection || pendingCount > 0 ? (
                 <Text className="text-[#9FB5B5] text-[10px] font-bold mr-2">
                   {pendingCount}
                 </Text>
@@ -2447,7 +2736,7 @@ export default function Home() {
             </View>
           </TouchableOpacity>
 
-          {isSectionExpanded && (
+          {isSectionExpanded && !isPinnedVirtualSection && (
             <>
               <TouchableOpacity
                 onPress={testNotification}
@@ -2567,7 +2856,23 @@ export default function Home() {
                         </Text>
                       </View>
 
-                      <View className="flex-row items-center space-x-3">
+                      <View className="flex-row items-center">
+                        {!task.completed && (
+                          <TouchableOpacity
+                            activeOpacity={0.7}
+                            onPress={(event) => {
+                              event.stopPropagation?.();
+                              togglePinnedTask(task.id);
+                            }}
+                            className="p-1.5 mr-2 bg-[#FFD166]/15 rounded-xl border border-[#FFD166]/25"
+                          >
+                            <Feather
+                              name="bookmark"
+                              size={14}
+                              color={task.isPinned ? COLORS.warning : COLORS.muted}
+                            />
+                          </TouchableOpacity>
+                        )}
                         <TouchableOpacity
                           activeOpacity={0.7}
                           onPress={(event) => {
@@ -2580,7 +2885,7 @@ export default function Home() {
                             setSelectedSection(task.section);
                             setModalVisible(true);
                           }}
-                          className="p-1.5 bg-[#66b9b9]/15 rounded-xl border border-[#66b9b9]/25"
+                          className="p-1.5 mr-2 bg-[#66b9b9]/15 rounded-xl border border-[#66b9b9]/25"
                         >
                           <Feather name="edit-2" size={14} color={COLORS.accent} />
                         </TouchableOpacity>
@@ -2886,7 +3191,7 @@ export default function Home() {
         </Text>
 
         {/* ✅ Daily Progress Banner */}
-        <View className="bg-[#0B1F1F] p-5 rounded-[28px] mx-4 mb-4 border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
+        <View className="bg-[#0B1F1F] p-5 rounded-[28px] mx-4 mt-2 mb-4 border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
           {/* Top Row */}
           <View className="flex-row justify-between mb-3 items-end">
             <Text className="text-[#E8F4F4] text-lg font-black uppercase tracking-widest">
@@ -2952,6 +3257,8 @@ export default function Home() {
               : "Fresh start today 🌱"}
           </Text>
         </View>
+
+        {renderSection("Pinned Tasks", "Pinned")}
 
         {activeTaskId && (
           <View className="bg-[#0B1F1F] mx-4 p-5 rounded-[32px] border border-[#5EEAD4]/35 shadow-2xl shadow-[#5EEAD4]/15 mb-4">
@@ -3413,5 +3720,8 @@ export default function Home() {
     </>
   );
 }
+
+
+
 
 
