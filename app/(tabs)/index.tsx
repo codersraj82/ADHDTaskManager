@@ -51,6 +51,7 @@ import {
   parseRepeatDays,
   serializeRepeatDays,
 } from "../../utils/repeatTaskHelpers";
+import { formatRepeatLabel } from "../../utils/repeatLabelFormatter";
 
 const COLORS = {
   bg: "#061414",
@@ -333,6 +334,18 @@ export default function Home() {
 
   const pinnedTasks = useMemo(() => sortPinnedTasks(tasks), [tasks]);
   const pinnedTaskCount = pinnedTasks.length;
+  const repeatLabelByTaskId = useMemo(() => {
+    const labels = {};
+
+    tasks.forEach((task) => {
+      const label = formatRepeatLabel(task);
+      if (label) {
+        labels[task.id] = label;
+      }
+    });
+
+    return labels;
+  }, [tasks]);
 
   // 1. Prepare the JSON string for the DB
   const subtasksJSON = JSON.stringify([]); 
@@ -3218,6 +3231,9 @@ export default function Home() {
             const isTaskExpanded = expandedTaskId === task.id;
             const hasPendingNotification =
               Array.isArray(task.notificationId) && task.notificationId.length > 0;
+            const repeatLabel = repeatLabelByTaskId[task.id] || "";
+            const hasRepeatLabel = Boolean(repeatLabel);
+            const showTaskHeaderMeta = task.isPinned || hasRepeatLabel;
 
             const upcomingReminders = [];
             if (task.scheduledTime) {
@@ -3267,7 +3283,7 @@ export default function Home() {
                         ) : null}
                       </TouchableOpacity>
 
-                      <View className="flex-row items-center flex-1 pr-2">
+                      <View className="flex-1 pr-2">
                         <Text
                           numberOfLines={2}
                           className={`text-base font-bold flex-1 tracking-wide ${
@@ -3278,6 +3294,44 @@ export default function Home() {
                         >
                           {task.title}
                         </Text>
+
+                        {showTaskHeaderMeta ? (
+                          <View className="flex-row items-center flex-wrap mt-1">
+                            {task.isPinned ? (
+                              <View className="flex-row items-center mr-2">
+                                <Feather
+                                  name="bookmark"
+                                  size={11}
+                                  color={
+                                    task.completed ? COLORS.muted : COLORS.warning
+                                  }
+                                />
+                              </View>
+                            ) : null}
+
+                            {hasRepeatLabel ? (
+                              <View className="flex-row items-center flex-1 min-w-0">
+                                <Feather
+                                  name="repeat"
+                                  size={12}
+                                  color={
+                                    task.completed ? COLORS.accentSoft : COLORS.accent
+                                  }
+                                />
+                                <Text
+                                  numberOfLines={1}
+                                  className={`ml-1 text-[10px] font-bold ${
+                                    task.completed
+                                      ? "text-[#99bdbd]"
+                                      : "text-[#66b9b9]"
+                                  }`}
+                                >
+                                  {repeatLabel}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        ) : null}
                       </View>
 
                       <View className="flex-row items-center">
