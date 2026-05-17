@@ -39,6 +39,18 @@ import {
   getNearestUpcomingSection,
   SECTION_ORDER,
 } from "../../utils/sectionHelpers";
+import { buildNextRecurringTask } from "../../utils/repeatTaskGenerator";
+import {
+  MONTHLY_REPEAT_TYPES,
+  REPEAT_TYPES,
+  WEEKDAY_OPTIONS,
+  createRepeatGroupId,
+  isRepeatingTask,
+  normalizeRepeatType,
+  normalizeTaskRepeatSettings,
+  parseRepeatDays,
+  serializeRepeatDays,
+} from "../../utils/repeatTaskHelpers";
 
 const COLORS = {
   bg: "#061414",
@@ -121,6 +133,14 @@ const SECTION_HEADER_CLASSES = {
   Work: "bg-[#123131]/90",
   Evening: "bg-[#132836]/95",
 };
+
+const REPEAT_TYPE_OPTIONS = [
+  { key: REPEAT_TYPES.NONE, label: "None" },
+  { key: REPEAT_TYPES.DAILY, label: "Daily" },
+  { key: REPEAT_TYPES.WEEKLY, label: "Weekly" },
+  { key: REPEAT_TYPES.MONTHLY, label: "Monthly" },
+  { key: REPEAT_TYPES.YEARLY, label: "Yearly" },
+];
 
 const getDayBounds = (now = new Date()) => {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -642,6 +662,12 @@ export default function Home() {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT, section TEXT, completed INTEGER,
           completedAt TEXT,
+          repeatType TEXT DEFAULT 'none',
+          repeatDays TEXT DEFAULT '[]',
+          repeatMonthlyType TEXT DEFAULT '',
+          repeatCustomDate TEXT DEFAULT '',
+          repeatYearlyDate TEXT DEFAULT '',
+          repeatGroupId TEXT DEFAULT '',
           scheduledTime TEXT, details TEXT, attachment TEXT,
           subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
           isPinned INTEGER DEFAULT 0
@@ -692,6 +718,30 @@ export default function Home() {
         if (!columnNames.includes("completedAt")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN completedAt TEXT;");
         }
+        if (!columnNames.includes("repeatType")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN repeatType TEXT DEFAULT 'none';");
+        }
+        if (!columnNames.includes("repeatDays")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN repeatDays TEXT DEFAULT '[]';");
+        }
+        if (!columnNames.includes("repeatMonthlyType")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN repeatMonthlyType TEXT DEFAULT '';"
+          );
+        }
+        if (!columnNames.includes("repeatCustomDate")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN repeatCustomDate TEXT DEFAULT '';"
+          );
+        }
+        if (!columnNames.includes("repeatYearlyDate")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN repeatYearlyDate TEXT DEFAULT '';"
+          );
+        }
+        if (!columnNames.includes("repeatGroupId")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN repeatGroupId TEXT DEFAULT '';");
+        }
 
         // 3. Load All Data (Tasks + Section Settings)
         const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
@@ -699,6 +749,12 @@ export default function Home() {
           ...t,
           completed: t.completed === 1,
           completedAt: t.completedAt || null,
+          repeatType: normalizeRepeatType(t.repeatType),
+          repeatDays: parseRepeatDays(t.repeatDays),
+          repeatMonthlyType: t.repeatMonthlyType || "",
+          repeatCustomDate: t.repeatCustomDate || "",
+          repeatYearlyDate: t.repeatYearlyDate || "",
+          repeatGroupId: t.repeatGroupId || "",
           subtasks: JSON.parse(t.subtasks || "[]"),
           notificationId: JSON.parse(t.notificationId || "[]"),
           isPinned: t.isPinned === 1,
@@ -1037,6 +1093,16 @@ export default function Home() {
   const [modalVisible, setModalVisible] = useState(false);
   const [taskName, setTaskName] = useState("");
   const [selectedSection, setSelectedSection] = useState("Morning");
+  const [repeatType, setRepeatType] = useState(REPEAT_TYPES.NONE);
+  const [repeatDays, setRepeatDays] = useState([]);
+  const [repeatMonthlyType, setRepeatMonthlyType] = useState(
+    MONTHLY_REPEAT_TYPES.FIRST
+  );
+  const [repeatCustomDate, setRepeatCustomDate] = useState("");
+  const [repeatYearlyDate, setRepeatYearlyDate] = useState("");
+  const [editRepeatScopeModalVisible, setEditRepeatScopeModalVisible] =
+    useState(false);
+  const [pendingEditPayload, setPendingEditPayload] = useState(null);
 
   const runLayoutAnimation = useCallback(() => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -1123,83 +1189,186 @@ export default function Home() {
     [runLayoutAnimation]
   );
 
+  const cancelTaskReminders = useCallback(async (notificationValue) => {
+    if (!notificationValue) return;
+
+    try {
+      const ids = Array.isArray(notificationValue)
+        ? notificationValue
+        : JSON.parse(notificationValue || "[]");
+
+      if (!Array.isArray(ids) || !ids.length) return;
+
+      await Promise.all(
+        ids.map((notifId) =>
+          Notifications.cancelScheduledNotificationAsync(notifId).catch(
+            () => null
+          )
+        )
+      );
+    } catch (error) {
+      console.log("Reminder cancel error:", error);
+    }
+  }, []);
+
+  const createNextRecurringTaskInstance = async (completedTask) => {
+      if (!completedTask || !isRepeatingTask(completedTask)) return;
+
+      const normalized = normalizeTaskRepeatSettings(completedTask);
+      const sourceWithRepeat = {
+        ...completedTask,
+        ...normalized,
+      };
+      const nextTask = buildNextRecurringTask(sourceWithRepeat);
+      if (!nextTask?.scheduledTime) return;
+
+      const repeatGroupId = normalized.repeatGroupId || createRepeatGroupId();
+      const existing =
+        db.getFirstSync(
+          "SELECT id FROM tasks WHERE repeatGroupId = ? AND scheduledTime = ? LIMIT 1",
+          [repeatGroupId, nextTask.scheduledTime]
+        ) || null;
+
+      if (existing?.id) return;
+
+      const scheduledIds = await scheduleProReminders({
+        ...nextTask,
+        title: sourceWithRepeat.title,
+      });
+
+      const result = db.runSync(
+        `INSERT INTO tasks (
+          title,
+          section,
+          completed,
+          completedAt,
+          repeatType,
+          repeatDays,
+          repeatMonthlyType,
+          repeatCustomDate,
+          repeatYearlyDate,
+          repeatGroupId,
+          scheduledTime,
+          details,
+          attachment,
+          subtasks,
+          notificationId,
+          isPinned
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          nextTask.title || "Task",
+          nextTask.section || "Morning",
+          0,
+          null,
+          normalized.repeatType,
+          serializeRepeatDays(normalized.repeatDays),
+          normalized.repeatMonthlyType || "",
+          normalized.repeatCustomDate || "",
+          normalized.repeatYearlyDate || "",
+          repeatGroupId,
+          nextTask.scheduledTime || "",
+          nextTask.details || "",
+          nextTask.attachment || "",
+          JSON.stringify(nextTask.subtasks || []),
+          JSON.stringify(scheduledIds),
+          0,
+        ]
+      );
+
+      const insertedId = result.lastInsertRowId;
+      setTasks((prev) => [
+        ...prev,
+        {
+          ...nextTask,
+          id: insertedId,
+          repeatType: normalized.repeatType,
+          repeatDays: normalized.repeatDays,
+          repeatMonthlyType: normalized.repeatMonthlyType,
+          repeatCustomDate: normalized.repeatCustomDate,
+          repeatYearlyDate: normalized.repeatYearlyDate,
+          repeatGroupId,
+          notificationId: scheduledIds,
+          completed: false,
+          completedAt: null,
+          isPinned: false,
+        },
+      ]);
+  };
+
   //*****handler functions*********** */
   // ✅ TOGGLE TASK
   const toggleTask = async (id) => {
     setTasks((prev) =>
       prev.map((task) => {
-        if (task.id === id) {
-          const updated = !task.completed;
-          const nextPinned = updated ? false : !!task.isPinned;
-          const completedAt = updated
-            ? formatSqliteDateTime(new Date())
-            : null;
+        if (task.id !== id) return task;
 
-          // 1. 🧠 TIMER LOGIC
-          // STOP TIMER IF ACTIVE TASK COMPLETED
-          if (updated === true) {
-            setLastCompletedTaskId(task.id);
-            recordDailyCompletion();
-            showCelebration("🎉 Task completed! Keep going 🚀", "✅");
+        const updated = !task.completed;
+        const nextPinned = updated ? false : !!task.isPinned;
+        const completedAt = updated ? formatSqliteDateTime(new Date()) : null;
+        const normalizedRepeat = normalizeTaskRepeatSettings(task);
+        const repeatGroupId =
+          normalizedRepeat.repeatGroupId ||
+          (isRepeatingTask(task) ? createRepeatGroupId() : "");
 
-            // 🔕 CANCEL PENDING NOTIFICATIONS/ALARMS
-            if (task.notificationId) {
-              try {
-                const ids = Array.isArray(task.notificationId)
-                  ? task.notificationId
-                  : JSON.parse(task.notificationId || "[]");
-                if (Array.isArray(ids)) {
-                  ids.forEach((notifId) => {
-                    Notifications.cancelScheduledNotificationAsync(notifId);
-                  });
-                  console.log(
-                    `Cancelled ${ids.length} reminders for task: ${task.title}`
-                  );
-                }
-              } catch (e) {
-                console.log("Error cancelling notifications:", e);
-              }
-            }
-          }
-
-          // Handle focus time session saving
-          if (task.id === activeTaskId && updated === true) {
-            setIsTimerRunning(false);
-            if (focusDismissTimeoutRef.current) {
-              clearTimeout(focusDismissTimeoutRef.current);
-              focusDismissTimeoutRef.current = null;
-            }
-
-            // Save current session into total
-            if (focusTime > 0 && !focusSessionRecordedRef.current) {
-              recordFocusSession(focusTime);
-            }
-            focusSessionRecordedRef.current = false;
-
-            setFocusTime(0);
-            setIsFocusCompleted(false);
-            setActiveTaskId(null);
-          }
-
-          // 2. 💾 DATABASE UPDATE
-          try {
-            db.runSync(
-              "UPDATE tasks SET completed = ?, isPinned = ?, completedAt = ? WHERE id = ?",
-              [updated ? 1 : 0, nextPinned ? 1 : 0, completedAt, id]
-            );
-          } catch (e) {
-            console.log("Update error:", e);
-          }
-
-          // 3. 🔄 RETURN UPDATED TASK TO STATE
-          return {
-            ...task,
-            completed: updated,
-            completedAt,
-            isPinned: nextPinned,
-          };
+        if (updated) {
+          setLastCompletedTaskId(task.id);
+          recordDailyCompletion();
+          showCelebration("Task completed! Keep going", "OK");
+          cancelTaskReminders(task.notificationId);
         }
-        return task;
+
+        if (task.id === activeTaskId && updated) {
+          setIsTimerRunning(false);
+          if (focusDismissTimeoutRef.current) {
+            clearTimeout(focusDismissTimeoutRef.current);
+            focusDismissTimeoutRef.current = null;
+          }
+
+          if (focusTime > 0 && !focusSessionRecordedRef.current) {
+            recordFocusSession(focusTime);
+          }
+          focusSessionRecordedRef.current = false;
+
+          setFocusTime(0);
+          setIsFocusCompleted(false);
+          setActiveTaskId(null);
+        }
+
+        try {
+          db.runSync(
+            "UPDATE tasks SET completed = ?, isPinned = ?, completedAt = ?, repeatGroupId = ? WHERE id = ?",
+            [updated ? 1 : 0, nextPinned ? 1 : 0, completedAt, repeatGroupId, id]
+          );
+        } catch (error) {
+          console.log("Update error:", error);
+        }
+
+        if (updated && isRepeatingTask(task)) {
+          createNextRecurringTaskInstance({
+            ...task,
+            ...normalizedRepeat,
+            repeatGroupId,
+            completed: true,
+            completedAt,
+            isPinned: false,
+          }).catch((error) => {
+            console.log("Recurring generation error:", error);
+          });
+        }
+
+        return {
+          ...task,
+          completed: updated,
+          completedAt,
+          repeatType: normalizedRepeat.repeatType,
+          repeatDays: normalizedRepeat.repeatDays,
+          repeatMonthlyType: normalizedRepeat.repeatMonthlyType,
+          repeatCustomDate: normalizedRepeat.repeatCustomDate,
+          repeatYearlyDate: normalizedRepeat.repeatYearlyDate,
+          repeatGroupId,
+          isPinned: nextPinned,
+        };
       })
     );
   };
@@ -1230,6 +1399,10 @@ export default function Home() {
 
     try {
       const newScheduledTime = formatSqliteDateTime(new Date());
+      const normalizedRepeat = normalizeTaskRepeatSettings(task);
+      const repeatGroupId =
+        normalizedRepeat.repeatGroupId ||
+        (isRepeatingTask(task) ? createRepeatGroupId() : "");
       const sourceSubtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
       const recreatedSubtasks = sourceSubtasks.map((subtask) => ({
         id: Date.now() + Math.floor(Math.random() * 100000),
@@ -1251,6 +1424,12 @@ export default function Home() {
         section,
         completed,
         completedAt,
+        repeatType,
+        repeatDays,
+        repeatMonthlyType,
+        repeatCustomDate,
+        repeatYearlyDate,
+        repeatGroupId,
         scheduledTime,
         details,
         attachment,
@@ -1258,12 +1437,18 @@ export default function Home() {
         notificationId,
         isPinned
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
           task.title || "Task",
           task.section || "Morning",
           0,
           null,
+          normalizedRepeat.repeatType,
+          serializeRepeatDays(normalizedRepeat.repeatDays),
+          normalizedRepeat.repeatMonthlyType || "",
+          normalizedRepeat.repeatCustomDate || "",
+          normalizedRepeat.repeatYearlyDate || "",
+          repeatGroupId,
           newScheduledTime,
           task.details || "",
           task.attachment || "",
@@ -1281,6 +1466,12 @@ export default function Home() {
           id: newTaskId,
           completed: false,
           completedAt: null,
+          repeatType: normalizedRepeat.repeatType,
+          repeatDays: normalizedRepeat.repeatDays,
+          repeatMonthlyType: normalizedRepeat.repeatMonthlyType,
+          repeatCustomDate: normalizedRepeat.repeatCustomDate,
+          repeatYearlyDate: normalizedRepeat.repeatYearlyDate,
+          repeatGroupId,
           scheduledTime: newScheduledTime,
           subtasks: recreatedSubtasks,
           notificationId: recreatedNotificationIds,
@@ -1304,6 +1495,11 @@ export default function Home() {
     setTaskDetails("");
     setScheduledDateTime("");
     setSelectedSection("Morning");
+    setRepeatType(REPEAT_TYPES.NONE);
+    setRepeatDays([]);
+    setRepeatMonthlyType(MONTHLY_REPEAT_TYPES.FIRST);
+    setRepeatCustomDate("");
+    setRepeatYearlyDate("");
     setAttachmentUri(null);
     setAttachmentName("");
     setTimeAdjusted(false);
@@ -1326,6 +1522,11 @@ export default function Home() {
     setTaskDetails("");
     setSelectedSection("Morning");
     setScheduledDateTime("");
+    setRepeatType(REPEAT_TYPES.NONE);
+    setRepeatDays([]);
+    setRepeatMonthlyType(MONTHLY_REPEAT_TYPES.FIRST);
+    setRepeatCustomDate("");
+    setRepeatYearlyDate("");
     setAttachmentUri(null);
     setAttachmentName("");
     setTimeAdjusted(false);
@@ -1551,258 +1752,364 @@ export default function Home() {
     }, 5500);
   };
 
+  const toggleWeeklyRepeatDay = useCallback((weekday) => {
+    setRepeatDays((prev) => {
+      const current = parseRepeatDays(prev);
+      return current.includes(weekday)
+        ? current.filter((day) => day !== weekday)
+        : [...current, weekday].sort((a, b) => a - b);
+    });
+  }, []);
+
+  const buildTaskDraftPayload = () => {
+    let finalTime = "";
+
+    if (scheduledDateTime) {
+      const selectedDate = parseStoredDateTime(scheduledDateTime);
+      if (selectedDate) {
+        const corrected = restrictToSection(selectedSection, selectedDate);
+        finalTime = formatSqliteDateTime(corrected);
+      }
+    }
+
+    const normalizedType = normalizeRepeatType(repeatType);
+    let normalizedDays =
+      normalizedType === REPEAT_TYPES.WEEKLY ? parseRepeatDays(repeatDays) : [];
+
+    if (normalizedType === REPEAT_TYPES.WEEKLY && !normalizedDays.length) {
+      const fallbackDate = parseStoredDateTime(finalTime) || new Date();
+      normalizedDays = [fallbackDate.getDay()];
+    }
+
+    const normalizedMonthlyType =
+      normalizedType === REPEAT_TYPES.MONTHLY
+        ? repeatMonthlyType || MONTHLY_REPEAT_TYPES.FIRST
+        : "";
+
+    const normalizedCustomDate =
+      normalizedType === REPEAT_TYPES.MONTHLY &&
+      normalizedMonthlyType === MONTHLY_REPEAT_TYPES.CUSTOM
+        ? repeatCustomDate || finalTime || ""
+        : "";
+
+    const normalizedYearlyDate =
+      normalizedType === REPEAT_TYPES.YEARLY
+        ? repeatYearlyDate || finalTime || ""
+        : "";
+
+    return {
+      finalTime,
+      repeatType: normalizedType,
+      repeatDays: normalizedDays,
+      repeatMonthlyType: normalizedMonthlyType,
+      repeatCustomDate: normalizedCustomDate,
+      repeatYearlyDate: normalizedYearlyDate,
+      subtasksToSave:
+        isEditMode && editingTask?.subtasks ? editingTask.subtasks : [],
+    };
+  };
+  const executeTaskSave = async (scope = "single", explicitDraft = null) => {
+    if (!taskName.trim()) return;
+
+    const draft = explicitDraft || buildTaskDraftPayload();
+    const {
+      finalTime,
+      repeatType: draftRepeatType,
+      repeatDays: draftRepeatDays,
+      repeatMonthlyType: draftRepeatMonthlyType,
+      repeatCustomDate: draftRepeatCustomDate,
+      repeatYearlyDate: draftRepeatYearlyDate,
+      subtasksToSave,
+    } = draft;
+
+    if (isEditMode && editingTask) {
+      const editingTime =
+        toTaskTimestamp(editingTask.scheduledTime) ?? Number.NEGATIVE_INFINITY;
+      const seriesGroupId = editingTask.repeatGroupId || "";
+      const canApplySeries = Boolean(seriesGroupId) && isRepeatingTask(editingTask);
+
+      let targets = [editingTask];
+      if (canApplySeries && scope !== "single") {
+        targets = tasks.filter((task) => {
+          if (task.repeatGroupId !== seriesGroupId) return false;
+          if (task.completed) return false;
+
+          if (scope === "future") {
+            const taskTime =
+              toTaskTimestamp(task.scheduledTime) ?? Number.NEGATIVE_INFINITY;
+            return taskTime >= editingTime;
+          }
+
+          return scope === "all";
+        });
+
+        if (!targets.length) {
+          targets = [editingTask];
+        }
+      }
+
+      const updatedById = new Map();
+
+      for (const targetTask of targets) {
+        await cancelTaskReminders(targetTask.notificationId);
+
+        const scheduleForTarget =
+          targetTask.id === editingTask.id
+            ? finalTime
+            : targetTask.scheduledTime || finalTime;
+
+        const nextGroupId =
+          draftRepeatType !== REPEAT_TYPES.NONE
+            ? targetTask.repeatGroupId ||
+              seriesGroupId ||
+              createRepeatGroupId()
+            : "";
+
+        const reminderIds = scheduleForTarget
+          ? await scheduleProReminders({
+              title: taskName,
+              scheduledTime: scheduleForTarget,
+            })
+          : [];
+
+        db.runSync(
+          `UPDATE tasks
+           SET title = ?,
+               section = ?,
+               scheduledTime = ?,
+               details = ?,
+               attachment = ?,
+               subtasks = ?,
+               notificationId = ?,
+               isPinned = ?,
+               repeatType = ?,
+               repeatDays = ?,
+               repeatMonthlyType = ?,
+               repeatCustomDate = ?,
+               repeatYearlyDate = ?,
+               repeatGroupId = ?
+           WHERE id = ?`,
+          [
+            taskName,
+            selectedSection,
+            scheduleForTarget,
+            taskDetails,
+            attachmentUri || "",
+            JSON.stringify(subtasksToSave),
+            JSON.stringify(reminderIds),
+            targetTask.isPinned ? 1 : 0,
+            draftRepeatType,
+            serializeRepeatDays(draftRepeatDays),
+            draftRepeatMonthlyType || "",
+            draftRepeatCustomDate || "",
+            draftRepeatYearlyDate || "",
+            nextGroupId,
+            targetTask.id,
+          ]
+        );
+
+        updatedById.set(targetTask.id, {
+          ...targetTask,
+          title: taskName,
+          section: selectedSection,
+          scheduledTime: scheduleForTarget,
+          details: taskDetails,
+          attachment: attachmentUri,
+          subtasks: subtasksToSave,
+          notificationId: reminderIds,
+          isPinned: !!targetTask.isPinned,
+          repeatType: draftRepeatType,
+          repeatDays: draftRepeatDays,
+          repeatMonthlyType: draftRepeatMonthlyType,
+          repeatCustomDate: draftRepeatCustomDate,
+          repeatYearlyDate: draftRepeatYearlyDate,
+          repeatGroupId: nextGroupId,
+        });
+      }
+
+      setTasks((prev) =>
+        prev.map((task) => (updatedById.has(task.id) ? updatedById.get(task.id) : task))
+      );
+
+      setAttachmentUri(null);
+      setAttachmentName("");
+      resetTaskForm();
+      return;
+    }
+
+    const repeatGroupId =
+      draftRepeatType !== REPEAT_TYPES.NONE ? createRepeatGroupId() : "";
+
+    const reminderIds = finalTime
+      ? await scheduleProReminders({
+          title: taskName,
+          scheduledTime: finalTime,
+        })
+      : [];
+
+    const result = db.runSync(
+      `INSERT INTO tasks (
+        title,
+        section,
+        completed,
+        completedAt,
+        repeatType,
+        repeatDays,
+        repeatMonthlyType,
+        repeatCustomDate,
+        repeatYearlyDate,
+        repeatGroupId,
+        scheduledTime,
+        details,
+        attachment,
+        subtasks,
+        notificationId,
+        isPinned
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        taskName,
+        selectedSection,
+        0,
+        null,
+        draftRepeatType,
+        serializeRepeatDays(draftRepeatDays),
+        draftRepeatMonthlyType || "",
+        draftRepeatCustomDate || "",
+        draftRepeatYearlyDate || "",
+        repeatGroupId,
+        finalTime,
+        taskDetails,
+        attachmentUri || "",
+        JSON.stringify(subtasksToSave),
+        JSON.stringify(reminderIds),
+        0,
+      ]
+    );
+
+    const insertedId = result.lastInsertRowId;
+
+    setTasks((prev) => [
+      ...prev,
+      {
+        id: insertedId,
+        title: taskName,
+        section: selectedSection,
+        completed: false,
+        completedAt: null,
+        repeatType: draftRepeatType,
+        repeatDays: draftRepeatDays,
+        repeatMonthlyType: draftRepeatMonthlyType,
+        repeatCustomDate: draftRepeatCustomDate,
+        repeatYearlyDate: draftRepeatYearlyDate,
+        repeatGroupId,
+        scheduledTime: finalTime,
+        details: taskDetails,
+        attachment: attachmentUri,
+        subtasks: subtasksToSave,
+        notificationId: reminderIds,
+        isPinned: false,
+      },
+    ]);
+
+    setAttachmentUri(null);
+    setAttachmentName("");
+    resetTaskForm();
+  };
+
+  const applyEditScopeAndSave = async (scope) => {
+    if (!pendingEditPayload) return;
+    try {
+      await executeTaskSave(scope, pendingEditPayload);
+    } catch (error) {
+      console.log("Task Save Error:", error);
+      alert("Task Save Error:\n" + error.message);
+    } finally {
+      setPendingEditPayload(null);
+      setEditRepeatScopeModalVisible(false);
+    }
+  };
+
   const handleSaveTask = async () => {
     if (!taskName.trim()) return;
 
+    const draft = buildTaskDraftPayload();
+
+    if (
+      isEditMode &&
+      editingTask &&
+      isRepeatingTask(editingTask) &&
+      editingTask.repeatGroupId
+    ) {
+      setPendingEditPayload(draft);
+      setEditRepeatScopeModalVisible(true);
+      return;
+    }
+
     try {
-      // =========================
-      // 1. PREPARE FINAL DATE
-      // =========================
-      let finalTime = "";
-
-      if (scheduledDateTime) {
-        const selectedDate = parseStoredDateTime(scheduledDateTime);
-
-        if (!selectedDate) {
-          finalTime = "";
-        } else {
-
-          const corrected = restrictToSection(selectedSection, selectedDate);
-
-          finalTime = formatSqliteDateTime(corrected);
-        }
-      }
-
-      // =========================
-      // 2. CANCEL OLD REMINDERS
-      // =========================
-      if (isEditMode && editingTask?.notificationId) {
-        try {
-          const oldIds = Array.isArray(editingTask.notificationId)
-            ? editingTask.notificationId
-            : JSON.parse(editingTask.notificationId);
-
-          for (const id of oldIds) {
-            try {
-              await Notifications.cancelScheduledNotificationAsync(id);
-            } catch (e) {
-              console.log("Cancel Error:", e);
-            }
-          }
-        } catch (e) {
-          console.log("Old Notification Cleanup Error:", e);
-        }
-      }
-
-      // =========================
-      // 3. SCHEDULE REMINDERS
-      // =========================
-      let newScheduledIds = [];
-
-      if (finalTime) {
-        const taskDate = parseStoredDateTime(finalTime);
-
-        console.log("📅 TASK DATE:", taskDate);
-
-        // Reminder intervals
-        const intervals = [20, 10, 5, 0];
-
-        for (let mins of taskDate ? intervals : []) {
-          const triggerDate = new Date(taskDate.getTime() - mins * 60000);
-
-          console.log("⏰ Trigger:", triggerDate);
-
-          // Only future alarms
-          if (triggerDate.getTime() > Date.now()) {
-            try {
-              const id = await Notifications.scheduleNotificationAsync({
-                content: {
-                  title: `🎯 ${taskName}`,
-                  body: getAffirmativeMessage(
-                    taskName,
-                    taskDate.toLocaleString(),
-                    mins
-                  ),
-
-                  sound: "default",
-
-                  priority: Notifications.AndroidNotificationPriority.MAX,
-
-                  vibrate: [0, 250, 250, 250],
-
-                  android: {
-                    channelId: "adhd-alarms",
-                    color: COLORS.accent, // Modernized accent
-                    pressAction: {
-                      id: "default",
-                    },
-                  },
-                },
-
-                // ✅ CRITICAL FIX
-                trigger: {
-                  type: Notifications.SchedulableTriggerInputTypes.DATE,
-                  date: triggerDate,
-                },
-              });
-
-              console.log("✅ Scheduled ID:", id);
-              if (!id) {
-                alert(`❌ Failed to schedule ${mins} minute reminder`);
-              }
-
-              newScheduledIds.push(id);
-            } catch (schedError) {
-              console.log(
-                `❌ Error scheduling ${mins}min reminder:`,
-                schedError
-              );
-            }
-          }
-        }
-      }
-
-      // =========================
-      // 4. SAVE TO DATABASE
-      // =========================
-      const subtasksToSave =
-        isEditMode && editingTask?.subtasks ? editingTask.subtasks : [];
-
-      const subtasksJSON = JSON.stringify(subtasksToSave);
-
-      const notificationIdJSON = JSON.stringify(newScheduledIds);
-
-      if (isEditMode && editingTask) {
-        // =====================
-        // UPDATE TASK
-        // =====================
-
-        db.runSync(
-          `UPDATE tasks 
-         SET title = ?, 
-             section = ?, 
-             scheduledTime = ?, 
-             details = ?, 
-             attachment = ?, 
-             subtasks = ?, 
-             notificationId = ?,
-             isPinned = ?
-         WHERE id = ?`,
-          [
-            taskName,
-            selectedSection,
-            finalTime,
-            taskDetails,
-            attachmentUri || "",
-            subtasksJSON,
-            notificationIdJSON,
-            editingTask.isPinned ? 1 : 0,
-            editingTask.id,
-          ]
-        );
-
-        setTasks((prev) =>
-          prev.map((t) =>
-            t.id === editingTask.id
-              ? {
-                  ...t,
-                  title: taskName,
-                  section: selectedSection,
-                  scheduledTime: finalTime,
-                  details: taskDetails,
-                  attachment: attachmentUri,
-                  subtasks: subtasksToSave,
-                  notificationId: newScheduledIds,
-                  isPinned: !!t.isPinned,
-                }
-              : t
-          )
-        );
-      } else {
-        // =====================
-        // INSERT TASK
-        // =====================
-
-        const result = db.runSync(
-          `INSERT INTO tasks (
-          title,
-          section,
-          completed,
-          completedAt,
-          scheduledTime,
-          details,
-          attachment,
-          subtasks,
-          notificationId,
-          isPinned
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            taskName,
-            selectedSection,
-            0,
-            null,
-            finalTime,
-            taskDetails,
-            attachmentUri || "",
-            subtasksJSON,
-            notificationIdJSON,
-            0,
-          ]
-        );
-
-        const insertedId = result.lastInsertRowId;
-
-        setTasks((prev) => [
-          ...prev,
-          {
-            id: insertedId,
-            title: taskName,
-            section: selectedSection,
-            completed: false,
-            completedAt: null,
-            scheduledTime: finalTime,
-            details: taskDetails,
-            attachment: attachmentUri,
-            subtasks: subtasksToSave,
-            notificationId: newScheduledIds,
-            isPinned: false,
-          },
-        ]);
-      }
-
-      // =========================
-      // 5. RESET UI
-      // =========================
-      setAttachmentUri(null);
-      setAttachmentName("");
-
-      resetTaskForm();
-
-      console.log("✅ Success! Scheduled reminders:", newScheduledIds.length);
+      await executeTaskSave("single", draft);
     } catch (error) {
-      console.log("❌ HANDLE SAVE ERROR:", error);
-
+      console.log("Task Save Error:", error);
       alert("Task Save Error:\n" + error.message);
     }
   };
 
-  const confirmDeleteTask = () => {
+  const confirmDeleteTask = async (scope = "single") => {
     if (!deleteTask) return;
 
-    // save for undo
-    setLastDeletedTask(deleteTask);
+    const isRepeatSeries = isRepeatingTask(deleteTask) && deleteTask.repeatGroupId;
+    const taskTime =
+      toTaskTimestamp(deleteTask.scheduledTime) ?? Number.NEGATIVE_INFINITY;
 
-    // delete from DB
-    db.runSync("DELETE FROM tasks WHERE id = ?", [deleteTask.id]);
+    let targets = [deleteTask];
 
-    // update UI
-    setTasks((prev) => prev.filter((t) => t.id !== deleteTask.id));
-    if (expandedTaskId === deleteTask.id) {
-      setExpandedTaskId(null);
+    if (isRepeatingTask(deleteTask) && deleteTask.completed) {
+      targets = [];
     }
 
-    // close modal
+    if (isRepeatSeries && scope !== "single") {
+      targets = tasks.filter((task) => {
+        if (task.repeatGroupId !== deleteTask.repeatGroupId) return false;
+        if (task.completed) return false;
+
+        const rowTime =
+          toTaskTimestamp(task.scheduledTime) ?? Number.NEGATIVE_INFINITY;
+        if (scope === "future") return rowTime >= taskTime;
+        if (scope === "past") return rowTime <= taskTime;
+        return false;
+      });
+    }
+
+    if (!targets.length) {
+      setDeleteModalVisible(false);
+      setDeleteTask(null);
+      return;
+    }
+
+    for (const task of targets) {
+      await cancelTaskReminders(task.notificationId);
+    }
+
+    const idsToDelete = [...new Set(targets.map((task) => task.id))];
+    idsToDelete.forEach((taskId) => {
+      db.runSync("DELETE FROM tasks WHERE id = ?", [taskId]);
+    });
+
+    const idSet = new Set(idsToDelete);
+    setTasks((prev) => prev.filter((task) => !idSet.has(task.id)));
+
+    if (idsToDelete.length === 1) {
+      setLastDeletedTask(deleteTask);
+      if (expandedTaskId === deleteTask.id) {
+        setExpandedTaskId(null);
+      }
+    } else {
+      setLastDeletedTask(null);
+      if (expandedTaskId && idSet.has(expandedTaskId)) {
+        setExpandedTaskId(null);
+      }
+    }
+
     setDeleteModalVisible(false);
     setDeleteTask(null);
   };
@@ -1817,19 +2124,31 @@ export default function Home() {
         section,
         completed,
         completedAt,
+        repeatType,
+        repeatDays,
+        repeatMonthlyType,
+        repeatCustomDate,
+        repeatYearlyDate,
+        repeatGroupId,
         scheduledTime,
         details,
         attachment,
         subtasks,
         notificationId,
         isPinned
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
         lastDeletedTask.section,
         lastDeletedTask.completed ? 1 : 0,
         lastDeletedTask.completedAt || null,
+        normalizeRepeatType(lastDeletedTask.repeatType),
+        serializeRepeatDays(lastDeletedTask.repeatDays),
+        lastDeletedTask.repeatMonthlyType || "",
+        lastDeletedTask.repeatCustomDate || "",
+        lastDeletedTask.repeatYearlyDate || "",
+        lastDeletedTask.repeatGroupId || "",
         lastDeletedTask.scheduledTime || "",
         lastDeletedTask.details || "",
         lastDeletedTask.attachment || "",
@@ -2079,6 +2398,14 @@ export default function Home() {
       if (datePickerModal.target === "task") {
         setScheduledDateTime(formatted);
         setTimeAdjusted(false);
+      }
+
+      if (datePickerModal.target === "repeat-monthly-custom") {
+        setRepeatCustomDate(formatted);
+      }
+
+      if (datePickerModal.target === "repeat-yearly") {
+        setRepeatYearlyDate(formatted);
       }
 
       if (datePickerModal.target === "section-start" && datePickerModal.section) {
@@ -2348,30 +2675,6 @@ export default function Home() {
     }
     return scheduledIds; // Returns array of 4 IDs
   };
-
-  const testNotification = async () => {
-    console.log("Scheduling test...");
-
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: "🔔 TEST WORKING!",
-        body: "If you see this, notification system works.",
-        sound: "default",
-        priority: Notifications.AndroidNotificationPriority.MAX,
-      },
-
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-        seconds: 5,
-      },
-    });
-
-    alert("Test scheduled! Wait 5 seconds.");
-  };
-
-  //********************************** */
-  //***********UI******************** */
-  //*********Component Start UI*** */
 
   const renderAvatar = (size = "large") => {
     const avatarSize = size === "small" ? "w-12 h-12" : "w-16 h-16";
@@ -2708,7 +3011,6 @@ export default function Home() {
     );
   };
 
-  // ✅ REPLACED: Cleaned of Type Annotations to stop VS Code errors
   const renderPageModal = () => {
     const activeItem = MENU_ITEMS.find((item) => item.key === activePage);
     return (
@@ -2870,15 +3172,6 @@ export default function Home() {
           {isSectionExpanded && !isPinnedVirtualSection && (
             <View className="px-3 pt-3">
               <TouchableOpacity
-                onPress={testNotification}
-                className="bg-[#FF7B7B]/15 p-2.5 rounded-2xl mb-3 shadow-md shadow-[#FF7B7B]/10 border border-[#FF7B7B]/35 items-center"
-              >
-                <Text className="text-[#FF7B7B] font-black text-xs uppercase tracking-widest">
-                  TEST NOTIFICATION
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
                 onPress={() => {
                   setEditingSection(section);
                   openSchedulePicker({
@@ -3008,12 +3301,18 @@ export default function Home() {
                           activeOpacity={0.7}
                           onPress={(event) => {
                             event.stopPropagation?.();
+                            const repeatSettings = normalizeTaskRepeatSettings(task);
                             setEditingTask(task);
                             setIsEditMode(true);
                             setTaskName(task.title);
                             setTaskDetails(task.details || "");
                             setScheduledDateTime(task.scheduledTime || "");
                             setSelectedSection(task.section);
+                            setRepeatType(repeatSettings.repeatType);
+                            setRepeatDays(repeatSettings.repeatDays);
+                            setRepeatMonthlyType(repeatSettings.repeatMonthlyType);
+                            setRepeatCustomDate(repeatSettings.repeatCustomDate);
+                            setRepeatYearlyDate(repeatSettings.repeatYearlyDate);
                             setModalVisible(true);
                           }}
                           className="p-1.5 mr-2 bg-[#66b9b9]/15 rounded-xl border border-[#66b9b9]/25"
@@ -3566,7 +3865,129 @@ export default function Home() {
                 ⏱ Adjusted to section time
               </Text>
             )}
+            <View className="bg-[#061414]/40 border border-[#337a7a]/30 rounded-2xl p-3 mb-3">
+              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
+                Repeat Task
+              </Text>
+              <View className="flex-row flex-wrap">
+                {REPEAT_TYPE_OPTIONS.map((option) => (
+                  <TouchableOpacity
+                    key={option.key}
+                    onPress={() => setRepeatType(option.key)}
+                    className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+                      repeatType === option.key
+                        ? "bg-[#66b9b9] border-[#66b9b9]"
+                        : "bg-[#123131]/70 border-[#337a7a]/35"
+                    }`}
+                  >
+                    <Text
+                      className={`text-[10px] font-black uppercase tracking-wider ${
+                        repeatType === option.key
+                          ? "text-[#061414]"
+                          : "text-[#9FB5B5]"
+                      }`}
+                    >
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
+              {repeatType === REPEAT_TYPES.WEEKLY && (
+                <View className="flex-row flex-wrap mt-1">
+                  {WEEKDAY_OPTIONS.map((day) => (
+                    <TouchableOpacity
+                      key={day.key}
+                      onPress={() => toggleWeeklyRepeatDay(day.key)}
+                      className={`px-2.5 py-1.5 rounded-full border mr-2 mb-2 ${
+                        repeatDays.includes(day.key)
+                          ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                          : "bg-[#101416] border-[#337a7a]/35"
+                      }`}
+                    >
+                      <Text
+                        className={`text-[10px] font-bold ${
+                          repeatDays.includes(day.key)
+                            ? "text-[#66b9b9]"
+                            : "text-[#9FB5B5]"
+                        }`}
+                      >
+                        {day.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              {repeatType === REPEAT_TYPES.MONTHLY && (
+                <View className="mt-1">
+                  <View className="flex-row flex-wrap">
+                    {[
+                      { key: MONTHLY_REPEAT_TYPES.FIRST, label: "First Day" },
+                      { key: MONTHLY_REPEAT_TYPES.LAST, label: "Last Day" },
+                      { key: MONTHLY_REPEAT_TYPES.CUSTOM, label: "Custom" },
+                    ].map((item) => (
+                      <TouchableOpacity
+                        key={item.key}
+                        onPress={() => setRepeatMonthlyType(item.key)}
+                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+                          repeatMonthlyType === item.key
+                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                            : "bg-[#101416] border-[#337a7a]/35"
+                        }`}
+                      >
+                        <Text
+                          className={`text-[10px] font-bold uppercase tracking-wider ${
+                            repeatMonthlyType === item.key
+                              ? "text-[#66b9b9]"
+                              : "text-[#9FB5B5]"
+                          }`}
+                        >
+                          {item.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  {repeatMonthlyType === MONTHLY_REPEAT_TYPES.CUSTOM && (
+                    <TouchableOpacity
+                      onPress={() =>
+                        openSchedulePicker({
+                          target: "repeat-monthly-custom",
+                          title: "Monthly Repeat Date",
+                          value: repeatCustomDate || scheduledDateTime || new Date(),
+                        })
+                      }
+                      className="bg-[#101416] p-3 rounded-xl border border-[#D9A441]/35"
+                    >
+                      <Text className="text-[#E8F4F4] font-semibold text-xs">
+                        {repeatCustomDate
+                          ? `Custom: ${formatDateTimeForDisplay(repeatCustomDate)}`
+                          : "Select Custom Monthly Date"}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
+
+              {repeatType === REPEAT_TYPES.YEARLY && (
+                <TouchableOpacity
+                  onPress={() =>
+                    openSchedulePicker({
+                      target: "repeat-yearly",
+                      title: "Yearly Repeat Date",
+                      value: repeatYearlyDate || scheduledDateTime || new Date(),
+                    })
+                  }
+                  className="bg-[#101416] p-3 rounded-xl border border-[#D9A441]/35 mt-1"
+                >
+                  <Text className="text-[#E8F4F4] font-semibold text-xs">
+                    {repeatYearlyDate
+                      ? `Every year on ${formatDateTimeForDisplay(repeatYearlyDate)}`
+                      : "Select Yearly Date"}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <TouchableOpacity
               onPress={handleSaveTask}
               className="bg-[#66b9b9] p-4 rounded-2xl shadow-lg shadow-[#66b9b9]/30 border border-[#99bdbd]/60 mt-2"
@@ -3605,6 +4026,58 @@ export default function Home() {
               )}
             </TouchableOpacity>
           </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal visible={editRepeatScopeModalVisible} transparent animationType="fade">
+        <View className="flex-1 bg-[#061414]/90 justify-center px-6">
+          <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/15">
+            <Text className="text-[#66b9b9] text-xl font-black mb-4 uppercase tracking-tight">
+              Apply Changes
+            </Text>
+            <Text className="text-[#E8F4F4] text-sm mb-4">
+              Update repeating task:
+            </Text>
+
+            <TouchableOpacity
+              onPress={() => applyEditScopeAndSave("single")}
+              className="p-3 rounded-2xl bg-[#66b9b9]/15 border border-[#66b9b9]/40 mb-2"
+            >
+              <Text className="text-[#66b9b9] text-center font-black uppercase tracking-widest text-[10px]">
+                Only This Task
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => applyEditScopeAndSave("future")}
+              className="p-3 rounded-2xl bg-[#66b9b9]/15 border border-[#66b9b9]/40 mb-2"
+            >
+              <Text className="text-[#66b9b9] text-center font-black uppercase tracking-widest text-[10px]">
+                This And Future Tasks
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => applyEditScopeAndSave("all")}
+              className="p-3 rounded-2xl bg-[#66b9b9]/15 border border-[#66b9b9]/40 mb-3"
+            >
+              <Text className="text-[#66b9b9] text-center font-black uppercase tracking-widest text-[10px]">
+                All Tasks In Series
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => {
+                setEditRepeatScopeModalVisible(false);
+                setPendingEditPayload(null);
+              }}
+              className="p-3 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"
+            >
+              <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-xs">
+                Cancel
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
 
@@ -3742,27 +4215,69 @@ export default function Home() {
               Delete Task
             </Text>
 
-            <Text className="text-[#E8F4F4] mb-8 font-medium text-base">
-              Are you sure you want to delete <Text className="text-[#FF7B7B] font-bold">{deleteTask?.title}</Text> task?
+            <Text className="text-[#E8F4F4] mb-4 font-medium text-base">
+              Delete <Text className="text-[#FF7B7B] font-bold">{deleteTask?.title}</Text>?
             </Text>
 
-            <View className="flex-row justify-between space-x-3">
-              <TouchableOpacity
-                onPress={() => setDeleteModalVisible(false)}
-                className="flex-1 p-4 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"
-              >
-                <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-xs">Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={confirmDeleteTask}
-                className="flex-1 p-4 rounded-2xl bg-[#FF7B7B] shadow-md shadow-[#FF7B7B]/25"
-              >
-                <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-xs">
-                  Delete
+            {deleteTask &&
+            isRepeatingTask(deleteTask) &&
+            deleteTask.repeatGroupId ? (
+              <>
+                <Text className="text-[#9FB5B5] text-xs font-semibold mb-3">
+                  Completed tasks stay preserved in history.
                 </Text>
-              </TouchableOpacity>
-            </View>
+                <TouchableOpacity
+                  onPress={() => confirmDeleteTask("single")}
+                  className="p-3 rounded-2xl bg-[#FF7B7B]/20 border border-[#FF7B7B]/40 mb-2"
+                >
+                  <Text className="text-[#FF7B7B] text-center font-black uppercase tracking-widest text-[10px]">
+                    Delete Only This Task
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => confirmDeleteTask("future")}
+                  className="p-3 rounded-2xl bg-[#FF7B7B]/20 border border-[#FF7B7B]/40 mb-2"
+                >
+                  <Text className="text-[#FF7B7B] text-center font-black uppercase tracking-widest text-[10px]">
+                    Delete This And Future Tasks
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => confirmDeleteTask("past")}
+                  className="p-3 rounded-2xl bg-[#FF7B7B]/20 border border-[#FF7B7B]/40 mb-3"
+                >
+                  <Text className="text-[#FF7B7B] text-center font-black uppercase tracking-widest text-[10px]">
+                    Delete This And Previous Tasks
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setDeleteModalVisible(false)}
+                  className="p-3 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"
+                >
+                  <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-xs">
+                    Cancel
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <View className="flex-row justify-between space-x-3">
+                <TouchableOpacity
+                  onPress={() => setDeleteModalVisible(false)}
+                  className="flex-1 p-4 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"
+                >
+                  <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-xs">Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => confirmDeleteTask("single")}
+                  className="flex-1 p-4 rounded-2xl bg-[#FF7B7B] shadow-md shadow-[#FF7B7B]/25"
+                >
+                  <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-xs">
+                    Delete
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         </View>
       </Modal>
@@ -3867,6 +4382,11 @@ export default function Home() {
     </>
   );
 }
+
+
+
+
+
 
 
 
