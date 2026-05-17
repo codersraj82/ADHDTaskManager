@@ -11,13 +11,18 @@ const toTimestamp = (value) => {
   return parsed.getTime();
 };
 
-const isScheduledForToday = (task, nowTime) => {
-  const timestamp = toTimestamp(task.scheduledTime);
-  if (timestamp === null) return true;
-
+const isTimestampInToday = (timestamp, nowTime) => {
+  if (timestamp === null) return false;
   const startOfToday = toStartOfDay(new Date(nowTime));
   const endOfToday = toEndOfDay(new Date(nowTime));
   return timestamp >= startOfToday && timestamp <= endOfToday;
+};
+
+const getCompletedTimestamp = (task) => toTimestamp(task.completedAt);
+
+const wasCompletedToday = (task, nowTime) => {
+  const completedTimestamp = getCompletedTimestamp(task);
+  return isTimestampInToday(completedTimestamp, nowTime);
 };
 
 const getPendingPriority = (task, nowTime) => {
@@ -40,8 +45,14 @@ const comparePendingTasks = (a, b, nowTime) => {
 };
 
 const compareCompletedTasks = (a, b) => {
-  const aTime = toTimestamp(a.scheduledTime) ?? Number.POSITIVE_INFINITY;
-  const bTime = toTimestamp(b.scheduledTime) ?? Number.POSITIVE_INFINITY;
+  const aTime =
+    getCompletedTimestamp(a) ??
+    toTimestamp(a.scheduledTime) ??
+    Number.POSITIVE_INFINITY;
+  const bTime =
+    getCompletedTimestamp(b) ??
+    toTimestamp(b.scheduledTime) ??
+    Number.POSITIVE_INFINITY;
   if (aTime !== bTime) return aTime - bTime;
 
   return (a.id ?? 0) - (b.id ?? 0);
@@ -62,7 +73,7 @@ export const sortTasksForSection = (tasks, section, now = new Date()) => {
       return;
     }
 
-    if (isScheduledForToday(task, nowTime)) {
+    if (wasCompletedToday(task, nowTime)) {
       completedTodayTasks.push(task);
     }
   });

@@ -33,7 +33,6 @@ import {
 } from "../../utils/formatDateTime";
 import {
   sortTasksForSection,
-  getPendingTaskCount,
   sortPinnedTasks,
 } from "../../utils/sortTasks";
 import {
@@ -107,6 +106,37 @@ const getYesterdayKey = () => {
   return getDateKey(date);
 };
 
+const FOCUS_AUTO_DISMISS_DELAY_MS = 10000;
+
+const SECTION_SURFACE_CLASSES = {
+  Pinned: "bg-[#0B1F1F]",
+  Morning: "bg-[#111F1A]",
+  Work: "bg-[#0B1F1F]",
+  Evening: "bg-[#0A1D24]",
+};
+
+const SECTION_HEADER_CLASSES = {
+  Pinned: "bg-[#123131]/90",
+  Morning: "bg-[#182D22]/95",
+  Work: "bg-[#123131]/90",
+  Evening: "bg-[#132836]/95",
+};
+
+const getDayBounds = (now = new Date()) => {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const end = start + 24 * 60 * 60 * 1000 - 1;
+  return { start, end };
+};
+
+const toTaskTimestamp = (value) => {
+  const parsed = parseStoredDateTime(value);
+  if (!parsed) return null;
+  return parsed.getTime();
+};
+
+const isTimestampWithinRange = (timestamp, start, end) =>
+  timestamp !== null && timestamp >= start && timestamp <= end;
+
 //*************main component function********* */
 export default function Home() {
   const [tasks, setTasks] = useState([
@@ -118,6 +148,7 @@ export default function Home() {
 
   const [focusTime, setFocusTime] = useState(0); // in seconds
   const [isTimerRunning, setIsTimerRunning] = useState(false);
+  const [isFocusCompleted, setIsFocusCompleted] = useState(false);
 
   const [activeTaskId, setActiveTaskId] = useState(null);
 
@@ -225,14 +256,55 @@ export default function Home() {
     }, {});
   }, [tasks]);
 
-  const sectionPendingCounts = useMemo(
-    () =>
-      SECTION_ORDER.reduce((acc, sectionName) => {
-        acc[sectionName] = getPendingTaskCount(tasks, sectionName);
-        return acc;
-      }, {}),
-    [tasks]
-  );
+  const sectionHeaderStats = useMemo(() => {
+    const now = new Date();
+    const nowTime = now.getTime();
+    const { start, end } = getDayBounds(now);
+
+    return SECTION_ORDER.reduce((acc, sectionName) => {
+      const sectionTasks = tasks.filter(
+        (task) => task.section === sectionName && !task.isPinned
+      );
+      const pendingTasks = sectionTasks.filter((task) => !task.completed);
+      const completedTasks = sectionTasks.filter((task) => task.completed);
+
+      const todayPendingCount = pendingTasks.reduce((count, task) => {
+        const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+        return isTimestampWithinRange(scheduledTimestamp, start, end)
+          ? count + 1
+          : count;
+      }, 0);
+
+      const todayCompletedCount = completedTasks.reduce((count, task) => {
+        const completedTimestamp = toTaskTimestamp(task.completedAt);
+        return isTimestampWithinRange(completedTimestamp, start, end)
+          ? count + 1
+          : count;
+      }, 0);
+
+      const nearestUpcomingTaskTitle =
+        pendingTasks
+          .map((task) => ({
+            task,
+            timestamp: toTaskTimestamp(task.scheduledTime),
+          }))
+          .filter((item) => item.timestamp !== null && item.timestamp >= nowTime)
+          .sort((a, b) => {
+            if (a.timestamp !== b.timestamp) {
+              return a.timestamp - b.timestamp;
+            }
+            return (a.task.id ?? 0) - (b.task.id ?? 0);
+          })[0]?.task?.title ?? null;
+
+      acc[sectionName] = {
+        pendingCount: pendingTasks.length,
+        todayPendingCount,
+        todayCompletedCount,
+        nearestUpcomingTaskTitle,
+      };
+      return acc;
+    }, {});
+  }, [tasks]);
 
   const nearestUpcomingSection = useMemo(
     () => getNearestUpcomingSection(tasks),
@@ -569,6 +641,7 @@ export default function Home() {
         CREATE TABLE IF NOT EXISTS tasks (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT, section TEXT, completed INTEGER,
+          completedAt TEXT,
           scheduledTime TEXT, details TEXT, attachment TEXT,
           subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
           isPinned INTEGER DEFAULT 0
@@ -616,12 +689,16 @@ export default function Home() {
         if (!columnNames.includes("isPinned")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN isPinned INTEGER DEFAULT 0;");
         }
+        if (!columnNames.includes("completedAt")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN completedAt TEXT;");
+        }
 
         // 3. Load All Data (Tasks + Section Settings)
         const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
         const loadedTasks = taskResult.map((t) => ({
           ...t,
           completed: t.completed === 1,
+          completedAt: t.completedAt || null,
           subtasks: JSON.parse(t.subtasks || "[]"),
           notificationId: JSON.parse(t.notificationId || "[]"),
           isPinned: t.isPinned === 1,
@@ -857,6 +934,7 @@ export default function Home() {
           if (next >= currentDuration) {
             clearInterval(interval);
             setIsTimerRunning(false);
+            setIsFocusCompleted(true);
             showCelebration("🔥 Amazing focus! You stayed consistent 💪", "⏱");
 
             // add to daily + lifetime focus time
@@ -870,9 +948,11 @@ export default function Home() {
               LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
               setActiveTaskId(null);
               setFocusTime(0);
+              setIsTimerRunning(false);
+              setIsFocusCompleted(false);
               focusSessionRecordedRef.current = false;
               focusDismissTimeoutRef.current = null;
-            }, 700);
+            }, FOCUS_AUTO_DISMISS_DELAY_MS);
 
             return currentDuration; // lock at max
           }
@@ -889,6 +969,7 @@ export default function Home() {
     () => () => {
       if (focusDismissTimeoutRef.current) {
         clearTimeout(focusDismissTimeoutRef.current);
+        focusDismissTimeoutRef.current = null;
       }
     },
     []
@@ -1050,6 +1131,9 @@ export default function Home() {
         if (task.id === id) {
           const updated = !task.completed;
           const nextPinned = updated ? false : !!task.isPinned;
+          const completedAt = updated
+            ? formatSqliteDateTime(new Date())
+            : null;
 
           // 1. 🧠 TIMER LOGIC
           // STOP TIMER IF ACTIVE TASK COMPLETED
@@ -1093,22 +1177,27 @@ export default function Home() {
             focusSessionRecordedRef.current = false;
 
             setFocusTime(0);
+            setIsFocusCompleted(false);
             setActiveTaskId(null);
           }
 
           // 2. 💾 DATABASE UPDATE
           try {
-            db.runSync("UPDATE tasks SET completed = ?, isPinned = ? WHERE id = ?", [
-              updated ? 1 : 0,
-              nextPinned ? 1 : 0,
-              id,
-            ]);
+            db.runSync(
+              "UPDATE tasks SET completed = ?, isPinned = ?, completedAt = ? WHERE id = ?",
+              [updated ? 1 : 0, nextPinned ? 1 : 0, completedAt, id]
+            );
           } catch (e) {
             console.log("Update error:", e);
           }
 
           // 3. 🔄 RETURN UPDATED TASK TO STATE
-          return { ...task, completed: updated, isPinned: nextPinned };
+          return {
+            ...task,
+            completed: updated,
+            completedAt,
+            isPinned: nextPinned,
+          };
         }
         return task;
       })
@@ -1161,6 +1250,7 @@ export default function Home() {
         title,
         section,
         completed,
+        completedAt,
         scheduledTime,
         details,
         attachment,
@@ -1168,11 +1258,12 @@ export default function Home() {
         notificationId,
         isPinned
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           task.title || "Task",
           task.section || "Morning",
           0,
+          null,
           newScheduledTime,
           task.details || "",
           task.attachment || "",
@@ -1189,6 +1280,7 @@ export default function Home() {
           ...task,
           id: newTaskId,
           completed: false,
+          completedAt: null,
           scheduledTime: newScheduledTime,
           subtasks: recreatedSubtasks,
           notificationId: recreatedNotificationIds,
@@ -1252,6 +1344,7 @@ export default function Home() {
       focusDismissTimeoutRef.current = null;
     }
     focusSessionRecordedRef.current = false;
+    setIsFocusCompleted(false);
 
     if (activeTaskId !== taskId && focusTime > 0) {
       recordFocusSession(focusTime);
@@ -1635,6 +1728,7 @@ export default function Home() {
           title,
           section,
           completed,
+          completedAt,
           scheduledTime,
           details,
           attachment,
@@ -1642,11 +1736,12 @@ export default function Home() {
           notificationId,
           isPinned
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             taskName,
             selectedSection,
             0,
+            null,
             finalTime,
             taskDetails,
             attachmentUri || "",
@@ -1665,6 +1760,7 @@ export default function Home() {
             title: taskName,
             section: selectedSection,
             completed: false,
+            completedAt: null,
             scheduledTime: finalTime,
             details: taskDetails,
             attachment: attachmentUri,
@@ -1720,18 +1816,20 @@ export default function Home() {
         title,
         section,
         completed,
+        completedAt,
         scheduledTime,
         details,
         attachment,
         subtasks,
         notificationId,
         isPinned
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
         lastDeletedTask.section,
         lastDeletedTask.completed ? 1 : 0,
+        lastDeletedTask.completedAt || null,
         lastDeletedTask.scheduledTime || "",
         lastDeletedTask.details || "",
         lastDeletedTask.attachment || "",
@@ -2690,9 +2788,6 @@ export default function Home() {
     const sectionTasks = isPinnedVirtualSection
       ? pinnedTasks
       : sectionTasksMap[section] || [];
-    const pendingCount = isPinnedVirtualSection
-      ? pinnedTaskCount
-      : sectionPendingCounts[section] || 0;
     const isSectionExpanded = isPinnedVirtualSection
       ? isPinnedSectionExpanded
       : expandedSection === section;
@@ -2703,15 +2798,39 @@ export default function Home() {
       inputRange: [0, 1],
       outputRange: ["0deg", "180deg"],
     });
+    const collapsedSummaryOpacity = chevronAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: [1, 0],
+    });
+    const sectionSurfaceClass =
+      SECTION_SURFACE_CLASSES[section] || SECTION_SURFACE_CLASSES.Work;
+    const sectionHeaderClass =
+      SECTION_HEADER_CLASSES[section] || SECTION_HEADER_CLASSES.Work;
+    const sectionStats = isPinnedVirtualSection
+      ? null
+      : sectionHeaderStats[section] || {
+          pendingCount: 0,
+          todayPendingCount: 0,
+          todayCompletedCount: 0,
+          nearestUpcomingTaskTitle: null,
+        };
+    const pendingCount = isPinnedVirtualSection
+      ? pinnedTaskCount
+      : sectionStats?.pendingCount || 0;
+    const hasCollapsedSummary = !isPinnedVirtualSection && !isSectionExpanded;
+    const nextUpcomingLabel =
+      sectionStats?.nearestUpcomingTaskTitle || "No upcoming tasks";
 
     return (
       <View
-        className="px-4"
+        className="px-4 mb-4"
         onLayout={(event) => {
           sectionPositions.current[section] = event.nativeEvent.layout.y;
         }}
       >
-        <View className="mb-2">
+        <View
+          className={`rounded-[28px] border border-[#337a7a]/35 shadow-md shadow-[#061414]/45 overflow-hidden ${sectionSurfaceClass}`}
+        >
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={() =>
@@ -2719,12 +2838,24 @@ export default function Home() {
                 ? togglePinnedSection()
                 : toggleSectionExpansion(section)
             }
-            className="flex-row items-center justify-between mb-3"
+            className={`px-4 py-3 flex-row items-start justify-between border-b border-[#337a7a]/25 ${sectionHeaderClass}`}
           >
-            <Text className="text-[#E8F4F4] text-xl font-black tracking-widest uppercase">
-              {title}
-            </Text>
-            <View className="flex-row items-center">
+            <View className="flex-1 pr-3">
+              <Text className="text-[#E8F4F4] text-lg font-black tracking-widest uppercase">
+                {title}
+              </Text>
+              {hasCollapsedSummary ? (
+                <Animated.View style={{ opacity: collapsedSummaryOpacity }} className="mt-1.5">
+                  <Text className="text-[#99bdbd] text-[10px] font-bold">
+                    Pending: {sectionStats?.pendingCount ?? pendingCount} | Today: {sectionStats?.todayPendingCount ?? 0} | Done: {sectionStats?.todayCompletedCount ?? 0}
+                  </Text>
+                  <Text numberOfLines={1} className="text-[#9FB5B5] text-[10px] font-semibold mt-0.5">
+                    Next: {nextUpcomingLabel}
+                  </Text>
+                </Animated.View>
+              ) : null}
+            </View>
+            <View className="flex-row items-center pt-1">
               {isPinnedVirtualSection || pendingCount > 0 ? (
                 <Text className="text-[#9FB5B5] text-[10px] font-bold mr-2">
                   {pendingCount}
@@ -2737,7 +2868,7 @@ export default function Home() {
           </TouchableOpacity>
 
           {isSectionExpanded && !isPinnedVirtualSection && (
-            <>
+            <View className="px-3 pt-3">
               <TouchableOpacity
                 onPress={testNotification}
                 className="bg-[#FF7B7B]/15 p-2.5 rounded-2xl mb-3 shadow-md shadow-[#FF7B7B]/10 border border-[#FF7B7B]/35 items-center"
@@ -2757,7 +2888,7 @@ export default function Home() {
                     value: sectionTimes[section]?.start,
                   });
                 }}
-                className="bg-[#0B1F1F] p-3.5 rounded-2xl mb-2 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
+                className="bg-[#0B1F1F]/95 p-3.5 rounded-2xl mb-2 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
               >
                 <Text className="text-[#E8F4F4] font-bold text-xs">
                   Start: {sectionTimes[section]?.start ? formatDateTimeForDisplay(sectionTimes[section].start) : "Select Start Date & Time"}
@@ -2774,18 +2905,18 @@ export default function Home() {
                     value: sectionTimes[section]?.end,
                   });
                 }}
-                className="bg-[#0B1F1F] p-3.5 rounded-2xl mb-4 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
+                className="bg-[#0B1F1F]/95 p-3.5 rounded-2xl mb-4 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
               >
                 <Text className="text-[#E8F4F4] font-bold text-xs">
                   End: {sectionTimes[section]?.end ? formatDateTimeForDisplay(sectionTimes[section].end) : "Select End Date & Time"}
                 </Text>
               </TouchableOpacity>
-            </>
+            </View>
           )}
-        </View>
 
-        {isSectionExpanded &&
-          sectionTasks.map((task) => {
+          {isSectionExpanded && (
+            <View className="px-3 pb-3">
+              {sectionTasks.map((task) => {
             const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
             const taskDate = parseStoredDateTime(task.scheduledTime);
             const taskTimestamp = taskDate?.getTime() || 0;
@@ -3167,7 +3298,10 @@ export default function Home() {
                 )}
               </View>
             );
-          })}
+              })}
+            </View>
+          )}
+        </View>
       </View>
     );
   };
@@ -3265,6 +3399,11 @@ export default function Home() {
             <Text className="text-[#5EEAD4] font-black text-xs uppercase tracking-widest mb-4">
               Active Focus 🎯
             </Text>
+            {isFocusCompleted ? (
+              <Text className="text-[#7DFFB3] text-[10px] font-black uppercase tracking-widest mb-3">
+                Session complete - closing in 10s
+              </Text>
+            ) : null}
 
             {activeTaskId && (
               <View className="items-center mt-2">
@@ -3326,11 +3465,19 @@ export default function Home() {
                 )}
 
                 {/* CONTROL */}
-                <TouchableOpacity onPress={toggleTimer} className="mt-5 bg-[#66b9b9]/15 px-6 py-3 rounded-full border border-[#66b9b9]/40 shadow-md shadow-[#66b9b9]/10">
-                  <Text className="text-[#5EEAD4] font-black uppercase tracking-widest text-xs">
-                    {isTimerRunning ? "⏸ Pause" : "▶ Resume"}
-                  </Text>
-                </TouchableOpacity>
+                {isFocusCompleted ? (
+                  <View className="mt-5 bg-[#7DFFB3]/10 px-6 py-3 rounded-full border border-[#7DFFB3]/30">
+                    <Text className="text-[#7DFFB3] font-black uppercase tracking-widest text-[10px]">
+                      Completed
+                    </Text>
+                  </View>
+                ) : (
+                  <TouchableOpacity onPress={toggleTimer} className="mt-5 bg-[#66b9b9]/15 px-6 py-3 rounded-full border border-[#66b9b9]/40 shadow-md shadow-[#66b9b9]/10">
+                    <Text className="text-[#5EEAD4] font-black uppercase tracking-widest text-xs">
+                      {isTimerRunning ? "⏸ Pause" : "▶ Resume"}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
           </View>
