@@ -4,7 +4,7 @@
     "slug": "adhd-task-manager",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/notification-icon.png",
     "scheme": "adhdtaskmanager",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -41,7 +41,7 @@
           "image": "./assets/images/notification-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#100009",
           "dark": {
             "backgroundColor": "#000000"
           }

@@ -14,6 +14,7 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  AppState,
 } from "react-native";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { db, initDB } from "../../database/db";
@@ -31,6 +32,26 @@ import {
   formatSqliteDateTime,
   parseStoredDateTime,
 } from "../../utils/formatDateTime";
+import {
+  FOCUS_COMPLETION_AFFIRMATIONS,
+  SECTION_HEADER_AFFIRMATIONS,
+} from "../../utils/affirmations";
+import {
+  getRandomAffirmation,
+  getSectionAffirmations,
+} from "../../utils/getRandomAffirmation";
+import {
+  buildTimerSession,
+  deserializeTimerState,
+  FOCUS_TIMER_STATE_KEY,
+  getElapsedSecondsFromTimestamp,
+  getRemainingSecondsFromTimestamp,
+  serializeTimerState,
+} from "../../utils/timerHelpers";
+import {
+  buildFocusCompletionSpeechMessage,
+  buildTaskCompletionSpeechMessage,
+} from "../../utils/speechHelpers";
 import {
   sortTasksForSection,
   sortPinnedTasks,
@@ -52,6 +73,15 @@ import {
   serializeRepeatDays,
 } from "../../utils/repeatTaskHelpers";
 import { formatRepeatLabel } from "../../utils/repeatLabelFormatter";
+import {
+  cancelNotificationById,
+  scheduleFocusCompletionNotification,
+  sendTaskCompletionNotification,
+} from "../../services/notificationService";
+import {
+  speakEncouragement,
+  stopEncouragement,
+} from "../../services/speechService";
 
 const COLORS = {
   bg: "#061414",
@@ -82,18 +112,7 @@ const VIBE_OPTIONS = [
   { emoji: "🌊", label: "Balanced" },
 ];
 
-const affirmations = [
-  "Small steps still move you forward 🌱",
-  "Focus is built gently 🧠",
-  "You are capable of consistency 💪",
-  "One task at a time ✨",
-  "Calm mind, clear direction 🌊",
-  "Start small. Momentum will follow 🌱",
-  "Progress matters more than perfection 💪",
-  "Tiny wins create powerful habits 🧠",
-  "You already survived harder days 🌊",
-  "Start with just 5 minutes ⏱",
-];
+const affirmations = SECTION_HEADER_AFFIRMATIONS;
 
 const MENU_ITEMS = [
   { key: "profile", label: "Profile Details", icon: "👤" },
@@ -143,6 +162,8 @@ const REPEAT_TYPE_OPTIONS = [
   { key: REPEAT_TYPES.YEARLY, label: "Yearly" },
 ];
 
+const SECTION_AFFIRMATION_KEYS = ["Pinned", ...SECTION_ORDER];
+
 const getDayBounds = (now = new Date()) => {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const end = start + 24 * 60 * 60 * 1000 - 1;
@@ -170,6 +191,8 @@ export default function Home() {
   const [focusTime, setFocusTime] = useState(0); // in seconds
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [isFocusCompleted, setIsFocusCompleted] = useState(false);
+  const [focusStartTimestamp, setFocusStartTimestamp] = useState(null);
+  const [focusEndTimestamp, setFocusEndTimestamp] = useState(null);
 
   const [activeTaskId, setActiveTaskId] = useState(null);
 
@@ -237,6 +260,10 @@ export default function Home() {
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [activePage, setActivePage] = useState(null);
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
+  const [isVoiceMuted, setIsVoiceMuted] = useState(false);
+  const [sectionAffirmations, setSectionAffirmations] = useState(() =>
+    getSectionAffirmations(SECTION_AFFIRMATION_KEYS, SECTION_HEADER_AFFIRMATIONS)
+  );
   const [dailyStats, setDailyStats] = useState({
     date: getDateKey(),
     completedTasks: 0,
@@ -472,6 +499,9 @@ export default function Home() {
     }, {})
   ).current;
   const pinnedChevronAnim = useRef(new Animated.Value(0)).current;
+  const focusCompletionNotificationIdRef = useRef(null);
+  const timerCompletionStampRef = useRef(null);
+  const appStateRef = useRef(AppState.currentState);
 
   const saveSetting = (key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
@@ -487,6 +517,32 @@ export default function Home() {
       return acc;
     }, {});
   };
+
+  const persistFocusTimerState = useCallback((timerState) => {
+    saveSetting(FOCUS_TIMER_STATE_KEY, serializeTimerState(timerState));
+  }, []);
+
+  const clearPersistedFocusTimerState = useCallback(() => {
+    persistFocusTimerState({
+      activeTaskId: null,
+      focusTime: 0,
+      currentDuration: 0,
+      isTimerRunning: false,
+      isFocusCompleted: false,
+      focusStartTimestamp: null,
+      focusEndTimestamp: null,
+    });
+  }, [persistFocusTimerState]);
+
+  const refreshSectionAffirmations = useCallback(() => {
+    setSectionAffirmations((prev) =>
+      getSectionAffirmations(
+        SECTION_AFFIRMATION_KEYS,
+        SECTION_HEADER_AFFIRMATIONS,
+        prev
+      )
+    );
+  }, []);
 
   const ensureDailyStatsRow = (dateKey = getDateKey()) => {
     db.runSync(
@@ -660,6 +716,93 @@ export default function Home() {
     qualifyTodayForStreak(row.completedTasks || 0, nextFocusTime);
   };
 
+  const getTaskTitleById = useCallback(
+    (taskId) => tasks.find((task) => task.id === taskId)?.title || "Focus Session",
+    [tasks]
+  );
+
+  const cancelFocusCompletionReminder = useCallback(async () => {
+    if (!focusCompletionNotificationIdRef.current) return;
+    await cancelNotificationById(focusCompletionNotificationIdRef.current);
+    focusCompletionNotificationIdRef.current = null;
+  }, []);
+
+  const scheduleFocusCompletionReminder = useCallback(
+    async (taskId, endTimestamp) => {
+      if (!taskId || !endTimestamp) return;
+      await cancelFocusCompletionReminder();
+      const notificationId = await scheduleFocusCompletionNotification({
+        taskTitle: getTaskTitleById(taskId),
+        endTimestamp,
+      });
+      focusCompletionNotificationIdRef.current = notificationId;
+    },
+    [cancelFocusCompletionReminder, getTaskTitleById]
+  );
+
+  const completeFocusSession = useCallback(
+    (completionTimestamp = Date.now()) => {
+      const completionKey = `${activeTaskId || "none"}-${completionTimestamp}`;
+      if (timerCompletionStampRef.current === completionKey) return;
+      timerCompletionStampRef.current = completionKey;
+
+      setIsTimerRunning(false);
+      setIsFocusCompleted(true);
+      setFocusStartTimestamp(null);
+      setFocusEndTimestamp(null);
+      setFocusTime(currentDuration);
+
+      const completionMessage = getRandomAffirmation(FOCUS_COMPLETION_AFFIRMATIONS);
+      showCelebration(completionMessage, "⏱");
+
+      if (!focusSessionRecordedRef.current) {
+        recordFocusSession(currentDuration);
+        focusSessionRecordedRef.current = true;
+      }
+
+      persistFocusTimerState({
+        activeTaskId,
+        focusTime: currentDuration,
+        currentDuration,
+        isTimerRunning: false,
+        isFocusCompleted: true,
+        focusStartTimestamp: null,
+        focusEndTimestamp: null,
+      });
+
+      void speakEncouragement({
+        muted: isVoiceMuted,
+        message: buildFocusCompletionSpeechMessage(getTaskTitleById(activeTaskId)),
+      });
+
+      if (focusDismissTimeoutRef.current) {
+        clearTimeout(focusDismissTimeoutRef.current);
+      }
+      focusDismissTimeoutRef.current = setTimeout(() => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setActiveTaskId(null);
+        setFocusTime(0);
+        setIsTimerRunning(false);
+        setIsFocusCompleted(false);
+        setFocusStartTimestamp(null);
+        setFocusEndTimestamp(null);
+        focusSessionRecordedRef.current = false;
+        timerCompletionStampRef.current = null;
+        focusCompletionNotificationIdRef.current = null;
+        clearPersistedFocusTimerState();
+        focusDismissTimeoutRef.current = null;
+      }, FOCUS_AUTO_DISMISS_DELAY_MS);
+    },
+    [
+      activeTaskId,
+      clearPersistedFocusTimerState,
+      currentDuration,
+      getTaskTitleById,
+      isVoiceMuted,
+      persistFocusTimerState,
+    ]
+  );
+
   const pickProfileImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
@@ -722,6 +865,17 @@ export default function Home() {
       setActivePage("support");
     });
   };
+
+  const toggleVoiceMuted = useCallback(() => {
+    setIsVoiceMuted((prev) => {
+      const next = !prev;
+      saveSetting("voiceMuted", next ? "true" : "false");
+      if (next) {
+        void stopEncouragement();
+      }
+      return next;
+    });
+  }, []);
 
   //**************useEffect************** */
   //************************************ */
@@ -880,12 +1034,31 @@ export default function Home() {
           appSettings.lifetimeCompletedTasks || existingCompleted
         );
         const lifetimeFocusTime = Number(appSettings.lifetimeFocusTime || 0);
+        setIsVoiceMuted(appSettings.voiceMuted === "true");
 
         if (!appSettings.lifetimeCompletedTasks) {
           saveSetting("lifetimeCompletedTasks", lifetimeCompletedTasks);
         }
         if (!appSettings.lastActiveDate) {
           saveSetting("lastActiveDate", today);
+        }
+
+        const restoredTimerState = deserializeTimerState(
+          appSettings[FOCUS_TIMER_STATE_KEY]
+        );
+        if (
+          restoredTimerState?.activeTaskId &&
+          loadedTasks.some((task) => task.id === restoredTimerState.activeTaskId)
+        ) {
+          setActiveTaskId(restoredTimerState.activeTaskId);
+          setFocusTime(restoredTimerState.focusTime || 0);
+          setCurrentDuration(restoredTimerState.currentDuration || 1500);
+          setIsTimerRunning(Boolean(restoredTimerState.isTimerRunning));
+          setIsFocusCompleted(Boolean(restoredTimerState.isFocusCompleted));
+          setFocusStartTimestamp(restoredTimerState.focusStartTimestamp || null);
+          setFocusEndTimestamp(restoredTimerState.focusEndTimestamp || null);
+        } else {
+          clearPersistedFocusTimerState();
         }
 
         setDailyStats({
@@ -912,7 +1085,7 @@ export default function Home() {
     };
 
     initializeApp();
-  }, []);
+  }, [clearPersistedFocusTimerState]);
 
   useEffect(() => {
     const checkSystemSchedule = async () => {
@@ -1053,47 +1226,45 @@ export default function Home() {
   }, [celebration.visible]);
 
   useEffect(() => {
-    let interval;
-
-    if (isTimerRunning) {
-      interval = setInterval(() => {
-        setFocusTime((prev) => {
-          const next = prev + 1;
-
-          // ✅ STOP when duration reached
-          if (next >= currentDuration) {
-            clearInterval(interval);
-            setIsTimerRunning(false);
-            setIsFocusCompleted(true);
-            showCelebration("🔥 Amazing focus! You stayed consistent 💪", "⏱");
-
-            // add to daily + lifetime focus time
-            recordFocusSession(currentDuration);
-            focusSessionRecordedRef.current = true;
-
-            if (focusDismissTimeoutRef.current) {
-              clearTimeout(focusDismissTimeoutRef.current);
-            }
-            focusDismissTimeoutRef.current = setTimeout(() => {
-              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-              setActiveTaskId(null);
-              setFocusTime(0);
-              setIsTimerRunning(false);
-              setIsFocusCompleted(false);
-              focusSessionRecordedRef.current = false;
-              focusDismissTimeoutRef.current = null;
-            }, FOCUS_AUTO_DISMISS_DELAY_MS);
-
-            return currentDuration; // lock at max
-          }
-
-          return next;
-        });
-      }, 1000);
+    if (
+      !isTimerRunning ||
+      !activeTaskId ||
+      !focusStartTimestamp ||
+      !focusEndTimestamp
+    ) {
+      return;
     }
 
+    const syncTick = () => {
+      const nowTimestamp = Date.now();
+      const elapsedSeconds = getElapsedSecondsFromTimestamp({
+        startTimestamp: focusStartTimestamp,
+        nowTimestamp,
+        maxDurationSeconds: currentDuration,
+      });
+      setFocusTime((prev) => (prev === elapsedSeconds ? prev : elapsedSeconds));
+
+      const remainingSeconds = getRemainingSecondsFromTimestamp({
+        endTimestamp: focusEndTimestamp,
+        nowTimestamp,
+      });
+
+      if (remainingSeconds <= 0) {
+        completeFocusSession(focusEndTimestamp);
+      }
+    };
+
+    syncTick();
+    const interval = setInterval(syncTick, 1000);
     return () => clearInterval(interval);
-  }, [isTimerRunning, currentDuration]);
+  }, [
+    activeTaskId,
+    completeFocusSession,
+    currentDuration,
+    focusEndTimestamp,
+    focusStartTimestamp,
+    isTimerRunning,
+  ]);
 
   useEffect(
     () => () => {
@@ -1101,8 +1272,10 @@ export default function Home() {
         clearTimeout(focusDismissTimeoutRef.current);
         focusDismissTimeoutRef.current = null;
       }
+      void cancelFocusCompletionReminder();
+      void stopEncouragement();
     },
-    []
+    [cancelFocusCompletionReminder]
   );
 
   useEffect(() => {
@@ -1117,6 +1290,74 @@ export default function Home() {
     const interval = setInterval(checkDailyReset, 60000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    refreshSectionAffirmations();
+    const interval = setInterval(refreshSectionAffirmations, 45000);
+    return () => clearInterval(interval);
+  }, [refreshSectionAffirmations]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      appStateRef.current = nextState;
+
+      if (nextState === "active") {
+        refreshSectionAffirmations();
+
+        if (isTimerRunning && focusStartTimestamp && focusEndTimestamp) {
+          const nowTimestamp = Date.now();
+          const elapsedSeconds = getElapsedSecondsFromTimestamp({
+            startTimestamp: focusStartTimestamp,
+            nowTimestamp,
+            maxDurationSeconds: currentDuration,
+          });
+          setFocusTime((prev) => (prev === elapsedSeconds ? prev : elapsedSeconds));
+
+          const remainingSeconds = getRemainingSecondsFromTimestamp({
+            endTimestamp: focusEndTimestamp,
+            nowTimestamp,
+          });
+          if (remainingSeconds <= 0) {
+            completeFocusSession(focusEndTimestamp);
+          }
+        }
+
+        return;
+      }
+
+      const elapsedForSave =
+        isTimerRunning && focusStartTimestamp
+          ? getElapsedSecondsFromTimestamp({
+              startTimestamp: focusStartTimestamp,
+              nowTimestamp: Date.now(),
+              maxDurationSeconds: currentDuration,
+            })
+          : focusTime;
+
+      persistFocusTimerState({
+        activeTaskId,
+        focusTime: elapsedForSave,
+        currentDuration,
+        isTimerRunning,
+        isFocusCompleted,
+        focusStartTimestamp,
+        focusEndTimestamp,
+      });
+    });
+
+    return () => subscription.remove();
+  }, [
+    activeTaskId,
+    completeFocusSession,
+    currentDuration,
+    focusEndTimestamp,
+    focusStartTimestamp,
+    focusTime,
+    isFocusCompleted,
+    isTimerRunning,
+    persistFocusTimerState,
+    refreshSectionAffirmations,
+  ]);
 
   useEffect(() => {
     const getContextAffirmations = () => {
@@ -1390,6 +1631,11 @@ export default function Home() {
           recordDailyCompletion();
           showCelebration("Task completed! Keep going", "OK");
           cancelTaskReminders(task.notificationId);
+          void sendTaskCompletionNotification({ taskTitle: task.title });
+          void speakEncouragement({
+            muted: isVoiceMuted,
+            message: buildTaskCompletionSpeechMessage(task.title),
+          });
         }
 
         if (task.id === activeTaskId && updated) {
@@ -1403,10 +1649,15 @@ export default function Home() {
             recordFocusSession(focusTime);
           }
           focusSessionRecordedRef.current = false;
+          timerCompletionStampRef.current = null;
 
           setFocusTime(0);
           setIsFocusCompleted(false);
+          setFocusStartTimestamp(null);
+          setFocusEndTimestamp(null);
           setActiveTaskId(null);
+          clearPersistedFocusTimerState();
+          void cancelFocusCompletionReminder();
         }
 
         try {
@@ -1618,19 +1869,39 @@ export default function Home() {
       clearTimeout(focusDismissTimeoutRef.current);
       focusDismissTimeoutRef.current = null;
     }
-    focusSessionRecordedRef.current = false;
-    setIsFocusCompleted(false);
 
-    if (activeTaskId !== taskId && focusTime > 0) {
+    if (activeTaskId !== taskId && focusTime > 0 && !focusSessionRecordedRef.current) {
       recordFocusSession(focusTime);
     }
 
+    focusSessionRecordedRef.current = false;
+    timerCompletionStampRef.current = null;
+    setIsFocusCompleted(false);
+
+    const session = buildTimerSession({
+      durationSeconds: duration,
+      elapsedSeconds: 0,
+      nowTimestamp: Date.now(),
+    });
+
     setActiveTaskId(taskId);
     setFocusTime(0);
+    setCurrentDuration(duration);
+    setFocusStartTimestamp(session.startTimestamp);
+    setFocusEndTimestamp(session.endTimestamp);
     setIsTimerRunning(true);
 
-    // store duration for ring logic
-    setCurrentDuration(duration);
+    persistFocusTimerState({
+      activeTaskId: taskId,
+      focusTime: 0,
+      currentDuration: duration,
+      isTimerRunning: true,
+      isFocusCompleted: false,
+      focusStartTimestamp: session.startTimestamp,
+      focusEndTimestamp: session.endTimestamp,
+    });
+    void scheduleFocusCompletionReminder(taskId, session.endTimestamp);
+    void stopEncouragement();
 
     setTimeout(() => {
       scrollRef.current?.scrollTo({
@@ -1641,20 +1912,58 @@ export default function Home() {
   };
 
   const toggleTimer = () => {
-    setIsTimerRunning((prev) => {
-      const newState = !prev;
+    if (!activeTaskId) return;
 
-      // If stopping timer → add session to total
-      if (prev === true && newState === false) {
-        recordFocusSession(focusTime);
-      }
+    if (isTimerRunning) {
+      const pausedElapsed = getElapsedSecondsFromTimestamp({
+        startTimestamp: focusStartTimestamp,
+        nowTimestamp: Date.now(),
+        maxDurationSeconds: currentDuration,
+      });
 
-      return newState;
+      setFocusTime(pausedElapsed);
+      setIsTimerRunning(false);
+      setFocusStartTimestamp(null);
+      setFocusEndTimestamp(null);
+      persistFocusTimerState({
+        activeTaskId,
+        focusTime: pausedElapsed,
+        currentDuration,
+        isTimerRunning: false,
+        isFocusCompleted: false,
+        focusStartTimestamp: null,
+        focusEndTimestamp: null,
+      });
+      void cancelFocusCompletionReminder();
+      return;
+    }
+
+    const session = buildTimerSession({
+      durationSeconds: currentDuration,
+      elapsedSeconds: focusTime,
+      nowTimestamp: Date.now(),
     });
+
+    setIsFocusCompleted(false);
+    setFocusStartTimestamp(session.startTimestamp);
+    setFocusEndTimestamp(session.endTimestamp);
+    setIsTimerRunning(true);
+    persistFocusTimerState({
+      activeTaskId,
+      focusTime,
+      currentDuration,
+      isTimerRunning: true,
+      isFocusCompleted: false,
+      focusStartTimestamp: session.startTimestamp,
+      focusEndTimestamp: session.endTimestamp,
+    });
+    void scheduleFocusCompletionReminder(activeTaskId, session.endTimestamp);
   };
 
   const pauseFocus = () => {
-    setIsTimerRunning(false);
+    if (isTimerRunning) {
+      toggleTimer();
+    }
   };
 
   const activeTask = tasks.find((t) => t.id === activeTaskId);
@@ -3194,6 +3503,9 @@ export default function Home() {
     const hasCollapsedSummary = !isSectionExpanded;
     const nextUpcomingLabel =
       sectionStats?.nearestUpcomingTaskTitle || "No upcoming tasks";
+    const sectionSupportMessage =
+      sectionAffirmations[section] ||
+      getRandomAffirmation(SECTION_HEADER_AFFIRMATIONS);
 
     return (
       <View
@@ -3228,6 +3540,9 @@ export default function Home() {
                   </Text>
                 </Animated.View>
               ) : null}
+              <Text className="text-[#E8F4F4] text-[10px] font-semibold mt-2">
+                {sectionSupportMessage}
+              </Text>
             </View>
             <View className="flex-row items-center pt-1">
               {isPinnedVirtualSection || pendingCount > 0 ? (
@@ -3717,6 +4032,25 @@ export default function Home() {
               <Text className="text-[#66b9b9] text-[10px] font-bold mt-1 tracking-widest uppercase">
                 {totalFocusText}
               </Text>
+
+              <TouchableOpacity
+                onPress={toggleVoiceMuted}
+                className="mt-2 flex-row items-center bg-[#123131]/70 border border-[#66b9b9]/30 rounded-full px-3 py-1.5"
+                activeOpacity={0.85}
+              >
+                <Feather
+                  name={isVoiceMuted ? "volume-x" : "volume-2"}
+                  size={12}
+                  color={isVoiceMuted ? COLORS.muted : COLORS.accent}
+                />
+                <Text
+                  className={`ml-1.5 text-[10px] font-black uppercase tracking-widest ${
+                    isVoiceMuted ? "text-[#9FB5B5]" : "text-[#66b9b9]"
+                  }`}
+                >
+                  {isVoiceMuted ? "Voice muted" : "Voice on"}
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -4457,6 +4791,8 @@ export default function Home() {
     </>
   );
 }
+
+
 
 
 
