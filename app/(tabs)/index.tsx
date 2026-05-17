@@ -269,13 +269,33 @@ export default function Home() {
       : Math.min(100, Math.round((dailyStats.completedTasks / totalTasks) * 100));
   const modalScale = useRef(new Animated.Value(0.8)).current;
 
+  const sectionTasksByName = useMemo(() => {
+    const groupedTasks = SECTION_ORDER.reduce((acc, sectionName) => {
+      acc[sectionName] = [];
+      return acc;
+    }, {});
+
+    tasks.forEach((task) => {
+      if (task.isPinned) return;
+      if (groupedTasks[task.section]) {
+        groupedTasks[task.section].push(task);
+      }
+    });
+
+    return groupedTasks;
+  }, [tasks]);
+
   const sectionTasksMap = useMemo(() => {
     const now = new Date();
     return SECTION_ORDER.reduce((acc, sectionName) => {
-      acc[sectionName] = sortTasksForSection(tasks, sectionName, now);
+      acc[sectionName] = sortTasksForSection(
+        sectionTasksByName[sectionName] || [],
+        sectionName,
+        now
+      );
       return acc;
     }, {});
-  }, [tasks]);
+  }, [sectionTasksByName]);
 
   const sectionHeaderStats = useMemo(() => {
     const now = new Date();
@@ -283,11 +303,18 @@ export default function Home() {
     const { start, end } = getDayBounds(now);
 
     return SECTION_ORDER.reduce((acc, sectionName) => {
-      const sectionTasks = tasks.filter(
-        (task) => task.section === sectionName && !task.isPinned
-      );
-      const pendingTasks = sectionTasks.filter((task) => !task.completed);
-      const completedTasks = sectionTasks.filter((task) => task.completed);
+      const sectionTasks = sectionTasksByName[sectionName] || [];
+      const pendingTasks = [];
+      const completedTasks = [];
+
+      sectionTasks.forEach((task) => {
+        if (task.completed) {
+          completedTasks.push(task);
+          return;
+        }
+
+        pendingTasks.push(task);
+      });
 
       const todayPendingCount = pendingTasks.reduce((count, task) => {
         const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
@@ -325,7 +352,7 @@ export default function Home() {
       };
       return acc;
     }, {});
-  }, [tasks]);
+  }, [sectionTasksByName]);
 
   const nearestUpcomingSection = useMemo(
     () => getNearestUpcomingSection(tasks),
@@ -334,6 +361,40 @@ export default function Home() {
 
   const pinnedTasks = useMemo(() => sortPinnedTasks(tasks), [tasks]);
   const pinnedTaskCount = pinnedTasks.length;
+  const pinnedHeaderStats = useMemo(() => {
+    const now = new Date();
+    const nowTime = now.getTime();
+    const { start, end } = getDayBounds(now);
+
+    let todayPendingCount = 0;
+    let nearestUpcomingTaskTitle = null;
+    let nearestUpcomingTime = Number.POSITIVE_INFINITY;
+
+    pinnedTasks.forEach((task) => {
+      const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+
+      if (isTimestampWithinRange(scheduledTimestamp, start, end)) {
+        todayPendingCount += 1;
+      }
+
+      if (
+        scheduledTimestamp !== null &&
+        scheduledTimestamp >= nowTime &&
+        scheduledTimestamp < nearestUpcomingTime
+      ) {
+        nearestUpcomingTime = scheduledTimestamp;
+        nearestUpcomingTaskTitle = task.title || null;
+      }
+    });
+
+    return {
+      pendingCount: pinnedTaskCount,
+      todayPendingCount,
+      todayCompletedCount: 0,
+      nearestUpcomingTaskTitle,
+    };
+  }, [pinnedTaskCount, pinnedTasks]);
+
   const repeatLabelByTaskId = useMemo(() => {
     const labels = {};
 
@@ -3122,17 +3183,15 @@ export default function Home() {
     const sectionHeaderClass =
       SECTION_HEADER_CLASSES[section] || SECTION_HEADER_CLASSES.Work;
     const sectionStats = isPinnedVirtualSection
-      ? null
+      ? pinnedHeaderStats
       : sectionHeaderStats[section] || {
           pendingCount: 0,
           todayPendingCount: 0,
           todayCompletedCount: 0,
           nearestUpcomingTaskTitle: null,
         };
-    const pendingCount = isPinnedVirtualSection
-      ? pinnedTaskCount
-      : sectionStats?.pendingCount || 0;
-    const hasCollapsedSummary = !isPinnedVirtualSection && !isSectionExpanded;
+    const pendingCount = sectionStats?.pendingCount || 0;
+    const hasCollapsedSummary = !isSectionExpanded;
     const nextUpcomingLabel =
       sectionStats?.nearestUpcomingTaskTitle || "No upcoming tasks";
 
@@ -3181,44 +3240,6 @@ export default function Home() {
               </Animated.View>
             </View>
           </TouchableOpacity>
-
-          {isSectionExpanded && !isPinnedVirtualSection && (
-            <View className="px-3 pt-3">
-              <TouchableOpacity
-                onPress={() => {
-                  setEditingSection(section);
-                  openSchedulePicker({
-                    target: "section-start",
-                    section,
-                    title: `${section} Start`,
-                    value: sectionTimes[section]?.start,
-                  });
-                }}
-                className="bg-[#0B1F1F]/95 p-3.5 rounded-2xl mb-2 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
-              >
-                <Text className="text-[#E8F4F4] font-bold text-xs">
-                  Start: {sectionTimes[section]?.start ? formatDateTimeForDisplay(sectionTimes[section].start) : "Select Start Date & Time"}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => {
-                  setEditingSection(section);
-                  openSchedulePicker({
-                    target: "section-end",
-                    section,
-                    title: `${section} End`,
-                    value: sectionTimes[section]?.end,
-                  });
-                }}
-                className="bg-[#0B1F1F]/95 p-3.5 rounded-2xl mb-4 border border-[#337a7a]/35 shadow-sm shadow-[#66b9b9]/10"
-              >
-                <Text className="text-[#E8F4F4] font-bold text-xs">
-                  End: {sectionTimes[section]?.end ? formatDateTimeForDisplay(sectionTimes[section].end) : "Select End Date & Time"}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          )}
 
           {isSectionExpanded && (
             <View className="px-3 pb-3">
@@ -3539,46 +3560,6 @@ export default function Home() {
                       </Text>
                     )}
 
-                    {upcomingReminders.length > 0 ? (
-                      <View className="mt-3 p-3 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/25 shadow-sm shadow-[#66b9b9]/10">
-                        <View className="flex-row items-center mb-1.5">
-                          <View
-                            className={`w-2 h-2 rounded-full mr-2 ${
-                              hasPendingNotification
-                                ? "bg-[#7DFFB3]"
-                                : upcomingReminders.length > 0
-                                ? "bg-[#FF7B7B]"
-                                : "bg-[#9FB5B5]"
-                            }`}
-                          />
-                          <Text className="text-[#66b9b9] text-[10px] font-bold tracking-widest uppercase">
-                            {hasPendingNotification
-                              ? "ALARMS ACTIVE"
-                              : "ALARMS OFFLINE"}
-                          </Text>
-                        </View>
-                        <View className="flex-row flex-wrap gap-1.5">
-                          {upcomingReminders.map((time, idx) => (
-                            <View
-                              key={idx}
-                              className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35 flex-row items-center"
-                            >
-                              <Feather name="bell" size={10} color={COLORS.success} />
-                              <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide ml-1">
-                                {time}
-                              </Text>
-                            </View>
-                          ))}
-                        </View>
-
-                        {!hasPendingNotification && (
-                          <Text className="text-[#FF7B7B] text-[9px] mt-1.5 font-bold">
-                            Tap Edit and Save to re-arm alarms
-                          </Text>
-                        )}
-                      </View>
-                    ) : null}
-
                     {lastCompletedTaskId === task.id && (
                       <Text className="text-[#7DFFB3] text-[10px] mt-2 font-bold uppercase tracking-widest">
                         Last completed
@@ -3646,6 +3627,46 @@ export default function Home() {
                           View Attachment
                         </Text>
                       </TouchableOpacity>
+                    ) : null}
+
+                    {upcomingReminders.length > 0 ? (
+                      <View className="mt-3 p-3 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/25 shadow-sm shadow-[#66b9b9]/10">
+                        <View className="flex-row items-center mb-1.5">
+                          <View
+                            className={`w-2 h-2 rounded-full mr-2 ${
+                              hasPendingNotification
+                                ? "bg-[#7DFFB3]"
+                                : upcomingReminders.length > 0
+                                ? "bg-[#FF7B7B]"
+                                : "bg-[#9FB5B5]"
+                            }`}
+                          />
+                          <Text className="text-[#66b9b9] text-[10px] font-bold tracking-widest uppercase">
+                            {hasPendingNotification
+                              ? "ALARMS ACTIVE"
+                              : "ALARMS OFFLINE"}
+                          </Text>
+                        </View>
+                        <View className="flex-row flex-wrap gap-1.5">
+                          {upcomingReminders.map((time, idx) => (
+                            <View
+                              key={idx}
+                              className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35 flex-row items-center"
+                            >
+                              <Feather name="bell" size={10} color={COLORS.success} />
+                              <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide ml-1">
+                                {time}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+
+                        {!hasPendingNotification && (
+                          <Text className="text-[#FF7B7B] text-[9px] mt-1.5 font-bold">
+                            Tap Edit and Save to re-arm alarms
+                          </Text>
+                        )}
+                      </View>
                     ) : null}
                   </>
                 )}
@@ -3745,7 +3766,7 @@ export default function Home() {
           </Text>
         </View>
 
-        {renderSection("Pinned Tasks", "Pinned")}
+        {renderSection("📌 Pinned Tasks", "Pinned")}
 
         {activeTaskId && (
           <View className="bg-[#0B1F1F] mx-4 p-5 rounded-[32px] border border-[#5EEAD4]/35 shadow-2xl shadow-[#5EEAD4]/15 mb-4">

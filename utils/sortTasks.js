@@ -25,64 +25,103 @@ const wasCompletedToday = (task, nowTime) => {
   return isTimestampInToday(completedTimestamp, nowTime);
 };
 
-const getPendingPriority = (task, nowTime) => {
-  const timestamp = toTimestamp(task.scheduledTime);
-  if (timestamp === null) return 2; // Unscheduled tasks come after scheduled ones.
-  if (timestamp >= nowTime) return 0; // Upcoming and future tasks first.
-  return 1; // Overdue tasks after future tasks.
+const getTaskId = (task) => task.id ?? 0;
+
+const compareAscendingByScheduledTime = (a, b) => {
+  const aTime = a.scheduledTime ?? Number.POSITIVE_INFINITY;
+  const bTime = b.scheduledTime ?? Number.POSITIVE_INFINITY;
+  if (aTime !== bTime) return aTime - bTime;
+  return getTaskId(a.task) - getTaskId(b.task);
 };
 
-const comparePendingTasks = (a, b, nowTime) => {
-  const aPriority = getPendingPriority(a, nowTime);
-  const bPriority = getPendingPriority(b, nowTime);
-  if (aPriority !== bPriority) return aPriority - bPriority;
-
-  const aTime = toTimestamp(a.scheduledTime) ?? Number.POSITIVE_INFINITY;
-  const bTime = toTimestamp(b.scheduledTime) ?? Number.POSITIVE_INFINITY;
-  if (aTime !== bTime) return aTime - bTime;
-
-  return (a.id ?? 0) - (b.id ?? 0);
+const comparePastPendingTasks = (a, b) => {
+  const aTime = a.scheduledTime ?? Number.NEGATIVE_INFINITY;
+  const bTime = b.scheduledTime ?? Number.NEGATIVE_INFINITY;
+  if (aTime !== bTime) return bTime - aTime;
+  return getTaskId(a.task) - getTaskId(b.task);
 };
 
 const compareCompletedTasks = (a, b) => {
-  const aTime =
-    getCompletedTimestamp(a) ??
-    toTimestamp(a.scheduledTime) ??
-    Number.POSITIVE_INFINITY;
-  const bTime =
-    getCompletedTimestamp(b) ??
-    toTimestamp(b.scheduledTime) ??
-    Number.POSITIVE_INFINITY;
+  const aTime = a.completedTime ?? a.scheduledTime ?? Number.POSITIVE_INFINITY;
+  const bTime = b.completedTime ?? b.scheduledTime ?? Number.POSITIVE_INFINITY;
   if (aTime !== bTime) return aTime - bTime;
-
-  return (a.id ?? 0) - (b.id ?? 0);
+  return getTaskId(a.task) - getTaskId(b.task);
 };
 
-export const sortTasksForSection = (tasks, section, now = new Date()) => {
-  const nowTime = now.getTime();
-  const sectionTasks = tasks.filter(
-    (task) => task.section === section && !task.isPinned
-  );
+const mapTaskEntries = (tasks) =>
+  tasks.map((task) => ({
+    task,
+    scheduledTime: toTimestamp(task.scheduledTime),
+    completedTime: getCompletedTimestamp(task),
+  }));
 
-  const pendingTasks = [];
-  const completedTodayTasks = [];
+const sortPendingTaskEntries = (entries, nowTime) => {
+  const nowDate = new Date(nowTime);
+  const startOfToday = toStartOfDay(nowDate);
+  const endOfToday = toEndOfDay(nowDate);
 
-  sectionTasks.forEach((task) => {
-    if (!task.completed) {
-      pendingTasks.push(task);
+  const todayPending = [];
+  const futurePending = [];
+  const pastPending = [];
+
+  entries.forEach((entry) => {
+    const { scheduledTime } = entry;
+    if (scheduledTime === null) {
+      futurePending.push(entry);
       return;
     }
 
-    if (wasCompletedToday(task, nowTime)) {
-      completedTodayTasks.push(task);
+    if (scheduledTime >= startOfToday && scheduledTime <= endOfToday) {
+      todayPending.push(entry);
+      return;
+    }
+
+    if (scheduledTime > endOfToday) {
+      futurePending.push(entry);
+      return;
+    }
+
+    pastPending.push(entry);
+  });
+
+  todayPending.sort(compareAscendingByScheduledTime);
+  futurePending.sort(compareAscendingByScheduledTime);
+  pastPending.sort(comparePastPendingTasks);
+
+  return [...todayPending, ...futurePending, ...pastPending].map(
+    (entry) => entry.task
+  );
+};
+
+export const sortSectionTasks = (tasks, section, now = new Date()) => {
+  const nowTime = now.getTime();
+  const sectionEntries = mapTaskEntries(
+    tasks.filter((task) => task.section === section && !task.isPinned)
+  );
+
+  const pendingEntries = [];
+  const completedTodayEntries = [];
+
+  sectionEntries.forEach((entry) => {
+    if (!entry.task.completed) {
+      pendingEntries.push(entry);
+      return;
+    }
+
+    if (wasCompletedToday(entry.task, nowTime)) {
+      completedTodayEntries.push(entry);
     }
   });
 
-  pendingTasks.sort((a, b) => comparePendingTasks(a, b, nowTime));
-  completedTodayTasks.sort(compareCompletedTasks);
+  const sortedPendingTasks = sortPendingTaskEntries(pendingEntries, nowTime);
+  const sortedCompletedTasks = completedTodayEntries
+    .sort(compareCompletedTasks)
+    .map((entry) => entry.task);
 
-  return [...pendingTasks, ...completedTodayTasks];
+  return [...sortedPendingTasks, ...sortedCompletedTasks];
 };
+
+export const sortTasksForSection = sortSectionTasks;
 
 export const getPendingTaskCount = (tasks, section) =>
   tasks.reduce((count, task) => {
@@ -92,6 +131,8 @@ export const getPendingTaskCount = (tasks, section) =>
 
 export const sortPinnedTasks = (tasks, now = new Date()) => {
   const nowTime = now.getTime();
-  const pinned = tasks.filter((task) => task.isPinned && !task.completed);
-  return pinned.sort((a, b) => comparePendingTasks(a, b, nowTime));
+  const pinnedEntries = mapTaskEntries(
+    tasks.filter((task) => task.isPinned && !task.completed)
+  );
+  return sortPendingTaskEntries(pinnedEntries, nowTime);
 };
