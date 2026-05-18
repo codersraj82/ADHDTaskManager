@@ -2,6 +2,7 @@ import {
   View,
   Text,
   ScrollView,
+  FlatList,
   TouchableOpacity,
   Modal,
   TextInput,
@@ -82,6 +83,16 @@ import {
   speakEncouragement,
   stopEncouragement,
 } from "../../services/speechService";
+import Reanimated, {
+  Easing,
+  FadeInDown,
+  runOnJS,
+  useAnimatedReaction,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
+import { useDailyProgress } from "../../hooks/useDailyProgress";
 
 const COLORS = {
   bg: "#061414",
@@ -259,6 +270,13 @@ export default function Home() {
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [activePage, setActivePage] = useState(null);
+  const [recoveryModalVisible, setRecoveryModalVisible] = useState(false);
+  const [recoveryPendingTasks, setRecoveryPendingTasks] = useState([]);
+  const [recoveryEditingTaskId, setRecoveryEditingTaskId] = useState(null);
+  const [recoveryDraftDateTime, setRecoveryDraftDateTime] = useState("");
+  const [recoveryDraftSection, setRecoveryDraftSection] = useState("Morning");
+  const [recoverySavingTaskId, setRecoverySavingTaskId] = useState(null);
+  const [recoverySuccessMessage, setRecoverySuccessMessage] = useState("");
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [sectionAffirmations, setSectionAffirmations] = useState(() =>
@@ -286,14 +304,49 @@ export default function Home() {
   //******Vriables */
 
   // ✅ Daily Progress Calculations
-  const totalTasks = tasks.length;
+  const {
+    completedTasks: completedTodayTasks,
+    pendingTasks: pendingTodayTasks,
+    totalTasks: totalTodayTasks,
+    progressPercentage,
+  } = useDailyProgress(tasks);
 
-  const completedTasks = tasks.filter((t) => t.completed).length;
+  const dailyProgressCaption = useMemo(() => {
+    if (totalTodayTasks === 0) {
+      return "Your day is ready 🌅";
+    }
 
-  const percentage =
-    totalTasks === 0
-      ? 0
-      : Math.min(100, Math.round((dailyStats.completedTasks / totalTasks) * 100));
+    if (completedTodayTasks === 0) {
+      const firstWinMessages = [
+        "Ready for your first win today ✨",
+        "Small progress still matters 🌱",
+        "One tiny task can start momentum 🧠",
+      ];
+      return firstWinMessages[pendingTodayTasks % firstWinMessages.length];
+    }
+
+    if (progressPercentage >= 70) {
+      return "Momentum building nicely 🚀";
+    }
+
+    if (progressPercentage >= 40) {
+      return "Focused progress today 🧠";
+    }
+
+    return "Consistency grows quietly 🌱";
+  }, [
+    completedTodayTasks,
+    pendingTodayTasks,
+    progressPercentage,
+    totalTodayTasks,
+  ]);
+
+  const dailyProgressSummary =
+    totalTodayTasks === 0
+      ? "Start with one small step ✨"
+      : completedTodayTasks === 0
+        ? "Ready for your first win today ✨"
+        : `${completedTodayTasks} of ${totalTodayTasks} tasks completed ✨`;
   const modalScale = useRef(new Animated.Value(0.8)).current;
 
   const sectionTasksByName = useMemo(() => {
@@ -478,10 +531,42 @@ export default function Home() {
     ringColor = "#5EEAD4"; // Teal Cyan
   }
 
+  const dailyProgressValue = useSharedValue(progressPercentage);
+  const [animatedProgressPercent, setAnimatedProgressPercent] = useState(
+    Math.round(progressPercentage)
+  );
+  const dailyProgressBarStyle = useAnimatedStyle(() => ({
+    width: `${Math.max(0, Math.min(100, dailyProgressValue.value))}%`,
+  }));
+
+  useAnimatedReaction(
+    () => Math.round(dailyProgressValue.value),
+    (next, prev) => {
+      if (next !== prev) {
+        runOnJS(setAnimatedProgressPercent)(next);
+      }
+    },
+    []
+  );
+  const recoverySheetProgress = useSharedValue(0);
+  const recoverySuccessPulse = useSharedValue(0);
+  const recoveryBackdropStyle = useAnimatedStyle(() => ({
+    opacity: recoverySheetProgress.value * 0.86,
+  }));
+  const recoverySheetStyle = useAnimatedStyle(() => ({
+    opacity: recoverySheetProgress.value,
+    transform: [{ translateY: (1 - recoverySheetProgress.value) * 52 }],
+  }));
+  const recoverySuccessStyle = useAnimatedStyle(() => ({
+    opacity: recoverySuccessPulse.value,
+    transform: [{ scale: 0.94 + recoverySuccessPulse.value * 0.06 }],
+  }));
+
   //******useRef********** */
 
-  const progressAnim = useRef(new Animated.Value(0)).current;
   const scrollRef = useRef(null);
+  const recoveryListRef = useRef(null);
+  const recoveryScrollOffsetRef = useRef(0);
   const activeFocusY = useRef(0);
   const fabScale = useRef(new Animated.Value(1)).current;
   const taskPositions = useRef({});
@@ -877,6 +962,203 @@ export default function Home() {
     });
   }, []);
 
+  const pastPendingTaskCount = useMemo(() => {
+    const { start } = getDayBounds(new Date());
+    return tasks.reduce((count, task) => {
+      if (task.completed) return count;
+      const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+      if (scheduledTimestamp === null || scheduledTimestamp >= start) {
+        return count;
+      }
+      return count + 1;
+    }, 0);
+  }, [tasks]);
+
+  const loadRecoveryPendingTasks = useCallback((preserveScroll = false) => {
+    try {
+      const { start } = getDayBounds(new Date());
+      const rows =
+        db.getAllSync(
+          `SELECT * FROM tasks
+           WHERE completed = 0
+             AND scheduledTime IS NOT NULL
+             AND TRIM(scheduledTime) <> ''
+           ORDER BY scheduledTime DESC`
+        ) || [];
+
+      const parsedRows = rows
+        .map((row) => {
+          let parsedSubtasks = [];
+          let parsedNotificationIds = [];
+
+          try {
+            parsedSubtasks = JSON.parse(row.subtasks || "[]");
+          } catch {
+            parsedSubtasks = [];
+          }
+
+          try {
+            parsedNotificationIds = JSON.parse(row.notificationId || "[]");
+          } catch {
+            parsedNotificationIds = [];
+          }
+
+          return {
+            ...row,
+            completed: row.completed === 1,
+            isPinned: row.isPinned === 1,
+            subtasks: Array.isArray(parsedSubtasks) ? parsedSubtasks : [],
+            notificationId: Array.isArray(parsedNotificationIds)
+              ? parsedNotificationIds
+              : [],
+          };
+        })
+        .filter((task) => {
+          const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+          return scheduledTimestamp !== null && scheduledTimestamp < start;
+        })
+        .sort((a, b) => {
+          const aTime = toTaskTimestamp(a.scheduledTime) || 0;
+          const bTime = toTaskTimestamp(b.scheduledTime) || 0;
+          return bTime - aTime;
+        });
+
+      setRecoveryPendingTasks(parsedRows);
+
+      if (preserveScroll) {
+        requestAnimationFrame(() => {
+          recoveryListRef.current?.scrollToOffset?.({
+            offset: recoveryScrollOffsetRef.current,
+            animated: false,
+          });
+        });
+      }
+    } catch (error) {
+      console.log("Recovery pending query error:", error);
+      setRecoveryPendingTasks([]);
+    }
+  }, []);
+
+  const openRecoveryModal = useCallback(() => {
+    setRecoveryEditingTaskId(null);
+    setRecoveryDraftDateTime("");
+    setRecoveryDraftSection("Morning");
+    setRecoverySuccessMessage("");
+    recoveryScrollOffsetRef.current = 0;
+    loadRecoveryPendingTasks(false);
+    setRecoveryModalVisible(true);
+  }, [loadRecoveryPendingTasks]);
+
+  const closeRecoveryModal = useCallback(() => {
+    recoverySheetProgress.value = withTiming(
+      0,
+      {
+        duration: 220,
+        easing: Easing.in(Easing.cubic),
+      },
+      (finished) => {
+        if (!finished) return;
+        runOnJS(setRecoveryModalVisible)(false);
+        runOnJS(setRecoveryEditingTaskId)(null);
+        runOnJS(setRecoveryDraftDateTime)("");
+        runOnJS(setRecoverySuccessMessage)("");
+      }
+    );
+  }, [recoverySheetProgress]);
+
+  const startRecoveryEdit = useCallback((task) => {
+    if (!task) return;
+    setRecoveryEditingTaskId(task.id);
+    setRecoveryDraftSection(task.section || "Morning");
+    setRecoveryDraftDateTime(
+      task.scheduledTime || formatSqliteDateTime(new Date())
+    );
+  }, []);
+
+  const cancelRecoveryEdit = useCallback(() => {
+    setRecoveryEditingTaskId(null);
+    setRecoveryDraftDateTime("");
+  }, []);
+
+  const saveRecoveryEdit = async () => {
+    if (!recoveryEditingTaskId || !recoveryDraftDateTime) return;
+
+    const targetTask = tasks.find((task) => task.id === recoveryEditingTaskId);
+    if (!targetTask) return;
+
+    const parsedDraft =
+      parseStoredDateTime(recoveryDraftDateTime) ||
+      parseStoredDateTime(targetTask.scheduledTime);
+    if (!parsedDraft) return;
+
+    const adjustedDate = restrictToSection(recoveryDraftSection, parsedDraft);
+    const scheduledTime = formatSqliteDateTime(adjustedDate);
+
+    setRecoverySavingTaskId(targetTask.id);
+    try {
+      await cancelTaskReminders(targetTask.notificationId);
+      const reminderIds = await scheduleProReminders({
+        ...targetTask,
+        section: recoveryDraftSection,
+        scheduledTime,
+      });
+
+      db.runSync(
+        `UPDATE tasks
+         SET section = ?,
+             scheduledTime = ?,
+             notificationId = ?,
+             isPinned = ?
+         WHERE id = ?`,
+        [
+          recoveryDraftSection,
+          scheduledTime,
+          JSON.stringify(reminderIds),
+          targetTask.isPinned ? 1 : 0,
+          targetTask.id,
+        ]
+      );
+
+      setTasks((prev) =>
+        prev.map((task) =>
+          task.id === targetTask.id
+            ? {
+                ...task,
+                section: recoveryDraftSection,
+                scheduledTime,
+                notificationId: reminderIds,
+              }
+            : task
+        )
+      );
+
+      setRecoverySuccessMessage("Task rescheduled gently ✨");
+      recoverySuccessPulse.value = 0;
+      recoverySuccessPulse.value = withTiming(
+        1,
+        {
+          duration: 220,
+          easing: Easing.out(Easing.cubic),
+        },
+        (finished) => {
+          if (!finished) return;
+          recoverySuccessPulse.value = withTiming(0, {
+            duration: 620,
+            easing: Easing.inOut(Easing.quad),
+          });
+        }
+      );
+
+      setRecoveryEditingTaskId(null);
+      setRecoveryDraftDateTime("");
+      loadRecoveryPendingTasks(true);
+    } catch (error) {
+      console.log("Recovery task update error:", error);
+    } finally {
+      setRecoverySavingTaskId(null);
+    }
+  };
+
   //**************useEffect************** */
   //************************************ */
 
@@ -890,6 +1172,7 @@ export default function Home() {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT, section TEXT, completed INTEGER,
           completedAt TEXT,
+          createdAt TEXT,
           repeatType TEXT DEFAULT 'none',
           repeatDays TEXT DEFAULT '[]',
           repeatMonthlyType TEXT DEFAULT '',
@@ -946,6 +1229,9 @@ export default function Home() {
         if (!columnNames.includes("completedAt")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN completedAt TEXT;");
         }
+        if (!columnNames.includes("createdAt")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN createdAt TEXT;");
+        }
         if (!columnNames.includes("repeatType")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN repeatType TEXT DEFAULT 'none';");
         }
@@ -970,6 +1256,11 @@ export default function Home() {
         if (!columnNames.includes("repeatGroupId")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN repeatGroupId TEXT DEFAULT '';");
         }
+        db.runSync(
+          `UPDATE tasks
+           SET createdAt = COALESCE(NULLIF(scheduledTime, ''), NULLIF(completedAt, ''), createdAt)
+           WHERE createdAt IS NULL OR TRIM(createdAt) = ''`
+        );
 
         // 3. Load All Data (Tasks + Section Settings)
         const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
@@ -977,6 +1268,7 @@ export default function Home() {
           ...t,
           completed: t.completed === 1,
           completedAt: t.completedAt || null,
+          createdAt: t.createdAt || null,
           repeatType: normalizeRepeatType(t.repeatType),
           repeatDays: parseRepeatDays(t.repeatDays),
           repeatMonthlyType: t.repeatMonthlyType || "",
@@ -1279,12 +1571,35 @@ export default function Home() {
   );
 
   useEffect(() => {
-    Animated.timing(progressAnim, {
-      toValue: percentage,
-      duration: 400,
-      useNativeDriver: false, // width animation needs false
-    }).start();
-  }, [percentage]);
+    dailyProgressValue.value = withTiming(progressPercentage, {
+      duration: 520,
+      easing: Easing.out(Easing.cubic),
+    });
+  }, [dailyProgressValue, progressPercentage]);
+
+  useEffect(() => {
+    if (!recoveryModalVisible) return;
+    recoverySheetProgress.value = 0;
+    requestAnimationFrame(() => {
+      recoverySheetProgress.value = withTiming(1, {
+        duration: 260,
+        easing: Easing.out(Easing.cubic),
+      });
+    });
+  }, [recoveryModalVisible, recoverySheetProgress]);
+
+  useEffect(() => {
+    if (!recoverySuccessMessage) return;
+    const timer = setTimeout(() => {
+      setRecoverySuccessMessage("");
+    }, 1800);
+    return () => clearTimeout(timer);
+  }, [recoverySuccessMessage]);
+
+  useEffect(() => {
+    if (!recoveryModalVisible) return;
+    loadRecoveryPendingTasks(true);
+  }, [loadRecoveryPendingTasks, recoveryModalVisible, tasks]);
 
   useEffect(() => {
     const interval = setInterval(checkDailyReset, 60000);
@@ -1374,7 +1689,7 @@ export default function Home() {
       if (tasks.filter((task) => !task.completed).length >= 6) {
         return ["One task at a time is enough today 💙", "You do not need to carry the whole list at once 🌊"];
       }
-      if (percentage >= 70) {
+      if (progressPercentage >= 70) {
         return ["Look how far you've already come 🚀", "Momentum is already on your side ✨"];
       }
       return affirmations;
@@ -1403,7 +1718,7 @@ export default function Home() {
     }, 6500);
 
     return () => clearInterval(interval);
-  }, [activeTaskId, currentAffirmation, percentage, tasks]);
+  }, [activeTaskId, currentAffirmation, progressPercentage, tasks]);
 
   const [modalVisible, setModalVisible] = useState(false);
   const [taskName, setTaskName] = useState("");
@@ -1550,6 +1865,7 @@ export default function Home() {
         ...nextTask,
         title: sourceWithRepeat.title,
       });
+      const createdAt = formatSqliteDateTime(new Date());
 
       const result = db.runSync(
         `INSERT INTO tasks (
@@ -1557,6 +1873,7 @@ export default function Home() {
           section,
           completed,
           completedAt,
+          createdAt,
           repeatType,
           repeatDays,
           repeatMonthlyType,
@@ -1570,12 +1887,13 @@ export default function Home() {
           notificationId,
           isPinned
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nextTask.title || "Task",
           nextTask.section || "Morning",
           0,
           null,
+          createdAt,
           normalized.repeatType,
           serializeRepeatDays(normalized.repeatDays),
           normalized.repeatMonthlyType || "",
@@ -1606,6 +1924,7 @@ export default function Home() {
           notificationId: scheduledIds,
           completed: false,
           completedAt: null,
+          createdAt,
           isPinned: false,
         },
       ]);
@@ -1724,6 +2043,7 @@ export default function Home() {
 
     try {
       const newScheduledTime = formatSqliteDateTime(new Date());
+      const createdAt = formatSqliteDateTime(new Date());
       const normalizedRepeat = normalizeTaskRepeatSettings(task);
       const repeatGroupId =
         normalizedRepeat.repeatGroupId ||
@@ -1749,6 +2069,7 @@ export default function Home() {
         section,
         completed,
         completedAt,
+        createdAt,
         repeatType,
         repeatDays,
         repeatMonthlyType,
@@ -1762,12 +2083,13 @@ export default function Home() {
         notificationId,
         isPinned
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
           task.title || "Task",
           task.section || "Morning",
           0,
           null,
+          createdAt,
           normalizedRepeat.repeatType,
           serializeRepeatDays(normalizedRepeat.repeatDays),
           normalizedRepeat.repeatMonthlyType || "",
@@ -1797,6 +2119,7 @@ export default function Home() {
           repeatCustomDate: normalizedRepeat.repeatCustomDate,
           repeatYearlyDate: normalizedRepeat.repeatYearlyDate,
           repeatGroupId,
+          createdAt,
           scheduledTime: newScheduledTime,
           subtasks: recreatedSubtasks,
           notificationId: recreatedNotificationIds,
@@ -2329,6 +2652,7 @@ export default function Home() {
           scheduledTime: finalTime,
         })
       : [];
+    const createdAt = formatSqliteDateTime(new Date());
 
     const result = db.runSync(
       `INSERT INTO tasks (
@@ -2336,6 +2660,7 @@ export default function Home() {
         section,
         completed,
         completedAt,
+        createdAt,
         repeatType,
         repeatDays,
         repeatMonthlyType,
@@ -2349,12 +2674,13 @@ export default function Home() {
         notificationId,
         isPinned
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         taskName,
         selectedSection,
         0,
         null,
+        createdAt,
         draftRepeatType,
         serializeRepeatDays(draftRepeatDays),
         draftRepeatMonthlyType || "",
@@ -2386,6 +2712,7 @@ export default function Home() {
         repeatCustomDate: draftRepeatCustomDate,
         repeatYearlyDate: draftRepeatYearlyDate,
         repeatGroupId,
+        createdAt,
         scheduledTime: finalTime,
         details: taskDetails,
         attachment: attachmentUri,
@@ -2507,6 +2834,7 @@ export default function Home() {
         section,
         completed,
         completedAt,
+        createdAt,
         repeatType,
         repeatDays,
         repeatMonthlyType,
@@ -2519,13 +2847,14 @@ export default function Home() {
         subtasks,
         notificationId,
         isPinned
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
         lastDeletedTask.section,
         lastDeletedTask.completed ? 1 : 0,
         lastDeletedTask.completedAt || null,
+        lastDeletedTask.createdAt || formatSqliteDateTime(new Date()),
         normalizeRepeatType(lastDeletedTask.repeatType),
         serializeRepeatDays(lastDeletedTask.repeatDays),
         lastDeletedTask.repeatMonthlyType || "",
@@ -2781,6 +3110,10 @@ export default function Home() {
       if (datePickerModal.target === "task") {
         setScheduledDateTime(formatted);
         setTimeAdjusted(false);
+      }
+
+      if (datePickerModal.target === "recovery-task") {
+        setRecoveryDraftDateTime(formatted);
       }
 
       if (datePickerModal.target === "repeat-monthly-custom") {
@@ -3132,7 +3465,271 @@ export default function Home() {
           </Text>
         </TouchableOpacity>
       </View>
+      <TouchableOpacity
+        activeOpacity={0.88}
+        onPress={openRecoveryModal}
+        className="mt-3 bg-[#123131]/85 rounded-2xl border border-[#66b9b9]/35 px-4 py-3.5 shadow-xl shadow-[#66b9b9]/15"
+      >
+        <View className="flex-row items-center justify-between">
+          <View className="flex-1 pr-3">
+            <Text className="text-[#E8F4F4] text-sm font-black tracking-wide">
+              Reschedule Pending Tasks ðŸ”„
+            </Text>
+            <Text className="text-[#9FB5B5] text-[11px] font-semibold mt-1">
+              Gentle recovery space for unfinished intentions
+            </Text>
+          </View>
+          {pastPendingTaskCount > 0 ? (
+            <View className="min-w-[30px] h-7 px-2 rounded-full bg-[#66b9b9]/20 border border-[#66b9b9]/40 items-center justify-center">
+              <Text className="text-[#66b9b9] text-xs font-black">
+                {pastPendingTaskCount}
+              </Text>
+            </View>
+          ) : (
+            <Feather name="refresh-cw" size={16} color={COLORS.accent} />
+          )}
+        </View>
+      </TouchableOpacity>
     </View>
+  );
+
+  const renderRecoveryPendingTaskCard = ({ item, index }) => {
+      const scheduledTimestamp = toTaskTimestamp(item.scheduledTime) || 0;
+      const startOfToday = getDayBounds(new Date()).start;
+      const dayAge = Math.max(
+        1,
+        Math.floor((startOfToday - scheduledTimestamp) / (24 * 60 * 60 * 1000))
+      );
+      const supportLabel =
+        dayAge <= 2 ? "Ready to continue ✨" : "Needs rescheduling 🌱";
+      const isEditing = recoveryEditingTaskId === item.id;
+      const isSaving = recoverySavingTaskId === item.id;
+      const durationSeconds = taskDurations[item.id];
+      const subtasksCount = Array.isArray(item.subtasks) ? item.subtasks.length : 0;
+      const scheduleLabel =
+        formatDateTimeForDisplay(item.scheduledTime) || "No schedule";
+      const draftScheduleLabel =
+        formatDateTimeForDisplay(recoveryDraftDateTime) || "Pick date & time";
+
+      return (
+        <Reanimated.View
+          entering={FadeInDown.duration(220).delay(Math.min(index, 6) * 45)}
+          className="bg-[#123131]/62 border border-[#337a7a]/30 rounded-[24px] p-4 mb-3"
+        >
+          <View className="flex-row items-start justify-between">
+            <View className="flex-1 pr-3">
+              <Text className="text-[#E8F4F4] text-base font-black" numberOfLines={3}>
+                {item.title}
+              </Text>
+              <Text className="text-[#9FB5B5] text-xs mt-1.5 font-semibold">
+                {item.section} • {scheduleLabel}
+              </Text>
+            </View>
+            <View className="bg-[#66b9b9]/12 border border-[#66b9b9]/30 rounded-full px-2.5 py-1">
+              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                {supportLabel}
+              </Text>
+            </View>
+          </View>
+
+          <View className="flex-row flex-wrap mt-3">
+            {durationSeconds ? (
+              <View className="bg-[#061414]/55 border border-[#337a7a]/25 rounded-full px-2.5 py-1 mr-2 mb-2">
+                <Text className="text-[#9FB5B5] text-[10px] font-bold">
+                  ⏱ {formatDuration(durationSeconds)}
+                </Text>
+              </View>
+            ) : null}
+            {subtasksCount > 0 ? (
+              <View className="bg-[#061414]/55 border border-[#337a7a]/25 rounded-full px-2.5 py-1 mr-2 mb-2">
+                <Text className="text-[#9FB5B5] text-[10px] font-bold">
+                  {subtasksCount} steps
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          {!isEditing ? (
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => startRecoveryEdit(item)}
+              className="self-start mt-1 bg-[#66b9b9]/15 border border-[#66b9b9]/30 rounded-full px-3 py-2 flex-row items-center"
+            >
+              <Feather name="refresh-cw" size={12} color={COLORS.accent} />
+              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest ml-1.5">
+                Continue & Reschedule
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <View className="mt-3 bg-[#061414]/45 border border-[#66b9b9]/25 rounded-2xl p-3.5">
+              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
+                Reschedule
+              </Text>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={() =>
+                  openSchedulePicker({
+                    target: "recovery-task",
+                    title: "Update Date & Time",
+                    value: recoveryDraftDateTime || item.scheduledTime || new Date(),
+                  })
+                }
+                className="bg-[#123131]/80 border border-[#66b9b9]/25 rounded-xl px-3 py-3 mb-3"
+              >
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  Date & Time
+                </Text>
+                <Text className="text-[#E8F4F4] text-sm font-bold mt-1">
+                  {draftScheduleLabel}
+                </Text>
+              </TouchableOpacity>
+
+              <View className="flex-row justify-between mb-3">
+                {SECTION_ORDER.map((sectionName) => (
+                  <TouchableOpacity
+                    key={`${item.id}-${sectionName}`}
+                    onPress={() => setRecoveryDraftSection(sectionName)}
+                    className={`flex-1 py-2.5 rounded-xl border mx-0.5 ${
+                      recoveryDraftSection === sectionName
+                        ? "bg-[#66b9b9] border-[#66b9b9]"
+                        : "bg-[#123131]/80 border-[#337a7a]/35"
+                    }`}
+                  >
+                    <Text
+                      className={`text-center text-[10px] font-black uppercase tracking-widest ${
+                        recoveryDraftSection === sectionName
+                          ? "text-[#061414]"
+                          : "text-[#9FB5B5]"
+                      }`}
+                    >
+                      {sectionName}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View className="flex-row">
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={cancelRecoveryEdit}
+                  className="flex-1 h-11 rounded-xl border border-[#337a7a]/40 bg-[#123131]/70 items-center justify-center mr-2"
+                >
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                    Cancel
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  disabled={isSaving}
+                  onPress={saveRecoveryEdit}
+                  className={`flex-1 h-11 rounded-xl items-center justify-center ${
+                    isSaving
+                      ? "bg-[#66b9b9]/30 border border-[#66b9b9]/35"
+                      : "bg-[#66b9b9] border border-[#99bdbd]/60"
+                  }`}
+                >
+                  <Text
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      isSaving ? "text-[#9FB5B5]" : "text-[#061414]"
+                    }`}
+                  >
+                    {isSaving ? "Saving..." : "Save Update"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </Reanimated.View>
+      );
+    };
+
+  const renderRecoveryModal = () => (
+    <Modal
+      visible={recoveryModalVisible}
+      transparent
+      animationType="none"
+      onRequestClose={closeRecoveryModal}
+    >
+      <View className="flex-1 justify-end">
+        <Pressable onPress={closeRecoveryModal} className="absolute inset-0">
+          <Reanimated.View
+            style={recoveryBackdropStyle}
+            className="flex-1 bg-[#061414]"
+          />
+        </Pressable>
+
+        <Reanimated.View
+          style={recoverySheetStyle}
+          className="max-h-[84%] bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/20"
+        >
+          <View className="items-center pt-3">
+            <View className="w-14 h-1.5 rounded-full bg-[#337a7a]/70" />
+          </View>
+          <View className="px-5 pt-2 pb-4 border-b border-[#66b9b9]/25 flex-row items-start justify-between">
+            <View className="flex-1 pr-3">
+              <Text className="text-[#E8F4F4] text-xl font-black">
+                Reschedule Pending Tasks 🌱”„
+              </Text>
+              <Text className="text-[#9FB5B5] text-xs font-semibold mt-1">
+                Continue gently, one task at a time.
+              </Text>
+            </View>
+            <TouchableOpacity
+              activeOpacity={0.82}
+              onPress={closeRecoveryModal}
+              className="bg-[#123131]/80 border border-[#66b9b9]/30 rounded-full px-3 py-2"
+            >
+              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                Close
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {recoverySuccessMessage ? (
+            <Reanimated.View
+              style={recoverySuccessStyle}
+              className="mx-5 mt-3 bg-[#7DFFB3]/12 border border-[#7DFFB3]/35 rounded-xl px-3 py-2"
+            >
+              <Text className="text-[#7DFFB3] text-[11px] font-black text-center">
+                {recoverySuccessMessage}
+              </Text>
+            </Reanimated.View>
+          ) : null}
+
+          {recoveryPendingTasks.length === 0 ? (
+            <View className="px-6 py-10 items-center">
+              <Text className="text-[#E8F4F4] text-lg font-black">
+                Youâ€™re all caught up âœ¨
+              </Text>
+              <Text className="text-[#9FB5B5] text-sm font-semibold mt-2 text-center">
+                Nothing waiting behind you ðŸŒ±
+              </Text>
+              <Text className="text-[#66b9b9] text-xs font-bold mt-3 text-center">
+                Fresh start feels good ðŸ§ 
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              ref={recoveryListRef}
+              data={recoveryPendingTasks}
+              keyExtractor={(item) => String(item.id)}
+              renderItem={renderRecoveryPendingTaskCard}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{
+                paddingHorizontal: 16,
+                paddingTop: 12,
+                paddingBottom: 42,
+              }}
+              onScroll={(event) => {
+                recoveryScrollOffsetRef.current =
+                  event.nativeEvent.contentOffset.y;
+              }}
+              scrollEventThrottle={16}
+            />
+          )}
+        </Reanimated.View>
+      </View>
+    </Modal>
   );
 
   const renderDrawer = () => (
@@ -4023,9 +4620,20 @@ export default function Home() {
 
             {/* RIGHT */}
             <View className="items-end">
-              {totalTasks > 0 && (
+              {totalTodayTasks > 0 ? (
+                <>
+                  {completedTodayTasks > 0 && (
+                    <Text className="text-[#66b9b9] text-sm font-black">
+                      {animatedProgressPercent}%
+                    </Text>
+                  )}
+                  <Text className="text-[#9FB5B5] text-xs font-bold">
+                    {dailyProgressSummary}
+                  </Text>
+                </>
+              ) : (
                 <Text className="text-[#9FB5B5] text-xs font-bold">
-                  {dailyStats.completedTasks} today / {totalTasks}
+                  Your day is ready 🌅
                 </Text>
               )}
 
@@ -4069,34 +4677,30 @@ export default function Home() {
             </View>
             <View className="bg-[#123131]/70 border border-[#7DFFB3]/25 rounded-full px-3 py-1.5 mr-2 mb-2">
               <Text className="text-[#7DFFB3] text-[10px] font-black">
-                ✅ {dailyStats.completedTasks} Tasks Completed
+                ✅ {completedTodayTasks} Tasks Completed
               </Text>
             </View>
+            {totalTodayTasks > 0 && (
+              <View className="bg-[#123131]/70 border border-[#66b9b9]/25 rounded-full px-3 py-1.5 mr-2 mb-2">
+                <Text className="text-[#9FB5B5] text-[10px] font-black">
+                  ⏳ {pendingTodayTasks} Pending Today
+                </Text>
+              </View>
+            )}
           </View>
 
           {/* Empty State OR Progress */}
-          {totalTasks === 0 ? (
-            <Text className="text-[#9FB5B5] font-bold text-sm italic">
-              Ready to start your flow? ✨
-            </Text>
-          ) : (
-            <View className="h-3 bg-[#061414]/70 rounded-full overflow-hidden border border-[#337a7a]/25">
-              <Animated.View
-                style={{
-                  width: progressAnim.interpolate({
-                    inputRange: [0, 100],
-                    outputRange: ["0%", "100%"],
-                  }),
-                }}
-                className="h-full bg-[#66b9b9]"
-              />
-            </View>
-          )}
+          <View className="h-3 bg-[#061414]/70 rounded-full overflow-hidden border border-[#337a7a]/25">
+            <Reanimated.View
+              style={dailyProgressBarStyle}
+              className={`h-full rounded-full ${
+                totalTodayTasks > 0 ? "bg-[#66b9b9]" : "bg-[#9FB5B5]/30"
+              }`}
+            />
+          </View>
 
           <Text className="text-[#9FB5B5] text-xs font-bold mt-3">
-            {dailyStats.completedTasks > 0 || dailyStats.totalFocusTime > 0
-              ? "Consistency grows quietly 🌱"
-              : "Fresh start today 🌱"}
+            {dailyProgressCaption}
           </Text>
         </View>
 
@@ -4199,6 +4803,7 @@ export default function Home() {
       {renderDrawer()}
       {renderPageModal()}
       {renderOnboardingModal()}
+      {renderRecoveryModal()}
 
       {/* ✅ CREATE TASK MODAL */}
       <Modal visible={modalVisible} transparent animationType="slide">
