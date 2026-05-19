@@ -277,6 +277,7 @@ export default function Home() {
   const [recoveryDraftSection, setRecoveryDraftSection] = useState("Morning");
   const [recoverySavingTaskId, setRecoverySavingTaskId] = useState(null);
   const [recoverySuccessMessage, setRecoverySuccessMessage] = useState("");
+  const [recoveryFabPromptVisible, setRecoveryFabPromptVisible] = useState(false);
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [sectionAffirmations, setSectionAffirmations] = useState(() =>
@@ -1044,10 +1045,19 @@ export default function Home() {
     setRecoveryDraftDateTime("");
     setRecoveryDraftSection("Morning");
     setRecoverySuccessMessage("");
+    setRecoveryFabPromptVisible(false);
     recoveryScrollOffsetRef.current = 0;
     loadRecoveryPendingTasks(false);
     setRecoveryModalVisible(true);
   }, [loadRecoveryPendingTasks]);
+
+  const handleRecoveryFabPress = useCallback(() => {
+    if (!recoveryFabPromptVisible) {
+      setRecoveryFabPromptVisible(true);
+      return;
+    }
+    openRecoveryModal();
+  }, [openRecoveryModal, recoveryFabPromptVisible]);
 
   const closeRecoveryModal = useCallback(() => {
     recoverySheetProgress.value = withTiming(
@@ -3465,31 +3475,6 @@ export default function Home() {
           </Text>
         </TouchableOpacity>
       </View>
-      <TouchableOpacity
-        activeOpacity={0.88}
-        onPress={openRecoveryModal}
-        className="mt-3 bg-[#123131]/85 rounded-2xl border border-[#66b9b9]/35 px-4 py-3.5 shadow-xl shadow-[#66b9b9]/15"
-      >
-        <View className="flex-row items-center justify-between">
-          <View className="flex-1 pr-3">
-            <Text className="text-[#E8F4F4] text-sm font-black tracking-wide">
-              Reschedule Pending Tasks ðŸ”„
-            </Text>
-            <Text className="text-[#9FB5B5] text-[11px] font-semibold mt-1">
-              Gentle recovery space for unfinished intentions
-            </Text>
-          </View>
-          {pastPendingTaskCount > 0 ? (
-            <View className="min-w-[30px] h-7 px-2 rounded-full bg-[#66b9b9]/20 border border-[#66b9b9]/40 items-center justify-center">
-              <Text className="text-[#66b9b9] text-xs font-black">
-                {pastPendingTaskCount}
-              </Text>
-            </View>
-          ) : (
-            <Feather name="refresh-cw" size={16} color={COLORS.accent} />
-          )}
-        </View>
-      </TouchableOpacity>
     </View>
   );
 
@@ -5191,6 +5176,32 @@ export default function Home() {
         </Pressable>
       </Animated.View>
 
+      {recoveryFabPromptVisible ? (
+        <Reanimated.View
+          entering={FadeInDown.duration(220)}
+          className="absolute bottom-9 right-20 bg-[#123131]/95 border border-[#66b9b9]/35 rounded-2xl px-3.5 py-2.5 max-w-[210px] shadow-xl shadow-[#66b9b9]/15"
+        >
+          <Text className="text-[#E8F4F4] text-[11px] font-bold">
+            Ready when you are. Tap again to review pending tasks.
+          </Text>
+        </Reanimated.View>
+      ) : null}
+
+      <TouchableOpacity
+        activeOpacity={0.86}
+        onPress={handleRecoveryFabPress}
+        className="absolute bottom-8 right-6 w-11 h-11 rounded-full bg-[#123131]/90 border border-[#66b9b9]/40 items-center justify-center shadow-xl shadow-[#66b9b9]/20"
+      >
+        <Feather name="refresh-cw" size={15} color={COLORS.accent} />
+        {pastPendingTaskCount > 0 ? (
+          <View className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#66b9b9] border border-[#99bdbd]/80 items-center justify-center">
+            <Text className="text-[#061414] text-[9px] font-black">
+              {pastPendingTaskCount > 9 ? "9+" : pastPendingTaskCount}
+            </Text>
+          </View>
+        ) : null}
+      </TouchableOpacity>
+
       <Modal visible={celebration.visible} transparent animationType="fade">
         <View className="flex-1 bg-[#061414]/90 justify-center items-center px-8">
           <Animated.View
@@ -5396,8 +5407,6 @@ export default function Home() {
     </>
   );
 }
-
-
 
 
 
