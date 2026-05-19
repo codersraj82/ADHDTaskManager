@@ -3479,155 +3479,155 @@ export default function Home() {
   );
 
   const renderRecoveryPendingTaskCard = ({ item, index }) => {
-      const scheduledTimestamp = toTaskTimestamp(item.scheduledTime) || 0;
-      const startOfToday = getDayBounds(new Date()).start;
-      const dayAge = Math.max(
-        1,
-        Math.floor((startOfToday - scheduledTimestamp) / (24 * 60 * 60 * 1000))
-      );
-      const supportLabel =
-        dayAge <= 2 ? "Ready to continue ✨" : "Needs rescheduling 🌱";
-      const isEditing = recoveryEditingTaskId === item.id;
-      const isSaving = recoverySavingTaskId === item.id;
-      const durationSeconds = taskDurations[item.id];
-      const subtasksCount = Array.isArray(item.subtasks) ? item.subtasks.length : 0;
-      const scheduleLabel =
-        formatDateTimeForDisplay(item.scheduledTime) || "No schedule";
-      const draftScheduleLabel =
-        formatDateTimeForDisplay(recoveryDraftDateTime) || "Pick date & time";
+    const scheduledTimestamp = toTaskTimestamp(item.scheduledTime) || 0;
+    const startOfToday = getDayBounds(new Date()).start;
+    const dayAge = Math.max(
+      1,
+      Math.floor((startOfToday - scheduledTimestamp) / (24 * 60 * 60 * 1000))
+    );
+    const supportLabel =
+      dayAge <= 2 ? "Ready to continue" : "Needs rescheduling";
+    const isEditing = recoveryEditingTaskId === item.id;
+    const isSaving = recoverySavingTaskId === item.id;
+    const durationSeconds = taskDurations[item.id];
+    const subtasksCount = Array.isArray(item.subtasks) ? item.subtasks.length : 0;
+    const scheduleLabel =
+      formatDateTimeForDisplay(item.scheduledTime) || "No schedule";
+    const draftScheduleLabel =
+      formatDateTimeForDisplay(recoveryDraftDateTime) || "Pick date & time";
 
-      return (
-        <Reanimated.View
-          entering={FadeInDown.duration(220).delay(Math.min(index, 6) * 45)}
-          className="bg-[#123131]/62 border border-[#337a7a]/30 rounded-[24px] p-4 mb-3"
-        >
-          <View className="flex-row items-start justify-between">
-            <View className="flex-1 pr-3">
-              <Text className="text-[#E8F4F4] text-base font-black" numberOfLines={3}>
-                {item.title}
-              </Text>
-              <Text className="text-[#9FB5B5] text-xs mt-1.5 font-semibold">
-                {item.section} • {scheduleLabel}
+    return (
+      <Reanimated.View
+        entering={FadeInDown.duration(220).delay(Math.min(index, 6) * 45)}
+        className="bg-[#123131]/62 border border-[#337a7a]/30 rounded-[24px] p-5 mb-3"
+      >
+        <View>
+          <Text className="text-[#E8F4F4] text-2xl leading-8 font-black" numberOfLines={3}>
+            {item.title}
+          </Text>
+          <Text className="text-[#9FB5B5] text-[11px] mt-2 font-black uppercase tracking-widest">
+            {item.section}
+          </Text>
+          <Text className="text-[#9FB5B5] text-sm mt-1 font-semibold leading-5">
+            {scheduleLabel}
+          </Text>
+        </View>
+
+        <View className="flex-row flex-wrap mt-3.5">
+          <View className="bg-[#66b9b9]/12 border border-[#66b9b9]/30 rounded-full px-2.5 py-1 mr-2 mb-2">
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-wide">
+              {supportLabel}
+            </Text>
+          </View>
+          {durationSeconds ? (
+            <View className="bg-[#061414]/55 border border-[#337a7a]/25 rounded-full px-2.5 py-1 mr-2 mb-2">
+              <Text className="text-[#9FB5B5] text-[10px] font-bold">
+                {formatDuration(durationSeconds)}
               </Text>
             </View>
-            <View className="bg-[#66b9b9]/12 border border-[#66b9b9]/30 rounded-full px-2.5 py-1">
-              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-                {supportLabel}
+          ) : null}
+          {subtasksCount > 0 ? (
+            <View className="bg-[#061414]/55 border border-[#337a7a]/25 rounded-full px-2.5 py-1 mr-2 mb-2">
+              <Text className="text-[#9FB5B5] text-[10px] font-bold">
+                {subtasksCount} steps
               </Text>
             </View>
-          </View>
+          ) : null}
+        </View>
 
-          <View className="flex-row flex-wrap mt-3">
-            {durationSeconds ? (
-              <View className="bg-[#061414]/55 border border-[#337a7a]/25 rounded-full px-2.5 py-1 mr-2 mb-2">
-                <Text className="text-[#9FB5B5] text-[10px] font-bold">
-                  ⏱ {formatDuration(durationSeconds)}
-                </Text>
-              </View>
-            ) : null}
-            {subtasksCount > 0 ? (
-              <View className="bg-[#061414]/55 border border-[#337a7a]/25 rounded-full px-2.5 py-1 mr-2 mb-2">
-                <Text className="text-[#9FB5B5] text-[10px] font-bold">
-                  {subtasksCount} steps
-                </Text>
-              </View>
-            ) : null}
-          </View>
-
-          {!isEditing ? (
+        {!isEditing ? (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => startRecoveryEdit(item)}
+            className="mt-2 bg-[#66b9b9]/15 border border-[#66b9b9]/30 rounded-2xl px-3.5 py-3 flex-row items-center justify-center"
+          >
+            <Feather name="refresh-cw" size={12} color={COLORS.accent} />
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest ml-1.5">
+              Continue & Reschedule
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <View className="mt-3 bg-[#061414]/45 border border-[#66b9b9]/25 rounded-2xl p-3.5">
+            <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
+              Reschedule
+            </Text>
             <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => startRecoveryEdit(item)}
-              className="self-start mt-1 bg-[#66b9b9]/15 border border-[#66b9b9]/30 rounded-full px-3 py-2 flex-row items-center"
+              activeOpacity={0.82}
+              onPress={() =>
+                openSchedulePicker({
+                  target: "recovery-task",
+                  title: "Update Date & Time",
+                  value: recoveryDraftDateTime || item.scheduledTime || new Date(),
+                })
+              }
+              className="bg-[#123131]/80 border border-[#66b9b9]/25 rounded-xl px-3 py-3 mb-3"
             >
-              <Feather name="refresh-cw" size={12} color={COLORS.accent} />
-              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest ml-1.5">
-                Continue & Reschedule
+              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                Date & Time
+              </Text>
+              <Text className="text-[#E8F4F4] text-sm font-bold mt-1">
+                {draftScheduleLabel}
               </Text>
             </TouchableOpacity>
-          ) : (
-            <View className="mt-3 bg-[#061414]/45 border border-[#66b9b9]/25 rounded-2xl p-3.5">
-              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
-                Reschedule
-              </Text>
-              <TouchableOpacity
-                activeOpacity={0.82}
-                onPress={() =>
-                  openSchedulePicker({
-                    target: "recovery-task",
-                    title: "Update Date & Time",
-                    value: recoveryDraftDateTime || item.scheduledTime || new Date(),
-                  })
-                }
-                className="bg-[#123131]/80 border border-[#66b9b9]/25 rounded-xl px-3 py-3 mb-3"
-              >
-                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-                  Date & Time
-                </Text>
-                <Text className="text-[#E8F4F4] text-sm font-bold mt-1">
-                  {draftScheduleLabel}
-                </Text>
-              </TouchableOpacity>
 
-              <View className="flex-row justify-between mb-3">
-                {SECTION_ORDER.map((sectionName) => (
-                  <TouchableOpacity
-                    key={`${item.id}-${sectionName}`}
-                    onPress={() => setRecoveryDraftSection(sectionName)}
-                    className={`flex-1 py-2.5 rounded-xl border mx-0.5 ${
-                      recoveryDraftSection === sectionName
-                        ? "bg-[#66b9b9] border-[#66b9b9]"
-                        : "bg-[#123131]/80 border-[#337a7a]/35"
-                    }`}
-                  >
-                    <Text
-                      className={`text-center text-[10px] font-black uppercase tracking-widest ${
-                        recoveryDraftSection === sectionName
-                          ? "text-[#061414]"
-                          : "text-[#9FB5B5]"
-                      }`}
-                    >
-                      {sectionName}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <View className="flex-row">
+            <View className="flex-row justify-between mb-3">
+              {SECTION_ORDER.map((sectionName) => (
                 <TouchableOpacity
-                  activeOpacity={0.82}
-                  onPress={cancelRecoveryEdit}
-                  className="flex-1 h-11 rounded-xl border border-[#337a7a]/40 bg-[#123131]/70 items-center justify-center mr-2"
-                >
-                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
-                    Cancel
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  disabled={isSaving}
-                  onPress={saveRecoveryEdit}
-                  className={`flex-1 h-11 rounded-xl items-center justify-center ${
-                    isSaving
-                      ? "bg-[#66b9b9]/30 border border-[#66b9b9]/35"
-                      : "bg-[#66b9b9] border border-[#99bdbd]/60"
+                  key={`${item.id}-${sectionName}`}
+                  onPress={() => setRecoveryDraftSection(sectionName)}
+                  className={`flex-1 py-2.5 rounded-xl border mx-0.5 ${
+                    recoveryDraftSection === sectionName
+                      ? "bg-[#66b9b9] border-[#66b9b9]"
+                      : "bg-[#123131]/80 border-[#337a7a]/35"
                   }`}
                 >
                   <Text
-                    className={`text-[10px] font-black uppercase tracking-widest ${
-                      isSaving ? "text-[#9FB5B5]" : "text-[#061414]"
+                    className={`text-center text-[10px] font-black uppercase tracking-widest ${
+                      recoveryDraftSection === sectionName
+                        ? "text-[#061414]"
+                        : "text-[#9FB5B5]"
                     }`}
                   >
-                    {isSaving ? "Saving..." : "Save Update"}
+                    {sectionName}
                   </Text>
                 </TouchableOpacity>
-              </View>
+              ))}
             </View>
-          )}
-        </Reanimated.View>
-      );
-    };
 
+            <View className="flex-row">
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={cancelRecoveryEdit}
+                className="flex-1 h-11 rounded-xl border border-[#337a7a]/40 bg-[#123131]/70 items-center justify-center mr-2"
+              >
+                <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                disabled={isSaving}
+                onPress={saveRecoveryEdit}
+                className={`flex-1 h-11 rounded-xl items-center justify-center ${
+                  isSaving
+                    ? "bg-[#66b9b9]/30 border border-[#66b9b9]/35"
+                    : "bg-[#66b9b9] border border-[#99bdbd]/60"
+                }`}
+              >
+                <Text
+                  className={`text-[10px] font-black uppercase tracking-widest ${
+                    isSaving ? "text-[#9FB5B5]" : "text-[#061414]"
+                  }`}
+                >
+                  {isSaving ? "Saving..." : "Save Update"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </Reanimated.View>
+    );
+  };
   const renderRecoveryModal = () => (
     <Modal
       visible={recoveryModalVisible}
@@ -3653,7 +3653,7 @@ export default function Home() {
           <View className="px-5 pt-2 pb-4 border-b border-[#66b9b9]/25 flex-row items-start justify-between">
             <View className="flex-1 pr-3">
               <Text className="text-[#E8F4F4] text-xl font-black">
-                Reschedule Pending Tasks 🌱”„
+                Reschedule Pending Tasks
               </Text>
               <Text className="text-[#9FB5B5] text-xs font-semibold mt-1">
                 Continue gently, one task at a time.
@@ -3684,13 +3684,13 @@ export default function Home() {
           {recoveryPendingTasks.length === 0 ? (
             <View className="px-6 py-10 items-center">
               <Text className="text-[#E8F4F4] text-lg font-black">
-                Youâ€™re all caught up âœ¨
+                You are all caught up.
               </Text>
               <Text className="text-[#9FB5B5] text-sm font-semibold mt-2 text-center">
-                Nothing waiting behind you ðŸŒ±
+                Nothing waiting behind you.
               </Text>
               <Text className="text-[#66b9b9] text-xs font-bold mt-3 text-center">
-                Fresh start feels good ðŸ§ 
+                Fresh start feels good.
               </Text>
             </View>
           ) : (
@@ -5407,6 +5407,7 @@ export default function Home() {
     </>
   );
 }
+
 
 
 
