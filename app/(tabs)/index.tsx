@@ -303,7 +303,9 @@ export default function Home() {
   const [specialTasks, setSpecialTasks] = useState([]);
   const [specialTaskTitle, setSpecialTaskTitle] = useState("");
   const [specialTaskNote, setSpecialTaskNote] = useState("");
-  const floatingBaseBottom = Math.max(insets.bottom, 8) + 8;
+  const footerSafeBottom = Math.max(insets.bottom, 8);
+  const footerHeight = 56;
+  const floatingBaseBottom = footerSafeBottom + footerHeight + 10;
   const recoveryFabBottom = floatingBaseBottom;
   const addTaskFabBottom = recoveryFabBottom + 56;
   const focusFabBottom = addTaskFabBottom + 76;
@@ -3469,7 +3471,34 @@ export default function Home() {
       </Animated.View>
     </View>
   );
-  const renderFixedFooter = () => null;
+  const renderFixedFooter = () => (
+    <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ bottom: footerSafeBottom }}>
+      <View
+        className="mx-4 bg-[#0B1F1F]/96 border border-[#66b9b9]/25 rounded-2xl px-3.5 py-2.5 shadow-xl shadow-[#66b9b9]/10"
+        style={{ minHeight: footerHeight }}
+      >
+        <View className="flex-row items-center">
+          <View className="flex-1 pr-3">
+            <Text className="text-[#E8F4F4] text-[11px] font-black uppercase tracking-widest">
+              Gentle Progress
+            </Text>
+            <Text className="text-[#9FB5B5] text-[11px] mt-1 font-semibold">
+              {completedTodayTasks} done • {pendingTodayTasks} to continue
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={openSupport}
+            activeOpacity={0.86}
+            className="bg-[#66b9b9]/16 border border-[#66b9b9]/35 rounded-full px-4 py-2"
+          >
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+              Support
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
 
   const renderRecoveryPendingTaskCard = ({ item, index }) => {
     const scheduledTimestamp = toTaskTimestamp(item.scheduledTime) || 0;
@@ -4579,7 +4608,7 @@ export default function Home() {
         className="flex-1 bg-[#061414]"
         contentContainerStyle={{
           paddingTop: 190,
-          paddingBottom: 108,
+          paddingBottom: 190,
         }}
       >
         <Text
