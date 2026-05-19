@@ -92,6 +92,7 @@ import Reanimated, {
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDailyProgress } from "../../hooks/useDailyProgress";
 
 const COLORS = {
@@ -192,6 +193,7 @@ const isTimestampWithinRange = (timestamp, start, end) =>
 
 //*************main component function********* */
 export default function Home() {
+  const insets = useSafeAreaInsets();
   const [tasks, setTasks] = useState([
     { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [], isPinned: false },
     { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [], isPinned: false },
@@ -301,6 +303,11 @@ export default function Home() {
   const [specialTasks, setSpecialTasks] = useState([]);
   const [specialTaskTitle, setSpecialTaskTitle] = useState("");
   const [specialTaskNote, setSpecialTaskNote] = useState("");
+  const floatingBaseBottom = Math.max(insets.bottom, 8) + 8;
+  const recoveryFabBottom = floatingBaseBottom;
+  const addTaskFabBottom = recoveryFabBottom + 56;
+  const focusFabBottom = addTaskFabBottom + 76;
+  const recoveryPromptBottom = recoveryFabBottom + 2;
 
   //******Vriables */
 
@@ -3462,21 +3469,7 @@ export default function Home() {
       </Animated.View>
     </View>
   );
-
-  const renderFixedFooter = () => (
-    <View className="absolute bottom-0 left-0 right-0 z-30 bg-[#061414]/95 px-5 pt-3 pb-5 border-t border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20">
-      <View className="flex-row items-center justify-between">
-        <Text className="text-[#9FB5B5] text-xs font-bold">
-          © researchzeal.com
-        </Text>
-        <TouchableOpacity onPress={openSupport} className="bg-[#123131]/70 px-3 py-2 rounded-full border border-[#66b9b9]/25">
-          <Text className="text-[#66b9b9] text-xs font-black">
-            ❤️ Support This Project
-          </Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+  const renderFixedFooter = () => null;
 
   const renderRecoveryPendingTaskCard = ({ item, index }) => {
     const scheduledTimestamp = toTaskTimestamp(item.scheduledTime) || 0;
@@ -4586,7 +4579,7 @@ export default function Home() {
         className="flex-1 bg-[#061414]"
         contentContainerStyle={{
           paddingTop: 190,
-          paddingBottom: 200, // 👈 IMPORTANT - Kept exactly as original
+          paddingBottom: 108,
         }}
       >
         <Text
@@ -5139,7 +5132,8 @@ export default function Home() {
               animated: true,
             });
           }}
-          className="absolute bottom-38 right-6 bg-[#66b9b9] py-3 px-5 rounded-full shadow-2xl shadow-[#66b9b9]/40 border border-[#99bdbd]/70"
+          style={{ bottom: focusFabBottom }}
+          className="absolute right-6 bg-[#66b9b9] py-3 px-5 rounded-full shadow-2xl shadow-[#66b9b9]/40 border border-[#99bdbd]/70"
         >
           <Text className="text-[#061414] font-black uppercase tracking-widest text-xs">
             🎯 Focus
@@ -5148,7 +5142,8 @@ export default function Home() {
       ) : lastCompletedTaskId ? (
         <TouchableOpacity
           onPress={() => scrollToTask(lastCompletedTaskId)}
-          className="absolute bottom-38 right-6 bg-[#7DFFB3] py-3 px-5 rounded-full shadow-2xl shadow-[#7DFFB3]/35 border border-[#7DFFB3]"
+          style={{ bottom: focusFabBottom }}
+          className="absolute right-6 bg-[#7DFFB3] py-3 px-5 rounded-full shadow-2xl shadow-[#7DFFB3]/35 border border-[#7DFFB3]"
         >
           <Text className="text-[#061414] font-black uppercase tracking-widest text-xs">
             ✅ Last Completed
@@ -5158,9 +5153,10 @@ export default function Home() {
 
       <Animated.View
         style={{
+          bottom: addTaskFabBottom,
           transform: [{ scale: fabScale }],
         }}
-        className="absolute bottom-20 right-5"
+        className="absolute right-5"
       >
         <Pressable
           onPress={openModal}
@@ -5179,7 +5175,8 @@ export default function Home() {
       {recoveryFabPromptVisible ? (
         <Reanimated.View
           entering={FadeInDown.duration(220)}
-          className="absolute bottom-9 right-20 bg-[#123131]/95 border border-[#66b9b9]/35 rounded-2xl px-3.5 py-2.5 max-w-[210px] shadow-xl shadow-[#66b9b9]/15"
+          style={{ bottom: recoveryPromptBottom }}
+          className="absolute right-20 bg-[#123131]/95 border border-[#66b9b9]/35 rounded-2xl px-3.5 py-2.5 max-w-[210px] shadow-xl shadow-[#66b9b9]/15"
         >
           <Text className="text-[#E8F4F4] text-[11px] font-bold">
             Ready when you are. Tap again to review pending tasks.
@@ -5190,7 +5187,8 @@ export default function Home() {
       <TouchableOpacity
         activeOpacity={0.86}
         onPress={handleRecoveryFabPress}
-        className="absolute bottom-8 right-6 w-11 h-11 rounded-full bg-[#123131]/90 border border-[#66b9b9]/40 items-center justify-center shadow-xl shadow-[#66b9b9]/20"
+        style={{ bottom: recoveryFabBottom }}
+        className="absolute right-6 w-11 h-11 rounded-full bg-[#123131]/90 border border-[#66b9b9]/40 items-center justify-center shadow-xl shadow-[#66b9b9]/20"
       >
         <Feather name="refresh-cw" size={15} color={COLORS.accent} />
         {pastPendingTaskCount > 0 ? (
@@ -5407,6 +5405,7 @@ export default function Home() {
     </>
   );
 }
+
 
 
 
