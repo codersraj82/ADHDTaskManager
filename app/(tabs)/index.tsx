@@ -547,6 +547,40 @@ export default function Home() {
     [todayDateKey, yearlyMoodSummary.averageMoodType, yearlyMoodSummary.totalEntries]
   );
 
+  const dailyMoodAffirmationSpeechMessage = useMemo(() => {
+    if (!dailyMoodAffirmation) return "";
+    const moodPrefix = effectiveTodayMoodMeta?.label
+      ? `Mood today: ${effectiveTodayMoodMeta.label}. `
+      : "";
+    return `${moodPrefix}${dailyMoodAffirmation}`;
+  }, [dailyMoodAffirmation, effectiveTodayMoodMeta?.label]);
+
+  const activeTaskSectionForSpeech = useMemo(() => {
+    if (!activeTaskId) return null;
+    return tasks.find((task) => task.id === activeTaskId)?.section || null;
+  }, [activeTaskId, tasks]);
+
+  const sectionAffirmationSpeechMessage = useMemo(() => {
+    const sectionKey =
+      activeTaskSectionForSpeech ||
+      nearestUpcomingSection ||
+      (pinnedTaskCount > 0 ? "Pinned" : null) ||
+      SECTION_ORDER.find((name) => Boolean(sectionAffirmations[name])) ||
+      null;
+
+    if (!sectionKey) return "";
+    const sectionMessage = sectionAffirmations[sectionKey];
+    if (!sectionMessage) return "";
+
+    const sectionLabel = sectionKey === "Pinned" ? "Pinned tasks" : sectionKey;
+    return `${sectionLabel}. ${sectionMessage}`;
+  }, [
+    activeTaskSectionForSpeech,
+    nearestUpcomingSection,
+    pinnedTaskCount,
+    sectionAffirmations,
+  ]);
+
   const sectionTasksByName = useMemo(() => {
     const groupedTasks = SECTION_ORDER.reduce((acc, sectionName) => {
       acc[sectionName] = [];
@@ -785,6 +819,12 @@ export default function Home() {
   const focusCompletionNotificationIdRef = useRef(null);
   const timerCompletionStampRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
+  const speechHistoryRef = useRef({
+    header: { message: "", at: 0 },
+    dailyMood: { message: "", at: 0 },
+    section: { message: "", at: 0 },
+    lastGlobalAt: 0,
+  });
 
   const saveSetting = (key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
@@ -908,6 +948,52 @@ export default function Home() {
       )
     );
   }, []);
+
+  const speakAffirmationChannel = useCallback(
+    async ({
+      channel,
+      message,
+      minChannelGapMs = 90000,
+      minGlobalGapMs = 9000,
+    }) => {
+      if (isVoiceMuted) return false;
+      if (!channel || !message || appStateRef.current !== "active") return false;
+
+      const normalizedMessage = String(message).replace(/\s+/g, " ").trim();
+      if (!normalizedMessage) return false;
+
+      const now = Date.now();
+      const channelHistory = speechHistoryRef.current[channel] || {
+        message: "",
+        at: 0,
+      };
+      if (now - channelHistory.at < Math.max(0, minChannelGapMs)) {
+        return false;
+      }
+
+      const lastGlobalAt = Number(speechHistoryRef.current.lastGlobalAt || 0);
+      if (now - lastGlobalAt < Math.max(0, minGlobalGapMs)) {
+        return false;
+      }
+
+      const didSpeak = await speakEncouragement({
+        muted: false,
+        message: normalizedMessage,
+        minGapMs: minGlobalGapMs,
+      });
+
+      if (!didSpeak) return false;
+
+      const spokenAt = Date.now();
+      speechHistoryRef.current[channel] = {
+        message: normalizedMessage,
+        at: spokenAt,
+      };
+      speechHistoryRef.current.lastGlobalAt = spokenAt;
+      return true;
+    },
+    [isVoiceMuted]
+  );
 
   const ensureDailyStatsRow = (dateKey = getDateKey()) => {
     db.runSync(
@@ -1135,6 +1221,7 @@ export default function Home() {
         focusEndTimestamp: null,
       });
 
+      speechHistoryRef.current.lastGlobalAt = Date.now();
       void speakEncouragement({
         muted: isVoiceMuted,
         message: buildFocusCompletionSpeechMessage(getTaskTitleById(activeTaskId)),
@@ -1929,6 +2016,38 @@ export default function Home() {
   }, [refreshSectionAffirmations]);
 
   useEffect(() => {
+    if (activePage && activePage !== "mood-tracker") return;
+    if (!dailyMoodAffirmationSpeechMessage) return;
+
+    const timer = setTimeout(() => {
+      void speakAffirmationChannel({
+        channel: "dailyMood",
+        message: dailyMoodAffirmationSpeechMessage,
+        minChannelGapMs: 90000,
+        minGlobalGapMs: 10000,
+      });
+    }, 380);
+
+    return () => clearTimeout(timer);
+  }, [activePage, dailyMoodAffirmationSpeechMessage, speakAffirmationChannel]);
+
+  useEffect(() => {
+    if (activePage !== null) return;
+    if (!sectionAffirmationSpeechMessage) return;
+
+    const timer = setTimeout(() => {
+      void speakAffirmationChannel({
+        channel: "section",
+        message: sectionAffirmationSpeechMessage,
+        minChannelGapMs: 120000,
+        minGlobalGapMs: 12000,
+      });
+    }, 620);
+
+    return () => clearTimeout(timer);
+  }, [activePage, sectionAffirmationSpeechMessage, speakAffirmationChannel]);
+
+  useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
       appStateRef.current = nextState;
 
@@ -2270,6 +2389,7 @@ export default function Home() {
           showCelebration("Task completed! Keep going", "OK");
           cancelTaskReminders(task.notificationId);
           void sendTaskCompletionNotification({ taskTitle: task.title });
+          speechHistoryRef.current.lastGlobalAt = Date.now();
           void speakEncouragement({
             muted: isVoiceMuted,
             message: buildTaskCompletionSpeechMessage(task.title),
