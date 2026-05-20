@@ -101,6 +101,7 @@ import {
   buildYearlyByMonth,
 } from "../../utils/moodAnalytics";
 import Reanimated, {
+  cancelAnimation,
   Easing,
   FadeInDown,
   runOnJS,
@@ -108,6 +109,7 @@ import Reanimated, {
   useAnimatedReaction,
   useAnimatedStyle,
   useSharedValue,
+  withRepeat,
   withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -173,6 +175,10 @@ const FOCUS_AUTO_DISMISS_DELAY_MS = 10000;
 const HEADER_HIDE_SCROLL_THRESHOLD = 48;
 const HEADER_SHOW_SCROLL_THRESHOLD = 12;
 const HEADER_HIDE_OFFSET_FALLBACK = 172;
+const HEADER_AFFIRMATION_MARQUEE_GAP = 56;
+const HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC = 24;
+const HEADER_AFFIRMATION_MIN_DURATION_MS = 12000;
+const HEADER_AFFIRMATION_MAX_DURATION_MS = 32000;
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -332,6 +338,10 @@ export default function Home() {
     HEADER_HIDE_OFFSET_FALLBACK
   );
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
+  const [headerAffirmationViewportWidth, setHeaderAffirmationViewportWidth] =
+    useState(0);
+  const [headerAffirmationTextWidth, setHeaderAffirmationTextWidth] =
+    useState(0);
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [sectionAffirmations, setSectionAffirmations] = useState(() =>
     getSectionAffirmations(SECTION_AFFIRMATION_KEYS, SECTION_HEADER_AFFIRMATIONS)
@@ -373,6 +383,28 @@ export default function Home() {
 
   const syncHeaderCollapsedState = useCallback((collapsed) => {
     setIsHeaderCollapsed((prev) => (prev === collapsed ? prev : collapsed));
+  }, []);
+  const shouldScrollHeaderAffirmation = useMemo(() => {
+    if (!headerAffirmationViewportWidth || !headerAffirmationTextWidth) {
+      return false;
+    }
+    return headerAffirmationTextWidth > headerAffirmationViewportWidth - 4;
+  }, [headerAffirmationTextWidth, headerAffirmationViewportWidth]);
+
+  const handleHeaderAffirmationViewportLayout = useCallback((event) => {
+    const width = Math.max(0, Math.ceil(event?.nativeEvent?.layout?.width || 0));
+    if (!width) return;
+    setHeaderAffirmationViewportWidth((prev) =>
+      Math.abs(prev - width) < 2 ? prev : width
+    );
+  }, []);
+
+  const handleHeaderAffirmationTextLayout = useCallback((event) => {
+    const width = Math.max(0, Math.ceil(event?.nativeEvent?.layout?.width || 0));
+    if (!width) return;
+    setHeaderAffirmationTextWidth((prev) =>
+      Math.abs(prev - width) < 2 ? prev : width
+    );
   }, []);
 
   //******Vriables */
@@ -804,6 +836,7 @@ export default function Home() {
   const headerTranslateY = useSharedValue(0);
   const floatingMenuOpacity = useSharedValue(0);
   const lastHomeScrollY = useSharedValue(0);
+  const headerAffirmationTranslateX = useSharedValue(0);
   const recoveryBackdropStyle = useAnimatedStyle(() => ({
     opacity: recoverySheetProgress.value * 0.86,
   }));
@@ -817,6 +850,9 @@ export default function Home() {
   }));
   const headerAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: headerTranslateY.value }],
+  }));
+  const headerAffirmationMarqueeStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: headerAffirmationTranslateX.value }],
   }));
   const floatingMenuAnimatedStyle = useAnimatedStyle(() => ({
     opacity: floatingMenuOpacity.value,
@@ -890,6 +926,40 @@ export default function Home() {
     },
     [headerContainerHeight, syncHeaderCollapsedState]
   );
+
+  useEffect(() => {
+    setHeaderAffirmationTextWidth(0);
+  }, [currentAffirmation]);
+
+  useEffect(() => {
+    cancelAnimation(headerAffirmationTranslateX);
+    headerAffirmationTranslateX.value = 0;
+
+    if (!shouldScrollHeaderAffirmation || !headerAffirmationTextWidth) return;
+
+    const travelDistance =
+      headerAffirmationTextWidth + HEADER_AFFIRMATION_MARQUEE_GAP;
+    const rawDurationMs =
+      (travelDistance / HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC) * 1000;
+    const duration = Math.min(
+      HEADER_AFFIRMATION_MAX_DURATION_MS,
+      Math.max(HEADER_AFFIRMATION_MIN_DURATION_MS, Math.round(rawDurationMs))
+    );
+
+    headerAffirmationTranslateX.value = withRepeat(
+      withTiming(-travelDistance, {
+        duration,
+        easing: Easing.linear,
+      }),
+      -1,
+      false
+    );
+  }, [
+    currentAffirmation,
+    headerAffirmationTextWidth,
+    headerAffirmationTranslateX,
+    shouldScrollHeaderAffirmation,
+  ]);
 
   //******useRef********** */
 
@@ -4054,10 +4124,47 @@ export default function Home() {
           <Text className="text-[#E8F4F4] text-2xl leading-none">≡</Text>
         </TouchableOpacity>
       </View>
-      <Animated.View style={{ opacity: affirmationOpacity }} className="mt-4 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl p-3">
-        <Text className="text-[#E8F4F4] text-sm font-bold leading-5">
-          {currentAffirmation}
-        </Text>
+      <Animated.View
+        style={{ opacity: affirmationOpacity }}
+        className="mt-4 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 h-[44px] justify-center"
+      >
+        <View
+          onLayout={handleHeaderAffirmationViewportLayout}
+          className="relative h-5 justify-center overflow-hidden"
+        >
+          {shouldScrollHeaderAffirmation ? (
+            <Reanimated.View
+              style={headerAffirmationMarqueeStyle}
+              className="flex-row items-center"
+            >
+              <Text numberOfLines={1} className="text-[#E8F4F4] text-sm font-bold leading-5">
+                {currentAffirmation}
+              </Text>
+              <View style={{ width: HEADER_AFFIRMATION_MARQUEE_GAP }} />
+              <Text numberOfLines={1} className="text-[#E8F4F4] text-sm font-bold leading-5">
+                {currentAffirmation}
+              </Text>
+            </Reanimated.View>
+          ) : (
+            <Text
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              className="text-[#E8F4F4] text-sm font-bold leading-5"
+            >
+              {currentAffirmation}
+            </Text>
+          )}
+
+          <View className="absolute opacity-0 left-0 top-0">
+            <Text
+              numberOfLines={1}
+              onLayout={handleHeaderAffirmationTextLayout}
+              className="text-[#E8F4F4] text-sm font-bold leading-5"
+            >
+              {currentAffirmation}
+            </Text>
+          </View>
+        </View>
       </Animated.View>
     </Reanimated.View>
   );
