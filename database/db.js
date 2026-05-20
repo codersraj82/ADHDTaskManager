@@ -9,7 +9,8 @@ export const initDB = () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT,
       section TEXT,
-      completed INTEGER
+      completed INTEGER,
+      moodType TEXT DEFAULT ''
     );
   `);
 
@@ -51,6 +52,15 @@ export const initDB = () => {
       note TEXT,
       createdAt TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS daily_moods (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT UNIQUE,
+      moodType TEXT,
+      note TEXT DEFAULT '',
+      createdAt TEXT,
+      updatedAt TEXT
+    );
   `);
 
   // 2️⃣ 🛡️ The Migration Loop (Improved with Defaults)
@@ -61,6 +71,7 @@ export const initDB = () => {
     // Adding default empty arrays for JSON columns
     { name: "subtasks", type: "TEXT DEFAULT '[]'" },
     { name: "notificationId", type: "TEXT DEFAULT '[]'" },
+    { name: "moodType", type: "TEXT DEFAULT ''" },
   ];
 
   migrations.forEach((column) => {
@@ -70,7 +81,7 @@ export const initDB = () => {
         `ALTER TABLE tasks ADD COLUMN ${column.name} ${column.type};`,
       );
       console.log(`✅ Column ensured: ${column.name}`);
-    } catch (e) {
+    } catch (_e) {
       // If error, it means column already exists - we ignore it.
     }
   });

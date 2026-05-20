@@ -83,6 +83,23 @@ import {
   speakEncouragement,
   stopEncouragement,
 } from "../../services/speechService";
+import {
+  getMoodMeta,
+  getMoodScore,
+  getMoodTypeFromAverageScore,
+  MOOD_OPTIONS,
+  MOOD_TYPES,
+  pickMoodAffirmation,
+  isValidMoodType,
+} from "../../utils/moodHelpers";
+import {
+  buildMoodSummary,
+  getRowsForCurrentMonth,
+  getRowsForCurrentYear,
+  getRowsForLastDays,
+  buildMonthlyMoodCalendar,
+  buildYearlyByMonth,
+} from "../../utils/moodAnalytics";
 import Reanimated, {
   Easing,
   FadeInDown,
@@ -132,6 +149,7 @@ const MENU_ITEMS = [
   { key: "pending", label: "Pending Tasks", icon: "⏳" },
   { key: "completed", label: "Completed Tasks", icon: "✅" },
   { key: "calendar", label: "Calendar View", icon: "📅" },
+  { key: "mood-tracker", label: "Mood Tracker", icon: "🧠" },
   { key: "settings", label: "Settings", icon: "⚙️" },
   { key: "about", label: "About", icon: "ℹ️" },
   { key: "support", label: "Support This Project", icon: "❤️" },
@@ -191,13 +209,30 @@ const toTaskTimestamp = (value) => {
 const isTimestampWithinRange = (timestamp, start, end) =>
   timestamp !== null && timestamp >= start && timestamp <= end;
 
+const isTaskScheduledForTodayOrCreatedToday = (task, start, end) => {
+  const scheduledTimestamp = toTaskTimestamp(task?.scheduledTime);
+  const createdTimestamp = toTaskTimestamp(task?.createdAt);
+
+  const isScheduledForToday = isTimestampWithinRange(
+    scheduledTimestamp,
+    start,
+    end
+  );
+
+  const isCreatedTodayWithoutSchedule =
+    scheduledTimestamp === null &&
+    isTimestampWithinRange(createdTimestamp, start, end);
+
+  return isScheduledForToday || isCreatedTodayWithoutSchedule;
+};
+
 //*************main component function********* */
 export default function Home() {
   const insets = useSafeAreaInsets();
   const [tasks, setTasks] = useState([
-    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [], isPinned: false },
-    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [], isPinned: false },
-    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [], isPinned: false },
+    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [], isPinned: false, moodType: "" },
+    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [], isPinned: false, moodType: "" },
+    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [], isPinned: false, moodType: "" },
   ]);
   const [totalFocusTime, setTotalFocusTime] = useState(0); // seconds
 
@@ -272,6 +307,14 @@ export default function Home() {
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [activePage, setActivePage] = useState(null);
+  const [moodTrackerView, setMoodTrackerView] = useState("daily");
+  const [dailyMoodEntries, setDailyMoodEntries] = useState([]);
+  const [dailyMoodType, setDailyMoodType] = useState("");
+  const [dailyMoodNote, setDailyMoodNote] = useState("");
+  const [dismissedDailyMoodPromptDate, setDismissedDailyMoodPromptDate] =
+    useState("");
+  const [taskMoodPromptVisible, setTaskMoodPromptVisible] = useState(false);
+  const [taskMoodPromptTaskId, setTaskMoodPromptTaskId] = useState(null);
   const [recoveryModalVisible, setRecoveryModalVisible] = useState(false);
   const [recoveryPendingTasks, setRecoveryPendingTasks] = useState([]);
   const [recoveryEditingTaskId, setRecoveryEditingTaskId] = useState(null);
@@ -361,6 +404,148 @@ export default function Home() {
         ? "Ready for your first win today ✨"
         : `${completedTodayTasks} of ${totalTodayTasks} tasks completed ✨`;
   const modalScale = useRef(new Animated.Value(0.8)).current;
+  const todayDateKey = dailyStats?.date || getDateKey();
+
+  const todayDailyMoodEntry = useMemo(
+    () => dailyMoodEntries.find((entry) => entry.date === todayDateKey) || null,
+    [dailyMoodEntries, todayDateKey]
+  );
+
+  const todayTaskMoodSummary = useMemo(() => {
+    const [year, month, day] = todayDateKey.split("-").map(Number);
+    const dateRef = new Date(year, (month || 1) - 1, day || 1);
+    const { start, end } = getDayBounds(dateRef);
+
+    let scoreTotal = 0;
+    let scoreCount = 0;
+    let frustratedCount = 0;
+    let sadCount = 0;
+
+    tasks.forEach((task) => {
+      if (!isTaskScheduledForTodayOrCreatedToday(task, start, end)) return;
+      if (!isValidMoodType(task?.moodType)) return;
+
+      const score = getMoodScore(task.moodType);
+      if (score === null) return;
+
+      scoreTotal += score;
+      scoreCount += 1;
+      if (task.moodType === MOOD_TYPES.FRUSTRATED) frustratedCount += 1;
+      if (task.moodType === MOOD_TYPES.SAD) sadCount += 1;
+    });
+
+    const averageScore = scoreCount ? scoreTotal / scoreCount : null;
+    const averageMoodType = getMoodTypeFromAverageScore(averageScore);
+
+    return {
+      scoreCount,
+      averageScore,
+      averageMoodType,
+      averageMoodMeta: getMoodMeta(averageMoodType),
+      frustratedCount,
+      sadCount,
+    };
+  }, [tasks, todayDateKey]);
+
+  const weeklyMoodRows = useMemo(
+    () => getRowsForLastDays(dailyMoodEntries, 7, new Date()),
+    [dailyMoodEntries]
+  );
+  const monthlyMoodRows = useMemo(
+    () => getRowsForCurrentMonth(dailyMoodEntries, new Date()),
+    [dailyMoodEntries]
+  );
+  const yearlyMoodRows = useMemo(
+    () => getRowsForCurrentYear(dailyMoodEntries, new Date()),
+    [dailyMoodEntries]
+  );
+
+  const weeklyMoodSummary = useMemo(
+    () => buildMoodSummary(weeklyMoodRows),
+    [weeklyMoodRows]
+  );
+  const monthlyMoodSummary = useMemo(
+    () => buildMoodSummary(monthlyMoodRows),
+    [monthlyMoodRows]
+  );
+  const yearlyMoodSummary = useMemo(
+    () => buildMoodSummary(yearlyMoodRows),
+    [yearlyMoodRows]
+  );
+  const monthlyMoodCalendar = useMemo(
+    () => buildMonthlyMoodCalendar(monthlyMoodRows, new Date()),
+    [monthlyMoodRows]
+  );
+  const yearlyMoodByMonth = useMemo(
+    () => buildYearlyByMonth(yearlyMoodRows, new Date()),
+    [yearlyMoodRows]
+  );
+
+  const effectiveTodayMoodType =
+    todayDailyMoodEntry?.moodType || todayTaskMoodSummary.averageMoodType || null;
+  const effectiveTodayMoodMeta = getMoodMeta(effectiveTodayMoodType);
+  const heavierMoodDaysInWeek = useMemo(
+    () =>
+      weeklyMoodRows.filter(
+        (row) =>
+          row.moodType === MOOD_TYPES.FRUSTRATED || row.moodType === MOOD_TYPES.SAD
+      ).length,
+    [weeklyMoodRows]
+  );
+  const dailyMoodAffirmation = useMemo(
+    () =>
+      pickMoodAffirmation({
+        context: "daily",
+        moodType: effectiveTodayMoodType || MOOD_TYPES.NEUTRAL,
+        seed: `${todayDateKey}:${completedTodayTasks}:${pendingTodayTasks}`,
+        isHeavierDay:
+          todayTaskMoodSummary.frustratedCount >= 2 || heavierMoodDaysInWeek >= 3,
+      }),
+    [
+      completedTodayTasks,
+      effectiveTodayMoodType,
+      heavierMoodDaysInWeek,
+      pendingTodayTasks,
+      todayDateKey,
+      todayTaskMoodSummary.frustratedCount,
+    ]
+  );
+
+  const moodPromptVisibleInBanner =
+    !todayDailyMoodEntry &&
+    dismissedDailyMoodPromptDate !== todayDateKey &&
+    activePage !== "mood-tracker";
+  const taskMoodPromptTask = useMemo(
+    () => tasks.find((task) => task.id === taskMoodPromptTaskId) || null,
+    [taskMoodPromptTaskId, tasks]
+  );
+  const weeklyMoodAffirmation = useMemo(
+    () =>
+      pickMoodAffirmation({
+        context: "weekly",
+        moodType: weeklyMoodSummary.averageMoodType || MOOD_TYPES.NEUTRAL,
+        seed: `${todayDateKey}:weekly:${weeklyMoodSummary.totalEntries || 0}`,
+      }),
+    [todayDateKey, weeklyMoodSummary.averageMoodType, weeklyMoodSummary.totalEntries]
+  );
+  const monthlyMoodAffirmation = useMemo(
+    () =>
+      pickMoodAffirmation({
+        context: "monthly",
+        moodType: monthlyMoodSummary.averageMoodType || MOOD_TYPES.NEUTRAL,
+        seed: `${todayDateKey}:monthly:${monthlyMoodSummary.totalEntries || 0}`,
+      }),
+    [monthlyMoodSummary.averageMoodType, monthlyMoodSummary.totalEntries, todayDateKey]
+  );
+  const yearlyMoodAffirmation = useMemo(
+    () =>
+      pickMoodAffirmation({
+        context: "yearly",
+        moodType: yearlyMoodSummary.averageMoodType || MOOD_TYPES.NEUTRAL,
+        seed: `${todayDateKey}:yearly:${yearlyMoodSummary.totalEntries || 0}`,
+      }),
+    [todayDateKey, yearlyMoodSummary.averageMoodType, yearlyMoodSummary.totalEntries]
+  );
 
   const sectionTasksByName = useMemo(() => {
     const groupedTasks = SECTION_ORDER.reduce((acc, sectionName) => {
@@ -615,6 +800,88 @@ export default function Home() {
       return acc;
     }, {});
   };
+
+  const loadDailyMoodEntries = useCallback(() => {
+    try {
+      const rows =
+        db.getAllSync(
+          `SELECT id, date, moodType, note, createdAt, updatedAt
+           FROM daily_moods
+           ORDER BY date DESC, updatedAt DESC`
+        ) || [];
+
+      const mapped = rows.map((row) => ({
+        ...row,
+        moodType: row.moodType || "",
+        note: row.note || "",
+      }));
+
+      setDailyMoodEntries(mapped);
+      const todayEntry = mapped.find((row) => row.date === todayDateKey) || null;
+      setDailyMoodType(todayEntry?.moodType || "");
+      setDailyMoodNote(todayEntry?.note || "");
+      if (todayEntry?.moodType) {
+        setDismissedDailyMoodPromptDate(todayDateKey);
+      }
+    } catch (error) {
+      console.log("Daily mood load error:", error);
+      setDailyMoodEntries([]);
+    }
+  }, [todayDateKey]);
+
+  const saveDailyMoodCheckIn = useCallback(
+    (moodType, noteValue = dailyMoodNote) => {
+      if (!isValidMoodType(moodType)) return;
+
+      const normalizedNote = (noteValue || "").trim();
+      const nowStamp = formatSqliteDateTime(new Date());
+
+      try {
+        db.runSync(
+          `INSERT INTO daily_moods (date, moodType, note, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(date)
+           DO UPDATE SET
+             moodType = excluded.moodType,
+             note = excluded.note,
+             updatedAt = excluded.updatedAt`,
+          [todayDateKey, moodType, normalizedNote, nowStamp, nowStamp]
+        );
+      } catch (error) {
+        console.log("Daily mood save error:", error);
+        return;
+      }
+
+      setDailyMoodType(moodType);
+      setDailyMoodNote(normalizedNote);
+      setDismissedDailyMoodPromptDate(todayDateKey);
+      loadDailyMoodEntries();
+    },
+    [dailyMoodNote, loadDailyMoodEntries, todayDateKey]
+  );
+
+  const updateTaskMood = useCallback((taskId, moodType) => {
+    if (!isValidMoodType(moodType)) return;
+    try {
+      db.runSync("UPDATE tasks SET moodType = ? WHERE id = ?", [moodType, taskId]);
+      setTasks((prev) =>
+        prev.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                moodType,
+              }
+            : task
+        )
+      );
+      if (taskMoodPromptTaskId === taskId) {
+        setTaskMoodPromptVisible(false);
+        setTaskMoodPromptTaskId(null);
+      }
+    } catch (error) {
+      console.log("Task mood update error:", error);
+    }
+  }, [taskMoodPromptTaskId]);
 
   const persistFocusTimerState = useCallback((timerState) => {
     saveSetting(FOCUS_TIMER_STATE_KEY, serializeTimerState(timerState));
@@ -1203,7 +1470,8 @@ export default function Home() {
           repeatGroupId TEXT DEFAULT '',
           scheduledTime TEXT, details TEXT, attachment TEXT,
           subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
-          isPinned INTEGER DEFAULT 0
+          isPinned INTEGER DEFAULT 0,
+          moodType TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS section_settings (
           section_name TEXT PRIMARY KEY,
@@ -1234,6 +1502,14 @@ export default function Home() {
           title TEXT,
           note TEXT,
           createdAt TEXT
+        );
+        CREATE TABLE IF NOT EXISTS daily_moods (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date TEXT UNIQUE,
+          moodType TEXT,
+          note TEXT DEFAULT '',
+          createdAt TEXT,
+          updatedAt TEXT
         );
       `);
 
@@ -1278,6 +1554,9 @@ export default function Home() {
         if (!columnNames.includes("repeatGroupId")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN repeatGroupId TEXT DEFAULT '';");
         }
+        if (!columnNames.includes("moodType")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN moodType TEXT DEFAULT '';");
+        }
         db.runSync(
           `UPDATE tasks
            SET createdAt = COALESCE(NULLIF(scheduledTime, ''), NULLIF(completedAt, ''), createdAt)
@@ -1291,6 +1570,7 @@ export default function Home() {
           completed: t.completed === 1,
           completedAt: t.completedAt || null,
           createdAt: t.createdAt || null,
+          moodType: t.moodType || "",
           repeatType: normalizeRepeatType(t.repeatType),
           repeatDays: parseRepeatDays(t.repeatDays),
           repeatMonthlyType: t.repeatMonthlyType || "",
@@ -1302,6 +1582,7 @@ export default function Home() {
           isPinned: t.isPinned === 1,
         }));
         setTasks(loadedTasks);
+        loadDailyMoodEntries();
 
         const settingsResult =
           db.getAllSync("SELECT * FROM section_settings") || [];
@@ -1399,7 +1680,7 @@ export default function Home() {
     };
 
     initializeApp();
-  }, [clearPersistedFocusTimerState]);
+  }, [clearPersistedFocusTimerState, loadDailyMoodEntries]);
 
   useEffect(() => {
     const checkSystemSchedule = async () => {
@@ -1437,6 +1718,19 @@ export default function Home() {
       UIManager.setLayoutAnimationEnabledExperimental(true);
     }
   }, []);
+
+  useEffect(() => {
+    loadDailyMoodEntries();
+  }, [loadDailyMoodEntries, dailyStats.date]);
+
+  useEffect(() => {
+    if (!taskMoodPromptTaskId) return;
+    const exists = tasks.some((task) => task.id === taskMoodPromptTaskId);
+    if (!exists) {
+      setTaskMoodPromptVisible(false);
+      setTaskMoodPromptTaskId(null);
+    }
+  }, [taskMoodPromptTaskId, tasks]);
 
   useEffect(() => {
     if (isPinnedSectionExpanded || activeTaskId || !nearestUpcomingSection) return;
@@ -1907,9 +2201,10 @@ export default function Home() {
           attachment,
           subtasks,
           notificationId,
-          isPinned
+          isPinned,
+          moodType
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nextTask.title || "Task",
           nextTask.section || "Morning",
@@ -1928,6 +2223,7 @@ export default function Home() {
           JSON.stringify(nextTask.subtasks || []),
           JSON.stringify(scheduledIds),
           0,
+          nextTask.moodType || "",
         ]
       );
 
@@ -1948,6 +2244,7 @@ export default function Home() {
           completedAt: null,
           createdAt,
           isPinned: false,
+          moodType: nextTask.moodType || "",
         },
       ]);
   };
@@ -1977,6 +2274,10 @@ export default function Home() {
             muted: isVoiceMuted,
             message: buildTaskCompletionSpeechMessage(task.title),
           });
+          if (!isValidMoodType(task.moodType)) {
+            setTaskMoodPromptTaskId(task.id);
+            setTaskMoodPromptVisible(true);
+          }
         }
 
         if (task.id === activeTaskId && updated) {
@@ -2103,9 +2404,10 @@ export default function Home() {
         attachment,
         subtasks,
         notificationId,
-        isPinned
+        isPinned,
+        moodType
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
           task.title || "Task",
           task.section || "Morning",
@@ -2124,6 +2426,7 @@ export default function Home() {
           JSON.stringify(recreatedSubtasks),
           JSON.stringify(recreatedNotificationIds),
           0,
+          "",
         ]
       );
 
@@ -2146,6 +2449,7 @@ export default function Home() {
           subtasks: recreatedSubtasks,
           notificationId: recreatedNotificationIds,
           isPinned: false,
+          moodType: "",
         },
       ]);
 
@@ -2611,12 +2915,13 @@ export default function Home() {
                notificationId = ?,
                isPinned = ?,
                repeatType = ?,
-               repeatDays = ?,
-               repeatMonthlyType = ?,
-               repeatCustomDate = ?,
-               repeatYearlyDate = ?,
-               repeatGroupId = ?
-           WHERE id = ?`,
+                repeatDays = ?,
+                repeatMonthlyType = ?,
+                repeatCustomDate = ?,
+                repeatYearlyDate = ?,
+                repeatGroupId = ?,
+                moodType = ?
+            WHERE id = ?`,
           [
             taskName,
             selectedSection,
@@ -2632,6 +2937,7 @@ export default function Home() {
             draftRepeatCustomDate || "",
             draftRepeatYearlyDate || "",
             nextGroupId,
+            targetTask.moodType || "",
             targetTask.id,
           ]
         );
@@ -2652,6 +2958,7 @@ export default function Home() {
           repeatCustomDate: draftRepeatCustomDate,
           repeatYearlyDate: draftRepeatYearlyDate,
           repeatGroupId: nextGroupId,
+          moodType: targetTask.moodType || "",
         });
       }
 
@@ -2694,9 +3001,10 @@ export default function Home() {
         attachment,
         subtasks,
         notificationId,
-        isPinned
+        isPinned,
+        moodType
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         taskName,
         selectedSection,
@@ -2715,6 +3023,7 @@ export default function Home() {
         JSON.stringify(subtasksToSave),
         JSON.stringify(reminderIds),
         0,
+        "",
       ]
     );
 
@@ -2741,6 +3050,7 @@ export default function Home() {
         subtasks: subtasksToSave,
         notificationId: reminderIds,
         isPinned: false,
+        moodType: "",
       },
     ]);
 
@@ -2868,8 +3178,9 @@ export default function Home() {
         attachment,
         subtasks,
         notificationId,
-        isPinned
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        isPinned,
+        moodType
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
@@ -2889,6 +3200,7 @@ export default function Home() {
         JSON.stringify(lastDeletedTask.subtasks || []),
         JSON.stringify(lastDeletedTask.notificationId || []),
         lastDeletedTask.isPinned ? 1 : 0,
+        lastDeletedTask.moodType || "",
       ]
     );
 
@@ -3444,6 +3756,51 @@ export default function Home() {
     </View>
   );
 
+  const renderMoodSelectorRow = ({
+    selectedMoodType,
+    onSelect,
+    compact = false,
+  }) => (
+    <View className={`flex-row ${compact ? "justify-between" : "justify-start"} flex-wrap`}>
+      {MOOD_OPTIONS.map((option) => {
+        const selected = selectedMoodType === option.type;
+        return (
+          <TouchableOpacity
+            key={option.type}
+            activeOpacity={0.82}
+            onPress={() => onSelect(option.type)}
+            className={`mr-2 mb-2 rounded-full border ${
+              compact ? "px-2.5 py-1.5" : "px-3 py-2"
+            } ${
+              selected
+                ? "bg-[#66b9b9]/22 border-[#66b9b9]/60"
+                : "bg-[#123131]/75 border-[#337a7a]/35"
+            }`}
+          >
+            <Text
+              className={`font-bold ${
+                compact ? "text-[11px]" : "text-xs"
+              } ${selected ? "text-[#E8F4F4]" : "text-[#9FB5B5]"}`}
+            >
+              {option.emoji}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+
+  const renderMoodSummaryChip = (prefix, moodType) => {
+    const meta = getMoodMeta(moodType);
+    return (
+      <View className="bg-[#123131]/70 border border-[#66b9b9]/25 rounded-full px-3 py-1.5 mr-2 mb-2">
+        <Text className="text-[#66b9b9] text-[10px] font-black">
+          {prefix}: {meta ? `${meta.emoji} ${meta.label}` : "Not logged yet"}
+        </Text>
+      </View>
+    );
+  };
+
   const renderFixedHeader = () => (
     <View className="absolute top-0 left-0 right-0 z-30 bg-[#061414]/95 pt-10 px-4 pb-4 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]">
       <View className="flex-row items-center">
@@ -3947,6 +4304,208 @@ export default function Home() {
       ));
     }
 
+    if (activePage === "mood-tracker") {
+      const weeklyTotal = weeklyMoodSummary.totalEntries || 0;
+
+      return (
+        <>
+          <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#66b9b9]/25 mb-3">
+            <Text className="text-[#E8F4F4] font-black text-lg">
+              Mood Tracker
+            </Text>
+            <Text className="text-[#9FB5B5] text-xs mt-1 leading-5">
+              Gentle emotional awareness, no pressure.
+            </Text>
+            <View className="flex-row mt-3">
+              {[
+                { key: "daily", label: "Daily" },
+                { key: "weekly", label: "Weekly" },
+                { key: "monthly", label: "Monthly" },
+                { key: "yearly", label: "Yearly" },
+              ].map((tab) => (
+                <TouchableOpacity
+                  key={tab.key}
+                  activeOpacity={0.82}
+                  onPress={() => setMoodTrackerView(tab.key)}
+                  className={`px-3 py-1.5 rounded-full border mr-2 ${
+                    moodTrackerView === tab.key
+                      ? "bg-[#66b9b9] border-[#66b9b9]"
+                      : "bg-[#123131]/75 border-[#337a7a]/35"
+                  }`}
+                >
+                  <Text
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      moodTrackerView === tab.key ? "text-[#061414]" : "text-[#9FB5B5]"
+                    }`}
+                  >
+                    {tab.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {moodTrackerView === "daily" ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#E8F4F4] font-black">How are you feeling today?</Text>
+              <Text className="text-[#9FB5B5] text-xs mt-1">
+                Select one mood, add a note if it helps.
+              </Text>
+              <View className="mt-3">
+                {renderMoodSelectorRow({
+                  selectedMoodType: dailyMoodType,
+                  onSelect: setDailyMoodType,
+                })}
+              </View>
+              <TextInput
+                value={dailyMoodNote}
+                onChangeText={setDailyMoodNote}
+                placeholder="Optional note..."
+                placeholderTextColor={COLORS.muted}
+                multiline
+                className="mt-2 bg-[#061414]/45 text-[#E8F4F4] p-3 rounded-2xl border border-[#66b9b9]/25 text-sm"
+              />
+              <TouchableOpacity
+                activeOpacity={0.86}
+                disabled={!isValidMoodType(dailyMoodType)}
+                onPress={() => saveDailyMoodCheckIn(dailyMoodType, dailyMoodNote)}
+                className={`mt-3 p-3 rounded-2xl border ${
+                  isValidMoodType(dailyMoodType)
+                    ? "bg-[#66b9b9] border-[#99bdbd]/70"
+                    : "bg-[#123131]/70 border-[#337a7a]/35"
+                }`}
+              >
+                <Text
+                  className={`text-center font-black uppercase tracking-widest text-xs ${
+                    isValidMoodType(dailyMoodType) ? "text-[#061414]" : "text-[#9FB5B5]"
+                  }`}
+                >
+                  Save Mood Check-In
+                </Text>
+              </TouchableOpacity>
+              {todayDailyMoodEntry?.updatedAt ? (
+                <Text className="text-[#9FB5B5] text-[10px] mt-2 font-semibold">
+                  Logged: {formatDateTimeForDisplay(todayDailyMoodEntry.updatedAt)}
+                </Text>
+              ) : null}
+
+              <Text className="text-[#66b9b9] text-xs font-bold mt-3">
+                {dailyMoodAffirmation}
+              </Text>
+
+              {dailyMoodEntries.length > 0 ? (
+                <View className="mt-3 pt-3 border-t border-[#337a7a]/25">
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
+                    Recent Check-Ins
+                  </Text>
+                  {dailyMoodEntries.slice(0, 5).map((entry) => {
+                    const meta = getMoodMeta(entry.moodType);
+                    return (
+                      <View
+                        key={`daily-mood-${entry.date}`}
+                        className="flex-row items-center justify-between py-1.5"
+                      >
+                        <Text className="text-[#E8F4F4] text-[11px] font-semibold">
+                          {entry.date}
+                        </Text>
+                        <Text className="text-[#9FB5B5] text-[11px]">
+                          {meta ? `${meta.emoji} ${meta.label}` : "No mood"}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          {moodTrackerView === "weekly" ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#E8F4F4] font-black">Weekly Reflection</Text>
+              <Text className="text-[#9FB5B5] text-xs mt-1">Last 7 days</Text>
+              <View className="flex-row flex-wrap mt-3">
+                {renderMoodSummaryChip("Average", weeklyMoodSummary.averageMoodType)}
+                {renderMoodSummaryChip("Most Frequent", weeklyMoodSummary.mostFrequentMoodType)}
+              </View>
+              {MOOD_OPTIONS.map((option) => {
+                const count = weeklyMoodSummary.distribution?.[option.type] || 0;
+                const percent = weeklyTotal > 0 ? Math.round((count / weeklyTotal) * 100) : 0;
+                return (
+                  <View key={`weekly-${option.type}`} className="mb-2">
+                    <View className="flex-row justify-between mb-1">
+                      <Text className="text-[#9FB5B5] text-[11px]">{option.emoji} {option.label}</Text>
+                      <Text className="text-[#9FB5B5] text-[11px] font-bold">{count}</Text>
+                    </View>
+                    <View className="h-2 rounded-full bg-[#061414]/70 overflow-hidden border border-[#337a7a]/20">
+                      <View
+                        className="h-full bg-[#66b9b9]/80 rounded-full"
+                        style={{ width: `${Math.max(percent, count > 0 ? 8 : 0)}%` }}
+                      />
+                    </View>
+                  </View>
+                );
+              })}
+              <Text className="text-[#66b9b9] text-xs font-bold mt-3">{weeklyMoodAffirmation}</Text>
+            </View>
+          ) : null}
+
+          {moodTrackerView === "monthly" ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#E8F4F4] font-black">Monthly Mood</Text>
+              <View className="flex-row flex-wrap mt-3">
+                {renderMoodSummaryChip("Average", monthlyMoodSummary.averageMoodType)}
+                {renderMoodSummaryChip("Most Frequent", monthlyMoodSummary.mostFrequentMoodType)}
+              </View>
+              <View className="mt-2 flex-row flex-wrap">
+                {monthlyMoodCalendar.map((day) => (
+                  <View
+                    key={day.key}
+                    className="w-[14.28%] px-0.5 mb-1.5"
+                  >
+                    <View className="h-11 rounded-xl border border-[#337a7a]/35 bg-[#061414]/50 items-center justify-center">
+                      <Text className="text-[#9FB5B5] text-[9px] font-bold">{day.day}</Text>
+                      <Text className="text-[11px] mt-0.5">{day.moodMeta?.emoji || "•"}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+              <Text className="text-[#66b9b9] text-xs font-bold mt-2">{monthlyMoodAffirmation}</Text>
+            </View>
+          ) : null}
+
+          {moodTrackerView === "yearly" ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#E8F4F4] font-black">Yearly Emotional Overview</Text>
+              <View className="flex-row flex-wrap mt-3">
+                {renderMoodSummaryChip("Average", yearlyMoodSummary.averageMoodType)}
+                {renderMoodSummaryChip("Most Frequent", yearlyMoodSummary.mostFrequentMoodType)}
+              </View>
+
+              {yearlyMoodByMonth.map((monthItem) => (
+                <View key={`year-${monthItem.month}`} className="flex-row items-center justify-between mb-2">
+                  <Text className="text-[#9FB5B5] text-[11px] font-bold w-14">
+                    {new Date(new Date().getFullYear(), monthItem.month, 1).toLocaleString("en-US", {
+                      month: "short",
+                    })}
+                  </Text>
+                  <Text className="text-[#E8F4F4] text-[11px] flex-1 ml-2">
+                    {monthItem.summary.averageMoodMeta
+                      ? `${monthItem.summary.averageMoodMeta.emoji} ${monthItem.summary.averageMoodMeta.label}`
+                      : "No logs yet"}
+                  </Text>
+                  <Text className="text-[#66b9b9] text-[10px] font-bold ml-2">
+                    {monthItem.summary.totalEntries || 0}
+                  </Text>
+                </View>
+              ))}
+
+              <Text className="text-[#66b9b9] text-xs font-bold mt-3">{yearlyMoodAffirmation}</Text>
+            </View>
+          ) : null}
+        </>
+      );
+    }
+
     if (activePage === "settings") {
       return (
         <>
@@ -4177,6 +4736,14 @@ export default function Home() {
             const repeatLabel = repeatLabelByTaskId[task.id] || "";
             const hasRepeatLabel = Boolean(repeatLabel);
             const showTaskHeaderMeta = task.isPinned || hasRepeatLabel;
+            const taskMoodMeta = getMoodMeta(task.moodType);
+            const taskMoodAffirmation = isValidMoodType(task.moodType)
+              ? pickMoodAffirmation({
+                  context: "task",
+                  moodType: task.moodType,
+                  seed: `${todayDateKey}:task:${task.id}`,
+                })
+              : "How did this task feel?";
 
             const upcomingReminders = [];
             if (task.scheduledTime) {
@@ -4551,6 +5118,22 @@ export default function Home() {
                       </TouchableOpacity>
                     ) : null}
 
+                    <View className="mt-3 p-3 rounded-2xl bg-[#123131]/70 border border-[#66b9b9]/25">
+                      <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
+                        Mood Tracking
+                      </Text>
+                      {renderMoodSelectorRow({
+                        selectedMoodType: task.moodType,
+                        onSelect: (moodType) => updateTaskMood(task.id, moodType),
+                        compact: true,
+                      })}
+                      <Text className="text-[#66b9b9] text-[10px] font-bold mt-1">
+                        {taskMoodMeta
+                          ? `${taskMoodMeta.emoji} ${taskMoodMeta.label} • ${taskMoodAffirmation}`
+                          : taskMoodAffirmation}
+                      </Text>
+                    </View>
+
                     {upcomingReminders.length > 0 ? (
                       <View className="mt-3 p-3 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/25 shadow-sm shadow-[#66b9b9]/10">
                         <View className="flex-row items-center mb-1.5">
@@ -4697,6 +5280,8 @@ export default function Home() {
                 </Text>
               </View>
             )}
+            {renderMoodSummaryChip("Today's Task Mood", todayTaskMoodSummary.averageMoodType)}
+            {renderMoodSummaryChip("Mood Today", todayDailyMoodEntry?.moodType)}
           </View>
 
           {/* Empty State OR Progress */}
@@ -4708,6 +5293,49 @@ export default function Home() {
               }`}
             />
           </View>
+
+          {moodPromptVisibleInBanner ? (
+            <View className="mt-3 p-3 rounded-2xl bg-[#123131]/70 border border-[#66b9b9]/25">
+              <Text className="text-[#E8F4F4] text-xs font-black mb-2">
+                How are you feeling today?
+              </Text>
+              {renderMoodSelectorRow({
+                selectedMoodType: dailyMoodType,
+                onSelect: (type) => {
+                  setDailyMoodType(type);
+                  saveDailyMoodCheckIn(type, dailyMoodNote);
+                },
+                compact: true,
+              })}
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={() => setDismissedDailyMoodPromptDate(todayDateKey)}
+                className="self-start mt-1 px-2.5 py-1 rounded-full border border-[#337a7a]/35 bg-[#061414]/45"
+              >
+                <Text className="text-[#9FB5B5] text-[10px] font-bold uppercase tracking-widest">
+                  Skip for now
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {effectiveTodayMoodMeta ? (
+            <Text className="text-[#66b9b9] text-xs font-black mt-3">
+              Mood Today: {effectiveTodayMoodMeta.emoji} {effectiveTodayMoodMeta.label}
+            </Text>
+          ) : null}
+          <Text className="text-[#66b9b9] text-xs font-bold mt-1">
+            {dailyMoodAffirmation}
+          </Text>
+          <TouchableOpacity
+            onPress={() => setActivePage("mood-tracker")}
+            activeOpacity={0.82}
+            className="self-start mt-2 px-3 py-1.5 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70"
+          >
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+              Open Mood Tracker
+            </Text>
+          </TouchableOpacity>
 
           <Text className="text-[#9FB5B5] text-xs font-bold mt-3">
             {dailyProgressCaption}
@@ -4814,6 +5442,51 @@ export default function Home() {
       {renderPageModal()}
       {renderOnboardingModal()}
       {renderRecoveryModal()}
+      <Modal
+        visible={taskMoodPromptVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setTaskMoodPromptVisible(false);
+          setTaskMoodPromptTaskId(null);
+        }}
+      >
+        <View className="flex-1 bg-[#061414]/90 justify-end px-4 pb-8">
+          <View className="bg-[#0B1F1F] rounded-[28px] border border-[#66b9b9]/30 p-5 shadow-2xl shadow-[#66b9b9]/15">
+            <Text className="text-[#E8F4F4] text-lg font-black">
+              How did this task feel?
+            </Text>
+            {taskMoodPromptTask ? (
+              <Text className="text-[#9FB5B5] text-xs mt-1">
+                {taskMoodPromptTask.title}
+              </Text>
+            ) : null}
+
+            <View className="mt-4">
+              {renderMoodSelectorRow({
+                selectedMoodType: taskMoodPromptTask?.moodType || "",
+                onSelect: (moodType) => {
+                  if (!taskMoodPromptTaskId) return;
+                  updateTaskMood(taskMoodPromptTaskId, moodType);
+                },
+              })}
+            </View>
+
+            <TouchableOpacity
+              activeOpacity={0.82}
+              onPress={() => {
+                setTaskMoodPromptVisible(false);
+                setTaskMoodPromptTaskId(null);
+              }}
+              className="self-start mt-2 px-3 py-1.5 rounded-full border border-[#337a7a]/35 bg-[#123131]/70"
+            >
+              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                Skip
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* ✅ CREATE TASK MODAL */}
       <Modal visible={modalVisible} transparent animationType="slide">
@@ -5437,6 +6110,7 @@ export default function Home() {
     </>
   );
 }
+
 
 
 
