@@ -304,12 +304,15 @@ export default function Home() {
   const [specialTaskTitle, setSpecialTaskTitle] = useState("");
   const [specialTaskNote, setSpecialTaskNote] = useState("");
   const footerSafeBottom = Math.max(insets.bottom, 8);
-  const footerHeight = 56;
+  const footerHeight = 42;
   const floatingBaseBottom = footerSafeBottom + footerHeight + 10;
   const recoveryFabBottom = floatingBaseBottom;
   const addTaskFabBottom = recoveryFabBottom + 56;
   const focusFabBottom = addTaskFabBottom + 76;
   const recoveryPromptBottom = recoveryFabBottom + 2;
+  const addTaskFabApproxHeight = 56;
+  const listBottomPadding =
+    addTaskFabBottom + addTaskFabApproxHeight + footerHeight + 28;
 
   //******Vriables */
 
@@ -3474,25 +3477,25 @@ export default function Home() {
   const renderFixedFooter = () => (
     <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ bottom: footerSafeBottom }}>
       <View
-        className="mx-4 bg-[#0B1F1F]/96 border border-[#66b9b9]/25 rounded-2xl px-3.5 py-2.5 shadow-xl shadow-[#66b9b9]/10"
+        className="mx-4 bg-[#0B1F1F] border border-[#66b9b9]/30 rounded-xl px-3 py-1.5 shadow-xl shadow-[#66b9b9]/10"
         style={{ minHeight: footerHeight }}
       >
         <View className="flex-row items-center">
           <View className="flex-1 pr-3">
-            <Text className="text-[#E8F4F4] text-[11px] font-black uppercase tracking-widest">
-              Gentle Progress
+            <Text className="text-[#E8F4F4] text-[10px] font-black uppercase tracking-widest">
+              {"\u00A9"} researchzeal.com
             </Text>
-            <Text className="text-[#9FB5B5] text-[11px] mt-1 font-semibold">
+            <Text className="text-[#9FB5B5] text-[10px] mt-0.5 font-semibold">
               {completedTodayTasks} done • {pendingTodayTasks} to continue
             </Text>
           </View>
           <TouchableOpacity
             onPress={openSupport}
             activeOpacity={0.86}
-            className="bg-[#66b9b9]/16 border border-[#66b9b9]/35 rounded-full px-4 py-2"
+            className="bg-[#66b9b9]/20 border border-[#66b9b9]/50 rounded-full px-3 py-1.5"
           >
-            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-              Support
+            <Text className="text-[#66b9b9] text-[9px] font-black uppercase tracking-widest">
+              Support Us {"\u{1F91D}"}
             </Text>
           </TouchableOpacity>
         </View>
@@ -4608,7 +4611,7 @@ export default function Home() {
         className="flex-1 bg-[#061414]"
         contentContainerStyle={{
           paddingTop: 190,
-          paddingBottom: 190,
+          paddingBottom: listBottomPadding,
         }}
       >
         <Text
@@ -5217,12 +5220,12 @@ export default function Home() {
         activeOpacity={0.86}
         onPress={handleRecoveryFabPress}
         style={{ bottom: recoveryFabBottom }}
-        className="absolute right-6 w-11 h-11 rounded-full bg-[#123131]/90 border border-[#66b9b9]/40 items-center justify-center shadow-xl shadow-[#66b9b9]/20"
+        className="absolute right-6 w-11 h-11 rounded-full bg-[#66b9b9] border border-[#99bdbd]/70 items-center justify-center shadow-xl shadow-[#66b9b9]/35"
       >
-        <Feather name="refresh-cw" size={15} color={COLORS.accent} />
+        <Feather name="refresh-cw" size={15} color="#061414" />
         {pastPendingTaskCount > 0 ? (
-          <View className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#66b9b9] border border-[#99bdbd]/80 items-center justify-center">
-            <Text className="text-[#061414] text-[9px] font-black">
+          <View className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#061414] border border-[#66b9b9]/70 items-center justify-center">
+            <Text className="text-[#66b9b9] text-[9px] font-black">
               {pastPendingTaskCount > 9 ? "9+" : pastPendingTaskCount}
             </Text>
           </View>
@@ -5434,6 +5437,7 @@ export default function Home() {
     </>
   );
 }
+
 
 
 
