@@ -104,6 +104,7 @@ import Reanimated, {
   Easing,
   FadeInDown,
   runOnJS,
+  useAnimatedScrollHandler,
   useAnimatedReaction,
   useAnimatedStyle,
   useSharedValue,
@@ -169,6 +170,9 @@ const getYesterdayKey = () => {
 };
 
 const FOCUS_AUTO_DISMISS_DELAY_MS = 10000;
+const HEADER_HIDE_SCROLL_THRESHOLD = 48;
+const HEADER_SHOW_SCROLL_THRESHOLD = 12;
+const HEADER_HIDE_OFFSET_FALLBACK = 172;
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -323,6 +327,10 @@ export default function Home() {
   const [recoverySavingTaskId, setRecoverySavingTaskId] = useState(null);
   const [recoverySuccessMessage, setRecoverySuccessMessage] = useState("");
   const [recoveryFabPromptVisible, setRecoveryFabPromptVisible] = useState(false);
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
+  const [headerContainerHeight, setHeaderContainerHeight] = useState(
+    HEADER_HIDE_OFFSET_FALLBACK
+  );
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [sectionAffirmations, setSectionAffirmations] = useState(() =>
@@ -347,15 +355,25 @@ export default function Home() {
   const [specialTaskTitle, setSpecialTaskTitle] = useState("");
   const [specialTaskNote, setSpecialTaskNote] = useState("");
   const footerSafeBottom = Math.max(insets.bottom, 8);
-  const footerHeight = 42;
-  const floatingBaseBottom = footerSafeBottom + footerHeight + 10;
-  const recoveryFabBottom = floatingBaseBottom;
-  const addTaskFabBottom = recoveryFabBottom + 56;
-  const focusFabBottom = addTaskFabBottom + 76;
-  const recoveryPromptBottom = recoveryFabBottom + 2;
+  const footerHeight = 36;
+  const recoveryFabSize = 44;
   const addTaskFabApproxHeight = 56;
+  const floatingBaseBottom = footerSafeBottom + footerHeight + 14;
+  const recoveryFabBottom = floatingBaseBottom;
+  const addTaskFabBottom = recoveryFabBottom + recoveryFabSize + 8;
+  const focusFabBottom = addTaskFabBottom + addTaskFabApproxHeight + 10;
+  const recoveryPromptBottom = recoveryFabBottom + 2;
+  const maxFloatingStackBottom = Math.max(
+    focusFabBottom + 48,
+    addTaskFabBottom + addTaskFabApproxHeight,
+    recoveryFabBottom + recoveryFabSize
+  );
   const listBottomPadding =
-    addTaskFabBottom + addTaskFabApproxHeight + footerHeight + 28;
+    maxFloatingStackBottom + 44;
+
+  const syncHeaderCollapsedState = useCallback((collapsed) => {
+    setIsHeaderCollapsed((prev) => (prev === collapsed ? prev : collapsed));
+  }, []);
 
   //******Vriables */
 
@@ -782,6 +800,10 @@ export default function Home() {
   );
   const recoverySheetProgress = useSharedValue(0);
   const recoverySuccessPulse = useSharedValue(0);
+  const headerCollapsedProgress = useSharedValue(0);
+  const headerTranslateY = useSharedValue(0);
+  const floatingMenuOpacity = useSharedValue(0);
+  const lastHomeScrollY = useSharedValue(0);
   const recoveryBackdropStyle = useAnimatedStyle(() => ({
     opacity: recoverySheetProgress.value * 0.86,
   }));
@@ -793,6 +815,81 @@ export default function Home() {
     opacity: recoverySuccessPulse.value,
     transform: [{ scale: 0.94 + recoverySuccessPulse.value * 0.06 }],
   }));
+  const headerAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: headerTranslateY.value }],
+  }));
+  const floatingMenuAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: floatingMenuOpacity.value,
+    transform: [
+      { translateY: (1 - floatingMenuOpacity.value) * -8 },
+      { scale: 0.96 + floatingMenuOpacity.value * 0.04 },
+    ],
+  }));
+
+  const homeScrollHandler = useAnimatedScrollHandler(
+    {
+      onScroll: (event) => {
+        const y = Math.max(0, event.contentOffset.y || 0);
+        const delta = y - lastHomeScrollY.value;
+        lastHomeScrollY.value = y;
+
+        if (y <= HEADER_SHOW_SCROLL_THRESHOLD) {
+          if (headerCollapsedProgress.value !== 0) {
+            headerCollapsedProgress.value = 0;
+            headerTranslateY.value = withTiming(0, {
+              duration: 220,
+              easing: Easing.out(Easing.cubic),
+            });
+            floatingMenuOpacity.value = withTiming(0, {
+              duration: 180,
+              easing: Easing.out(Easing.cubic),
+            });
+            runOnJS(syncHeaderCollapsedState)(false);
+          }
+          return;
+        }
+
+        if (
+          y > HEADER_HIDE_SCROLL_THRESHOLD &&
+          delta > 1.5 &&
+          headerCollapsedProgress.value !== 1
+        ) {
+          headerCollapsedProgress.value = 1;
+          headerTranslateY.value = withTiming(
+            -Math.max(headerContainerHeight, HEADER_HIDE_OFFSET_FALLBACK) - 10,
+            {
+              duration: 240,
+              easing: Easing.out(Easing.cubic),
+            }
+          );
+          floatingMenuOpacity.value = withTiming(1, {
+            duration: 220,
+            easing: Easing.out(Easing.cubic),
+          });
+          runOnJS(syncHeaderCollapsedState)(true);
+          return;
+        }
+
+        if (
+          delta < -4 &&
+          y < HEADER_HIDE_SCROLL_THRESHOLD * 0.7 &&
+          headerCollapsedProgress.value !== 0
+        ) {
+          headerCollapsedProgress.value = 0;
+          headerTranslateY.value = withTiming(0, {
+            duration: 220,
+            easing: Easing.out(Easing.cubic),
+          });
+          floatingMenuOpacity.value = withTiming(0, {
+            duration: 180,
+            easing: Easing.out(Easing.cubic),
+          });
+          runOnJS(syncHeaderCollapsedState)(false);
+        }
+      },
+    },
+    [headerContainerHeight, syncHeaderCollapsedState]
+  );
 
   //******useRef********** */
 
@@ -3921,8 +4018,21 @@ export default function Home() {
     );
   };
 
+  const handleHeaderLayout = useCallback((event) => {
+    const measured = Math.ceil(event?.nativeEvent?.layout?.height || 0);
+    if (!measured) return;
+    setHeaderContainerHeight((prev) => {
+      if (Math.abs(prev - measured) < 2) return prev;
+      return measured;
+    });
+  }, []);
+
   const renderFixedHeader = () => (
-    <View className="absolute top-0 left-0 right-0 z-30 bg-[#061414]/95 pt-10 px-4 pb-4 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]">
+    <Reanimated.View
+      onLayout={handleHeaderLayout}
+      style={[headerAnimatedStyle, { paddingTop: Math.max(insets.top, 8) + 4 }]}
+      className="absolute top-0 left-0 right-0 z-30 bg-[#061414]/95 px-4 pb-4 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]"
+    >
       <View className="flex-row items-center">
         {renderAvatar("small")}
         <View className="flex-1 px-3">
@@ -3949,23 +4059,36 @@ export default function Home() {
           {currentAffirmation}
         </Text>
       </Animated.View>
-    </View>
+    </Reanimated.View>
+  );
+  const renderFloatingMenuShortcut = () => (
+    <Reanimated.View
+      pointerEvents={isHeaderCollapsed ? "auto" : "none"}
+      style={[
+        floatingMenuAnimatedStyle,
+        { top: Math.max(insets.top, 8) + 6 },
+      ]}
+      className="absolute right-4 z-40"
+    >
+      <TouchableOpacity
+        onPress={openDrawer}
+        activeOpacity={0.8}
+        className="w-11 h-11 rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/35 items-center justify-center shadow-lg shadow-[#66b9b9]/15"
+      >
+        <Text className="text-[#E8F4F4] text-2xl leading-none">{"\u2261"}</Text>
+      </TouchableOpacity>
+    </Reanimated.View>
   );
   const renderFixedFooter = () => (
     <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ bottom: footerSafeBottom }}>
       <View
-        className="mx-4 bg-[#0B1F1F] border border-[#66b9b9]/30 rounded-xl px-3 py-1.5 shadow-xl shadow-[#66b9b9]/10"
+        className="mx-4 bg-[#0B1F1F] border border-[#66b9b9]/30 rounded-xl px-3 py-1 shadow-xl shadow-[#66b9b9]/10"
         style={{ minHeight: footerHeight }}
       >
-        <View className="flex-row items-center">
-          <View className="flex-1 pr-3">
-            <Text className="text-[#E8F4F4] text-[10px] font-black uppercase tracking-widest">
-              {"\u00A9"} researchzeal.com
-            </Text>
-            <Text className="text-[#9FB5B5] text-[10px] mt-0.5 font-semibold">
-              {completedTodayTasks} done • {pendingTodayTasks} to continue
-            </Text>
-          </View>
+        <View className="flex-row items-center justify-between">
+          <Text className="text-[#E8F4F4] text-[10px] font-black uppercase tracking-widest pr-3">
+            {"\u00A9"} researchzeal.com
+          </Text>
           <TouchableOpacity
             onPress={openSupport}
             activeOpacity={0.86}
@@ -3979,7 +4102,6 @@ export default function Home() {
       </View>
     </View>
   );
-
   const renderRecoveryPendingTaskCard = ({ item, index }) => {
     const scheduledTimestamp = toTaskTimestamp(item.scheduledTime) || 0;
     const startOfToday = getDayBounds(new Date()).start;
@@ -5309,11 +5431,14 @@ export default function Home() {
     <>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
       {renderFixedHeader()}
-      <ScrollView
+      {renderFloatingMenuShortcut()}
+      <Reanimated.ScrollView
         ref={scrollRef}
         className="flex-1 bg-[#061414]"
+        onScroll={homeScrollHandler}
+        scrollEventThrottle={16}
         contentContainerStyle={{
-          paddingTop: 190,
+          paddingTop: headerContainerHeight + 14,
           paddingBottom: listBottomPadding,
         }}
       >
@@ -5556,7 +5681,7 @@ export default function Home() {
         {renderSection("Morning ☀️", "Morning")}
         {renderSection("Work 💼", "Work")}
         {renderSection("Evening 🌙", "Evening")}
-      </ScrollView>
+      </Reanimated.ScrollView>
       {renderFixedFooter()}
       {renderDrawer()}
       {renderPageModal()}
@@ -6230,17 +6355,4 @@ export default function Home() {
     </>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
