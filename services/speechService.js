@@ -88,6 +88,7 @@ export const speakEncouragement = async ({
   message,
   muted = false,
   minGapMs = 3800,
+  interruptExisting = true,
 }) => {
   if (muted || !message) return false;
 
@@ -103,14 +104,18 @@ export const speakEncouragement = async ({
   }
 
   try {
-    await stopEncouragement();
+    const isSpeaking = await Speech.isSpeakingAsync();
+    if (isSpeaking) {
+      if (!interruptExisting) return false;
+      await Speech.stop();
+    }
     const voiceIdentifier = await resolvePreferredVoiceIdentifier();
 
     Speech.speak(normalizedMessage, {
       language: "en-US",
-      rate: 0.86,
-      pitch: 0.9,
-      volume: 0.82,
+      rate: 0.82,
+      pitch: 0.88,
+      volume: 0.78,
       voice: voiceIdentifier || undefined,
     });
 

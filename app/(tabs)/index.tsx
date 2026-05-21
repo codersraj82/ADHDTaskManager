@@ -53,6 +53,7 @@ import {
   buildFocusCompletionSpeechMessage,
   buildTaskCompletionSpeechMessage,
 } from "../../utils/speechHelpers";
+import { pickWelcomeMessage } from "../../utils/welcomeMessages";
 import {
   sortTasksForSection,
   sortPinnedTasks,
@@ -179,6 +180,8 @@ const HEADER_AFFIRMATION_MARQUEE_GAP = 56;
 const HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC = 24;
 const HEADER_AFFIRMATION_MIN_DURATION_MS = 12000;
 const HEADER_AFFIRMATION_MAX_DURATION_MS = 32000;
+const WELCOME_VOICE_DELAY_MS = 900;
+const NOTIFICATION_SPEECH_MIN_GAP_MS = 6000;
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -597,40 +600,6 @@ export default function Home() {
     [todayDateKey, yearlyMoodSummary.averageMoodType, yearlyMoodSummary.totalEntries]
   );
 
-  const dailyMoodAffirmationSpeechMessage = useMemo(() => {
-    if (!dailyMoodAffirmation) return "";
-    const moodPrefix = effectiveTodayMoodMeta?.label
-      ? `Mood today: ${effectiveTodayMoodMeta.label}. `
-      : "";
-    return `${moodPrefix}${dailyMoodAffirmation}`;
-  }, [dailyMoodAffirmation, effectiveTodayMoodMeta?.label]);
-
-  const activeTaskSectionForSpeech = useMemo(() => {
-    if (!activeTaskId) return null;
-    return tasks.find((task) => task.id === activeTaskId)?.section || null;
-  }, [activeTaskId, tasks]);
-
-  const sectionAffirmationSpeechMessage = useMemo(() => {
-    const sectionKey =
-      activeTaskSectionForSpeech ||
-      nearestUpcomingSection ||
-      (pinnedTaskCount > 0 ? "Pinned" : null) ||
-      SECTION_ORDER.find((name) => Boolean(sectionAffirmations[name])) ||
-      null;
-
-    if (!sectionKey) return "";
-    const sectionMessage = sectionAffirmations[sectionKey];
-    if (!sectionMessage) return "";
-
-    const sectionLabel = sectionKey === "Pinned" ? "Pinned tasks" : sectionKey;
-    return `${sectionLabel}. ${sectionMessage}`;
-  }, [
-    activeTaskSectionForSpeech,
-    nearestUpcomingSection,
-    pinnedTaskCount,
-    sectionAffirmations,
-  ]);
-
   const sectionTasksByName = useMemo(() => {
     const groupedTasks = SECTION_ORDER.reduce((acc, sectionName) => {
       acc[sectionName] = [];
@@ -974,6 +943,7 @@ export default function Home() {
   const affirmationOpacity = useRef(new Animated.Value(1)).current;
   const drawerX = useRef(new Animated.Value(-320)).current;
   const focusDismissTimeoutRef = useRef(null);
+  const welcomeVoiceTimeoutRef = useRef(null);
   const focusSessionRecordedRef = useRef(false);
   const hasAutoExpandedInitialSection = useRef(false);
   const sectionChevronAnims = useRef(
@@ -986,11 +956,10 @@ export default function Home() {
   const focusCompletionNotificationIdRef = useRef(null);
   const timerCompletionStampRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
-  const speechHistoryRef = useRef({
-    header: { message: "", at: 0 },
-    dailyMood: { message: "", at: 0 },
-    section: { message: "", at: 0 },
-    lastGlobalAt: 0,
+  const hasPlayedWelcomeVoiceRef = useRef(false);
+  const notificationSpeechHistoryRef = useRef({
+    message: "",
+    at: 0,
   });
 
   const saveSetting = (key, value) => {
@@ -1116,48 +1085,49 @@ export default function Home() {
     );
   }, []);
 
-  const speakAffirmationChannel = useCallback(
-    async ({
-      channel,
-      message,
-      minChannelGapMs = 90000,
-      minGlobalGapMs = 9000,
-    }) => {
+  const speakNotificationReminder = useCallback(
+    async (content = null) => {
       if (isVoiceMuted) return false;
-      if (!channel || !message || appStateRef.current !== "active") return false;
+      if (!content || appStateRef.current !== "active") return false;
 
-      const normalizedMessage = String(message).replace(/\s+/g, " ").trim();
-      if (!normalizedMessage) return false;
+      const rawType = String(content?.data?.type || "").toLowerCase();
+      if (rawType === "task-complete") return false;
+
+      const isReminderLikeType =
+        rawType === "" ||
+        rawType === "task-reminder" ||
+        rawType === "reminder-alert" ||
+        rawType === "focus-session-complete";
+      if (!isReminderLikeType) return false;
+
+      const title = String(content?.title || "").trim();
+      const body = String(content?.body || "").trim();
+      const message = body || title;
+      if (!message) return false;
 
       const now = Date.now();
-      const channelHistory = speechHistoryRef.current[channel] || {
-        message: "",
-        at: 0,
-      };
-      if (now - channelHistory.at < Math.max(0, minChannelGapMs)) {
-        return false;
-      }
-
-      const lastGlobalAt = Number(speechHistoryRef.current.lastGlobalAt || 0);
-      if (now - lastGlobalAt < Math.max(0, minGlobalGapMs)) {
+      const history = notificationSpeechHistoryRef.current;
+      if (
+        history.message === message &&
+        now - history.at < NOTIFICATION_SPEECH_MIN_GAP_MS
+      ) {
         return false;
       }
 
       const didSpeak = await speakEncouragement({
         muted: false,
-        message: normalizedMessage,
-        minGapMs: minGlobalGapMs,
+        message,
+        minGapMs: NOTIFICATION_SPEECH_MIN_GAP_MS,
       });
 
-      if (!didSpeak) return false;
+      if (didSpeak) {
+        notificationSpeechHistoryRef.current = {
+          message,
+          at: Date.now(),
+        };
+      }
 
-      const spokenAt = Date.now();
-      speechHistoryRef.current[channel] = {
-        message: normalizedMessage,
-        at: spokenAt,
-      };
-      speechHistoryRef.current.lastGlobalAt = spokenAt;
-      return true;
+      return didSpeak;
     },
     [isVoiceMuted]
   );
@@ -1388,7 +1358,6 @@ export default function Home() {
         focusEndTimestamp: null,
       });
 
-      speechHistoryRef.current.lastGlobalAt = Date.now();
       void speakEncouragement({
         muted: isVoiceMuted,
         message: buildFocusCompletionSpeechMessage(getTaskTitleById(activeTaskId)),
@@ -1883,7 +1852,37 @@ export default function Home() {
           appSettings.lifetimeCompletedTasks || existingCompleted
         );
         const lifetimeFocusTime = Number(appSettings.lifetimeFocusTime || 0);
-        setIsVoiceMuted(appSettings.voiceMuted === "true");
+        const isMutedFromSettings = appSettings.voiceMuted === "true";
+        setIsVoiceMuted(isMutedFromSettings);
+
+        if (
+          !hasPlayedWelcomeVoiceRef.current &&
+          !isMutedFromSettings &&
+          appStateRef.current === "active"
+        ) {
+          const welcomeMessage = pickWelcomeMessage(
+            appSettings.lastWelcomeVoiceMessage || ""
+          );
+          if (welcomeMessage) {
+            hasPlayedWelcomeVoiceRef.current = true;
+            if (welcomeVoiceTimeoutRef.current) {
+              clearTimeout(welcomeVoiceTimeoutRef.current);
+            }
+            welcomeVoiceTimeoutRef.current = setTimeout(() => {
+              void speakEncouragement({
+                muted: false,
+                message: welcomeMessage,
+                minGapMs: 1600,
+                interruptExisting: false,
+              }).then((didSpeak) => {
+                if (didSpeak) {
+                  saveSetting("lastWelcomeVoiceMessage", welcomeMessage);
+                }
+              });
+              welcomeVoiceTimeoutRef.current = null;
+            }, WELCOME_VOICE_DELAY_MS);
+          }
+        }
 
         if (!appSettings.lifetimeCompletedTasks) {
           saveSetting("lifetimeCompletedTasks", lifetimeCompletedTasks);
@@ -1963,6 +1962,25 @@ export default function Home() {
 
     checkSystemSchedule(); // 🔑 THIS LINE RUNS THE FUNCTION
   }, []); // Runs once when the component mounts
+
+  useEffect(() => {
+    const receivedSubscription = Notifications.addNotificationReceivedListener(
+      (notification) => {
+        void speakNotificationReminder(notification?.request?.content || null);
+      }
+    );
+    const responseSubscription =
+      Notifications.addNotificationResponseReceivedListener((response) => {
+        void speakNotificationReminder(
+          response?.notification?.request?.content || null
+        );
+      });
+
+    return () => {
+      receivedSubscription.remove();
+      responseSubscription.remove();
+    };
+  }, [speakNotificationReminder]);
 
   useEffect(() => {
     if (
@@ -2134,6 +2152,10 @@ export default function Home() {
         clearTimeout(focusDismissTimeoutRef.current);
         focusDismissTimeoutRef.current = null;
       }
+      if (welcomeVoiceTimeoutRef.current) {
+        clearTimeout(welcomeVoiceTimeoutRef.current);
+        welcomeVoiceTimeoutRef.current = null;
+      }
       void cancelFocusCompletionReminder();
       void stopEncouragement();
     },
@@ -2181,38 +2203,6 @@ export default function Home() {
     const interval = setInterval(refreshSectionAffirmations, 45000);
     return () => clearInterval(interval);
   }, [refreshSectionAffirmations]);
-
-  useEffect(() => {
-    if (activePage && activePage !== "mood-tracker") return;
-    if (!dailyMoodAffirmationSpeechMessage) return;
-
-    const timer = setTimeout(() => {
-      void speakAffirmationChannel({
-        channel: "dailyMood",
-        message: dailyMoodAffirmationSpeechMessage,
-        minChannelGapMs: 90000,
-        minGlobalGapMs: 10000,
-      });
-    }, 380);
-
-    return () => clearTimeout(timer);
-  }, [activePage, dailyMoodAffirmationSpeechMessage, speakAffirmationChannel]);
-
-  useEffect(() => {
-    if (activePage !== null) return;
-    if (!sectionAffirmationSpeechMessage) return;
-
-    const timer = setTimeout(() => {
-      void speakAffirmationChannel({
-        channel: "section",
-        message: sectionAffirmationSpeechMessage,
-        minChannelGapMs: 120000,
-        minGlobalGapMs: 12000,
-      });
-    }, 620);
-
-    return () => clearTimeout(timer);
-  }, [activePage, sectionAffirmationSpeechMessage, speakAffirmationChannel]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
@@ -2556,7 +2546,6 @@ export default function Home() {
           showCelebration("Task completed! Keep going", "OK");
           cancelTaskReminders(task.notificationId);
           void sendTaskCompletionNotification({ taskTitle: task.title });
-          speechHistoryRef.current.lastGlobalAt = Date.now();
           void speakEncouragement({
             muted: isVoiceMuted,
             message: buildTaskCompletionSpeechMessage(task.title),
@@ -3986,6 +3975,11 @@ export default function Home() {
               mins
             ),
             sound: "default",
+            data: {
+              type: mins === 0 ? "reminder-alert" : "task-reminder",
+              taskTitle: task.title || "Task",
+              minutesBefore: mins,
+            },
 
             priority: Notifications.AndroidNotificationPriority.MAX,
 

@@ -39,3 +39,11 @@ export const TASK_COMPLETION_VOICE_AFFIRMATIONS = [
   "You followed through. That matters more than perfection.",
   "Take a breath. You just moved your day forward.",
 ];
+
+export const WELCOME_VOICE_MESSAGES = [
+  "Welcome back. Let's take one task at a time.",
+  "You are here. That is already a strong start.",
+  "Small progress still matters today.",
+  "Focus gently. You do not need perfection.",
+  "One step forward is enough for now.",
+];
