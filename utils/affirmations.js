@@ -47,3 +47,40 @@ export const WELCOME_VOICE_MESSAGES = [
   "Focus gently. You do not need perfection.",
   "One step forward is enough for now.",
 ];
+
+export const TASK_START_AFFIRMATIONS = [
+  "✨ Just begin softly — momentum will follow.",
+  "🚀 One small action can change your whole flow.",
+  "🌿 You do not need perfection to start.",
+  "⚡ Tiny progress still counts today.",
+  "☕ Start gently. Your brain will catch up.",
+  "🧠 One step is enough to unlock focus.",
+];
+
+export const MOOD_HEADER_SUPPORT_AFFIRMATIONS = {
+  sad: [
+    "☕ Be gentle with yourself today.",
+    "🌿 This feeling is valid. One soft step at a time.",
+    "✨ Small effort still matters today.",
+  ],
+  frustrated: [
+    "🌿 It is okay to take things one step at a time.",
+    "☕ Breathe first. You are still moving forward.",
+    "✨ Slow and steady is still progress.",
+  ],
+  overwhelmed: [
+    "🌿 One small next step is enough right now.",
+    "✨ You can pause and restart gently.",
+    "☕ Keep it simple. That is a strong strategy.",
+  ],
+  anxious: [
+    "🌿 Ground yourself with one easy action.",
+    "☕ A calm start still counts as progress.",
+    "✨ You are safe to go at your own pace.",
+  ],
+  low_energy: [
+    "☕ Low energy days still deserve kindness.",
+    "🌿 Gentle progress is still real progress.",
+    "✨ Start tiny and let momentum build slowly.",
+  ],
+};

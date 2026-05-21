@@ -36,6 +36,8 @@ import {
 import {
   FOCUS_COMPLETION_AFFIRMATIONS,
   SECTION_HEADER_AFFIRMATIONS,
+  MOOD_HEADER_SUPPORT_AFFIRMATIONS,
+  TASK_START_AFFIRMATIONS,
 } from "../../utils/affirmations";
 import {
   getRandomAffirmation,
@@ -105,6 +107,7 @@ import Reanimated, {
   cancelAnimation,
   Easing,
   FadeInDown,
+  interpolateColor,
   runOnJS,
   useAnimatedScrollHandler,
   useAnimatedReaction,
@@ -172,6 +175,22 @@ const getYesterdayKey = () => {
   return getDateKey(date);
 };
 
+const hashSeed = (value = "") => {
+  let hash = 0;
+  const normalized = String(value);
+  for (let i = 0; i < normalized.length; i += 1) {
+    hash = (hash << 5) - hash + normalized.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+};
+
+const pickStableBySeed = (items = [], seed = "") => {
+  if (!Array.isArray(items) || !items.length) return "";
+  const index = hashSeed(seed) % items.length;
+  return items[index] || items[0] || "";
+};
+
 const FOCUS_AUTO_DISMISS_DELAY_MS = 10000;
 const HEADER_HIDE_SCROLL_THRESHOLD = 48;
 const HEADER_SHOW_SCROLL_THRESHOLD = 12;
@@ -182,6 +201,9 @@ const HEADER_AFFIRMATION_MIN_DURATION_MS = 12000;
 const HEADER_AFFIRMATION_MAX_DURATION_MS = 32000;
 const WELCOME_VOICE_DELAY_MS = 900;
 const NOTIFICATION_SPEECH_MIN_GAP_MS = 6000;
+const SMART_TASK_BORDER_CYCLE_MS = 3600;
+const SMART_TASK_SHIMMER_CYCLE_MS = 2600;
+const SMART_TASK_SHIMMER_WIDTH = 52;
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -324,6 +346,8 @@ export default function Home() {
   const [dailyMoodEntries, setDailyMoodEntries] = useState([]);
   const [dailyMoodType, setDailyMoodType] = useState("");
   const [dailyMoodNote, setDailyMoodNote] = useState("");
+  const [isDailyMoodExpanded, setIsDailyMoodExpanded] = useState(false);
+  const [smartTaskButtonWidth, setSmartTaskButtonWidth] = useState(0);
   const [dismissedDailyMoodPromptDate, setDismissedDailyMoodPromptDate] =
     useState("");
   const [taskMoodPromptVisible, setTaskMoodPromptVisible] = useState(false);
@@ -536,7 +560,6 @@ export default function Home() {
 
   const effectiveTodayMoodType =
     todayDailyMoodEntry?.moodType || todayTaskMoodSummary.averageMoodType || null;
-  const effectiveTodayMoodMeta = getMoodMeta(effectiveTodayMoodType);
   const heavierMoodDaysInWeek = useMemo(
     () =>
       weeklyMoodRows.filter(
@@ -599,6 +622,122 @@ export default function Home() {
       }),
     [todayDateKey, yearlyMoodSummary.averageMoodType, yearlyMoodSummary.totalEntries]
   );
+
+  const effectiveMoodTypeForDailyProgress = useMemo(
+    () =>
+      todayDailyMoodEntry?.moodType ||
+      dailyMoodType ||
+      todayTaskMoodSummary.averageMoodType ||
+      null,
+    [dailyMoodType, todayDailyMoodEntry?.moodType, todayTaskMoodSummary.averageMoodType]
+  );
+  const effectiveMoodMetaForDailyProgress = getMoodMeta(
+    effectiveMoodTypeForDailyProgress
+  );
+  const moodHeaderLabel = effectiveMoodMetaForDailyProgress?.label || "Not logged yet";
+  const moodHeaderEmoji = effectiveMoodMetaForDailyProgress?.emoji || "🧠";
+
+  const moodSupportBucketKey = useMemo(() => {
+    if (!effectiveMoodTypeForDailyProgress) return "";
+    if (effectiveMoodTypeForDailyProgress === MOOD_TYPES.FRUSTRATED) {
+      return "frustrated";
+    }
+    if (effectiveMoodTypeForDailyProgress === MOOD_TYPES.SAD) {
+      return "sad";
+    }
+    const normalized = String(effectiveMoodTypeForDailyProgress).toLowerCase();
+    if (normalized.includes("overwhelm")) return "overwhelmed";
+    if (normalized.includes("anx")) return "anxious";
+    if (normalized.includes("low_energy")) return "low_energy";
+    return "";
+  }, [effectiveMoodTypeForDailyProgress]);
+
+  const collapsedMoodSupportMessage = useMemo(() => {
+    if (!moodSupportBucketKey) return "";
+    const source = MOOD_HEADER_SUPPORT_AFFIRMATIONS[moodSupportBucketKey] || [];
+    return pickStableBySeed(
+      source,
+      `${todayDateKey}:${moodSupportBucketKey}:${completedTodayTasks}:${pendingTodayTasks}`
+    );
+  }, [
+    completedTodayTasks,
+    moodSupportBucketKey,
+    pendingTodayTasks,
+    todayDateKey,
+  ]);
+
+  const pendingActionableTasks = useMemo(
+    () =>
+      tasks.filter((task) => {
+        if (!task || task.completed) return false;
+        if (task.isPinned) return true;
+        return SECTION_ORDER.includes(task.section);
+      }),
+    [tasks]
+  );
+
+  const smartActionTask = useMemo(() => {
+    const activeTask = activeTaskId
+      ? tasks.find((task) => task.id === activeTaskId && !task.completed)
+      : null;
+    if (activeTask) {
+      return {
+        task: activeTask,
+        ctaLabel: "Continue",
+        icon: "⚡",
+      };
+    }
+
+    if (!pendingActionableTasks.length) return null;
+
+    const nowTime = Date.now();
+    const scheduledFuture = pendingActionableTasks
+      .map((task) => ({
+        task,
+        timestamp: toTaskTimestamp(task.scheduledTime),
+      }))
+      .filter((item) => Number.isFinite(item.timestamp) && item.timestamp >= nowTime)
+      .sort((a, b) => {
+        if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+        return (a.task.id || 0) - (b.task.id || 0);
+      })[0]?.task;
+
+    if (scheduledFuture) {
+      return {
+        task: scheduledFuture,
+        ctaLabel: "Upcoming",
+        icon: "▶",
+      };
+    }
+
+    const unscheduledFallback = [...pendingActionableTasks].sort((a, b) => {
+      const aTime = toTaskTimestamp(a.scheduledTime);
+      const bTime = toTaskTimestamp(b.scheduledTime);
+      if (aTime === null && bTime === null) {
+        return (b.id || 0) - (a.id || 0);
+      }
+      if (aTime === null) return 1;
+      if (bTime === null) return -1;
+      return bTime - aTime;
+    })[0];
+
+    return unscheduledFallback
+      ? {
+          task: unscheduledFallback,
+          ctaLabel: "Start",
+          icon: "🚀",
+        }
+      : null;
+  }, [activeTaskId, pendingActionableTasks, tasks]);
+
+  const smartTaskInitiationAffirmation = useMemo(() => {
+    if (!smartActionTask?.task) return "";
+    return pickStableBySeed(
+      TASK_START_AFFIRMATIONS,
+      `${todayDateKey}:${smartActionTask.task.id}:${pendingTodayTasks}:${completedTodayTasks}`
+    );
+  }, [completedTodayTasks, pendingTodayTasks, smartActionTask, todayDateKey]);
+  const smartActionTaskId = smartActionTask?.task?.id || null;
 
   const sectionTasksByName = useMemo(() => {
     const groupedTasks = SECTION_ORDER.reduce((acc, sectionName) => {
@@ -806,6 +945,9 @@ export default function Home() {
   const floatingMenuOpacity = useSharedValue(0);
   const lastHomeScrollY = useSharedValue(0);
   const headerAffirmationTranslateX = useSharedValue(0);
+  const smartTaskBorderPhase = useSharedValue(0);
+  const smartTaskShimmerPhase = useSharedValue(0);
+  const smartTaskEmojiPulse = useSharedValue(0);
   const recoveryBackdropStyle = useAnimatedStyle(() => ({
     opacity: recoverySheetProgress.value * 0.86,
   }));
@@ -822,6 +964,40 @@ export default function Home() {
   }));
   const headerAffirmationMarqueeStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: headerAffirmationTranslateX.value }],
+  }));
+  const smartTaskButtonBorderStyle = useAnimatedStyle(() => ({
+    borderColor: interpolateColor(
+      smartTaskBorderPhase.value,
+      [0, 0.5, 1],
+      [
+        "rgba(255, 209, 102, 0.72)",
+        "rgba(255, 123, 123, 0.72)",
+        "rgba(255, 209, 102, 0.72)",
+      ]
+    ),
+    shadowColor: interpolateColor(
+      smartTaskBorderPhase.value,
+      [0, 1],
+      ["rgba(255, 209, 102, 0.4)", "rgba(255, 123, 123, 0.35)"]
+    ),
+    shadowOpacity: 0.32,
+  }));
+  const smartTaskShimmerStyle = useAnimatedStyle(() => {
+    const width = Math.max(smartTaskButtonWidth, 1);
+    const translateX =
+      smartTaskShimmerPhase.value * (width + SMART_TASK_SHIMMER_WIDTH * 2) -
+      SMART_TASK_SHIMMER_WIDTH;
+    return {
+      transform: [{ translateX }],
+      opacity: 0.42,
+    };
+  });
+  const smartTaskEmojiStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateY: -smartTaskEmojiPulse.value * 1.2 },
+      { scale: 1 + smartTaskEmojiPulse.value * 0.05 },
+    ],
+    opacity: 0.86 + smartTaskEmojiPulse.value * 0.14,
   }));
   const floatingMenuAnimatedStyle = useAnimatedStyle(() => ({
     opacity: floatingMenuOpacity.value,
@@ -895,6 +1071,55 @@ export default function Home() {
     },
     [headerContainerHeight, syncHeaderCollapsedState]
   );
+
+  useEffect(() => {
+    cancelAnimation(smartTaskBorderPhase);
+    cancelAnimation(smartTaskShimmerPhase);
+    cancelAnimation(smartTaskEmojiPulse);
+
+    if (!smartActionTaskId) {
+      smartTaskBorderPhase.value = 0;
+      smartTaskShimmerPhase.value = 0;
+      smartTaskEmojiPulse.value = 0;
+      return;
+    }
+
+    smartTaskBorderPhase.value = withRepeat(
+      withTiming(1, {
+        duration: SMART_TASK_BORDER_CYCLE_MS,
+        easing: Easing.linear,
+      }),
+      -1,
+      false
+    );
+    smartTaskShimmerPhase.value = withRepeat(
+      withTiming(1, {
+        duration: SMART_TASK_SHIMMER_CYCLE_MS,
+        easing: Easing.linear,
+      }),
+      -1,
+      false
+    );
+    smartTaskEmojiPulse.value = withRepeat(
+      withTiming(1, {
+        duration: 1850,
+        easing: Easing.inOut(Easing.cubic),
+      }),
+      -1,
+      true
+    );
+
+    return () => {
+      cancelAnimation(smartTaskBorderPhase);
+      cancelAnimation(smartTaskShimmerPhase);
+      cancelAnimation(smartTaskEmojiPulse);
+    };
+  }, [
+    smartActionTaskId,
+    smartTaskBorderPhase,
+    smartTaskEmojiPulse,
+    smartTaskShimmerPhase,
+  ]);
 
   useEffect(() => {
     setHeaderAffirmationTextWidth(0);
@@ -2950,6 +3175,7 @@ export default function Home() {
 
     let changedExpansion = false;
     const targetSectionKey = task.isPinned ? "Pinned" : task.section;
+    setExpandedTaskId(taskId);
 
     if (task.isPinned) {
       if (!isPinnedSectionExpanded) {
@@ -3020,6 +3246,17 @@ export default function Home() {
       changedExpansion ? 280 : 80
     );
   };
+
+  const toggleDailyMoodSection = useCallback(() => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setIsDailyMoodExpanded((prev) => !prev);
+  }, []);
+
+  const handleSmartTaskPress = useCallback(() => {
+    const targetTask = smartActionTask?.task;
+    if (!targetTask) return;
+    scrollToTask(targetTask.id);
+  }, [smartActionTask?.task, scrollToTask]);
 
   const triggerShake = () => {
     Animated.sequence([
@@ -5626,8 +5863,6 @@ export default function Home() {
                 </Text>
               </View>
             )}
-            {renderMoodSummaryChip("Today's Task Mood", todayTaskMoodSummary.averageMoodType)}
-            {renderMoodSummaryChip("Mood Today", todayDailyMoodEntry?.moodType)}
           </View>
 
           {/* Empty State OR Progress */}
@@ -5640,48 +5875,161 @@ export default function Home() {
             />
           </View>
 
-          {moodPromptVisibleInBanner ? (
-            <View className="mt-3 p-3 rounded-2xl bg-[#123131]/70 border border-[#66b9b9]/25">
-              <Text className="text-[#E8F4F4] text-xs font-black mb-2">
-                How are you feeling today?
-              </Text>
-              {renderMoodSelectorRow({
-                selectedMoodType: dailyMoodType,
-                onSelect: (type) => {
-                  setDailyMoodType(type);
-                  saveDailyMoodCheckIn(type, dailyMoodNote);
-                },
-                compact: true,
-              })}
-              <TouchableOpacity
-                activeOpacity={0.82}
-                onPress={() => setDismissedDailyMoodPromptDate(todayDateKey)}
-                className="self-start mt-1 px-2.5 py-1 rounded-full border border-[#337a7a]/35 bg-[#061414]/45"
+          {smartActionTask?.task ? (
+            <View className="mt-3">
+              <Reanimated.View
+                style={smartTaskButtonBorderStyle}
+                onLayout={({ nativeEvent }) => {
+                  const width = Math.round(nativeEvent.layout.width);
+                  if (width > 0 && Math.abs(width - smartTaskButtonWidth) > 1) {
+                    setSmartTaskButtonWidth(width);
+                  }
+                }}
+                className="relative rounded-2xl p-[1.5px] overflow-hidden"
               >
-                <Text className="text-[#9FB5B5] text-[10px] font-bold uppercase tracking-widest">
-                  Skip for now
+                <Reanimated.View
+                  pointerEvents="none"
+                  style={smartTaskShimmerStyle}
+                  className="absolute top-[-1] bottom-[-1] rounded-full bg-[#FFD166]/20"
+                />
+                <TouchableOpacity
+                  activeOpacity={0.88}
+                  onPress={handleSmartTaskPress}
+                  className="rounded-2xl bg-[#123131]/88 border border-[#66b9b9]/20 px-3.5 py-3"
+                >
+                  <View className="flex-row items-center justify-between">
+                    <View className="flex-1 pr-2">
+                      <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                        {smartActionTask.ctaLabel === "Upcoming"
+                          ? "Upcoming Task"
+                          : `${smartActionTask.ctaLabel} Current Task`}
+                      </Text>
+                      <Text className="text-[#E8F4F4] text-sm font-black mt-1" numberOfLines={1}>
+                        {smartActionTask.icon} {smartActionTask.task.title}
+                      </Text>
+                    </View>
+                    <Feather name="arrow-up-right" size={16} color={COLORS.warning} />
+                  </View>
+                </TouchableOpacity>
+              </Reanimated.View>
+              <View className="mt-2 flex-row items-center">
+                <Reanimated.Text style={smartTaskEmojiStyle} className="text-[14px]">
+                  ✨
+                </Reanimated.Text>
+                <Text className="ml-1.5 text-[#9FB5B5] text-[11px] font-semibold flex-1">
+                  {smartTaskInitiationAffirmation}
                 </Text>
-              </TouchableOpacity>
+              </View>
             </View>
           ) : null}
 
-          {effectiveTodayMoodMeta ? (
-            <Text className="text-[#66b9b9] text-xs font-black mt-3">
-              Mood Today: {effectiveTodayMoodMeta.emoji} {effectiveTodayMoodMeta.label}
-            </Text>
-          ) : null}
-          <Text className="text-[#66b9b9] text-xs font-bold mt-1">
-            {dailyMoodAffirmation}
-          </Text>
-          <TouchableOpacity
-            onPress={() => setActivePage("mood-tracker")}
-            activeOpacity={0.82}
-            className="self-start mt-2 px-3 py-1.5 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70"
-          >
-            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-              Open Mood Tracker
-            </Text>
-          </TouchableOpacity>
+          <View className="mt-3 rounded-2xl border border-[#66b9b9]/25 bg-[#123131]/60 overflow-hidden">
+            <TouchableOpacity
+              onPress={toggleDailyMoodSection}
+              activeOpacity={0.88}
+              className="px-3.5 py-3 border-b border-[#337a7a]/20"
+            >
+              <View className="flex-row items-center justify-between">
+                <View className="flex-row items-center flex-1 pr-3">
+                  <Text className="text-[16px] mr-2">{moodHeaderEmoji}</Text>
+                  <Text className="text-[#E8F4F4] text-xs font-black flex-1" numberOfLines={1}>
+                    Mood Today • {moodHeaderLabel}
+                  </Text>
+                </View>
+                <Feather
+                  name={isDailyMoodExpanded ? "chevron-up" : "chevron-down"}
+                  size={15}
+                  color={COLORS.accent}
+                />
+              </View>
+              {!isDailyMoodExpanded && collapsedMoodSupportMessage ? (
+                <Text className="text-[#9FB5B5] text-[11px] mt-1.5 leading-4" numberOfLines={1}>
+                  {collapsedMoodSupportMessage}
+                </Text>
+              ) : null}
+            </TouchableOpacity>
+
+            {isDailyMoodExpanded ? (
+              <View className="px-3.5 py-3">
+                {renderMoodSelectorRow({
+                  selectedMoodType: dailyMoodType,
+                  onSelect: (type) => {
+                    setDailyMoodType(type);
+                    saveDailyMoodCheckIn(type, dailyMoodNote);
+                  },
+                  compact: true,
+                })}
+                <TextInput
+                  value={dailyMoodNote}
+                  onChangeText={setDailyMoodNote}
+                  placeholder="Optional note..."
+                  placeholderTextColor={COLORS.muted}
+                  multiline
+                  className="mt-2 bg-[#061414]/45 text-[#E8F4F4] p-3 rounded-2xl border border-[#66b9b9]/20 text-xs"
+                />
+                <View className="mt-2 flex-row items-center">
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    disabled={!isValidMoodType(dailyMoodType)}
+                    onPress={() => saveDailyMoodCheckIn(dailyMoodType, dailyMoodNote)}
+                    className={`px-3 py-2 rounded-full border mr-2 ${
+                      isValidMoodType(dailyMoodType)
+                        ? "bg-[#66b9b9] border-[#66b9b9]"
+                        : "bg-[#123131]/70 border-[#337a7a]/30"
+                    }`}
+                  >
+                    <Text
+                      className={`text-[10px] font-black uppercase tracking-widest ${
+                        isValidMoodType(dailyMoodType)
+                          ? "text-[#061414]"
+                          : "text-[#9FB5B5]"
+                      }`}
+                    >
+                      Save Mood
+                    </Text>
+                  </TouchableOpacity>
+                  {moodPromptVisibleInBanner ? (
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      onPress={() => setDismissedDailyMoodPromptDate(todayDateKey)}
+                      className="px-3 py-2 rounded-full border border-[#337a7a]/35 bg-[#061414]/45"
+                    >
+                      <Text className="text-[#9FB5B5] text-[10px] font-bold uppercase tracking-widest">
+                        Skip
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+                <Text className="text-[#66b9b9] text-xs font-bold mt-2">
+                  {dailyMoodAffirmation}
+                </Text>
+
+                {(todayTaskMoodSummary.averageMoodType ||
+                  weeklyMoodSummary.averageMoodType) && (
+                  <View className="mt-2 flex-row flex-wrap">
+                    {renderMoodSummaryChip(
+                      "Today's Task Mood",
+                      todayTaskMoodSummary.averageMoodType
+                    )}
+                    {renderMoodSummaryChip(
+                      "Weekly Trend",
+                      weeklyMoodSummary.averageMoodType
+                    )}
+                  </View>
+                )}
+
+                <TouchableOpacity
+                  onPress={() => setActivePage("mood-tracker")}
+                  activeOpacity={0.82}
+                  className="self-start mt-2 px-3 py-1.5 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70"
+                >
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                    Open Mood Tracker
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </View>
 
           <Text className="text-[#9FB5B5] text-xs font-bold mt-3">
             {dailyProgressCaption}
