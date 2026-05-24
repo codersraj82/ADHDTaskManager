@@ -72,6 +72,12 @@ export const initDB = () => {
     { name: "subtasks", type: "TEXT DEFAULT '[]'" },
     { name: "notificationId", type: "TEXT DEFAULT '[]'" },
     { name: "moodType", type: "TEXT DEFAULT ''" },
+    { name: "firstAction", type: "TEXT DEFAULT ''" },
+    { name: "minimumVersion", type: "TEXT DEFAULT ''" },
+    { name: "startAssistUsedCount", type: "INTEGER DEFAULT 0" },
+    { name: "lastStartAssistAt", type: "TEXT" },
+    { name: "stuckCount", type: "INTEGER DEFAULT 0" },
+    { name: "lastStuckAt", type: "TEXT" },
   ];
 
   migrations.forEach((column) => {

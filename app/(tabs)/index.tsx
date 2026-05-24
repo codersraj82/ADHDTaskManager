@@ -215,6 +215,7 @@ const TASK_HIGHLIGHT_PULSE_OUT_MS = 1000;
 const TASK_NAVIGATION_MAX_RETRIES = 5;
 const TASK_NAVIGATION_RETRY_DELAY_MS = 130;
 const CURRENT_TASK_FAB_BREATH_MS = 2600;
+const START_ASSIST_SHORT_FOCUS_SECONDS = 120;
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -332,10 +333,19 @@ export default function Home() {
   const [taskAttachment, setTaskAttachment] = useState("");
   const [detailsHeight, setDetailsHeight] = useState(80);
   const [expandedTaskId, setExpandedTaskId] = useState(null);
+  const [firstStepOnlyTaskId, setFirstStepOnlyTaskId] = useState(null);
   const [highlightedTaskId, setHighlightedTaskId] = useState(null);
   const [currentFocusedTaskId, setCurrentFocusedTaskId] = useState(null);
   const [pendingNotificationTaskTarget, setPendingNotificationTaskTarget] =
     useState(null);
+  const [isStartAssistVisible, setIsStartAssistVisible] = useState(false);
+  const [startAssistTaskId, setStartAssistTaskId] = useState(null);
+  const [startAssistMode, setStartAssistMode] = useState("main");
+  const [startAssistFirstActionDraft, setStartAssistFirstActionDraft] =
+    useState("");
+  const [startAssistMinimumVersionDraft, setStartAssistMinimumVersionDraft] =
+    useState("");
+  const [startAssistEditHint, setStartAssistEditHint] = useState("");
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
   const [timeError, setTimeError] = useState(false);
@@ -701,6 +711,24 @@ export default function Home() {
   const currentTaskQuickTask = currentTaskQuickTarget?.task || null;
   const currentTaskQuickTaskId = currentTaskQuickTarget?.taskId || null;
   const currentTaskQuickReason = currentTaskQuickTarget?.reason || "";
+  const startAssistTask = useMemo(
+    () => tasks.find((task) => task.id === startAssistTaskId) || null,
+    [startAssistTaskId, tasks]
+  );
+  const startAssistFirstIncompleteSubtask = useMemo(() => {
+    if (!startAssistTask) return null;
+    const subtasks = Array.isArray(startAssistTask.subtasks)
+      ? startAssistTask.subtasks
+      : [];
+    return subtasks.find((subtask) => !subtask?.completed) || null;
+  }, [startAssistTask]);
+  const startAssistFirstStepPreview = useMemo(
+    () =>
+      startAssistFirstIncompleteSubtask?.title ||
+      (startAssistTask?.firstAction || "").trim() ||
+      "Choose one tiny first move.",
+    [startAssistFirstIncompleteSubtask, startAssistTask?.firstAction]
+  );
 
   const smartActionTask = useMemo(() => {
     const activeTask = activeTaskId
@@ -1993,7 +2021,13 @@ export default function Home() {
           scheduledTime TEXT, details TEXT, attachment TEXT,
           subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
           isPinned INTEGER DEFAULT 0,
-          moodType TEXT DEFAULT ''
+          moodType TEXT DEFAULT '',
+          firstAction TEXT DEFAULT '',
+          minimumVersion TEXT DEFAULT '',
+          startAssistUsedCount INTEGER DEFAULT 0,
+          lastStartAssistAt TEXT,
+          stuckCount INTEGER DEFAULT 0,
+          lastStuckAt TEXT
         );
         CREATE TABLE IF NOT EXISTS section_settings (
           section_name TEXT PRIMARY KEY,
@@ -2079,6 +2113,28 @@ export default function Home() {
         if (!columnNames.includes("moodType")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN moodType TEXT DEFAULT '';");
         }
+        if (!columnNames.includes("firstAction")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN firstAction TEXT DEFAULT '';");
+        }
+        if (!columnNames.includes("minimumVersion")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN minimumVersion TEXT DEFAULT '';"
+          );
+        }
+        if (!columnNames.includes("startAssistUsedCount")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN startAssistUsedCount INTEGER DEFAULT 0;"
+          );
+        }
+        if (!columnNames.includes("lastStartAssistAt")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN lastStartAssistAt TEXT;");
+        }
+        if (!columnNames.includes("stuckCount")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN stuckCount INTEGER DEFAULT 0;");
+        }
+        if (!columnNames.includes("lastStuckAt")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN lastStuckAt TEXT;");
+        }
         db.runSync(
           `UPDATE tasks
            SET createdAt = COALESCE(NULLIF(scheduledTime, ''), NULLIF(completedAt, ''), createdAt)
@@ -2093,6 +2149,12 @@ export default function Home() {
           completedAt: t.completedAt || null,
           createdAt: t.createdAt || null,
           moodType: t.moodType || "",
+          firstAction: t.firstAction || "",
+          minimumVersion: t.minimumVersion || "",
+          startAssistUsedCount: Number(t.startAssistUsedCount || 0),
+          lastStartAssistAt: t.lastStartAssistAt || "",
+          stuckCount: Number(t.stuckCount || 0),
+          lastStuckAt: t.lastStuckAt || "",
           repeatType: normalizeRepeatType(t.repeatType),
           repeatDays: parseRepeatDays(t.repeatDays),
           repeatMonthlyType: t.repeatMonthlyType || "",
@@ -2660,6 +2722,8 @@ export default function Home() {
 
   const [modalVisible, setModalVisible] = useState(false);
   const [taskName, setTaskName] = useState("");
+  const [taskFirstAction, setTaskFirstAction] = useState("");
+  const [taskMinimumVersion, setTaskMinimumVersion] = useState("");
   const [selectedSection, setSelectedSection] = useState("Morning");
   const [repeatType, setRepeatType] = useState(REPEAT_TYPES.NONE);
   const [repeatDays, setRepeatDays] = useState([]);
@@ -2820,9 +2884,15 @@ export default function Home() {
           subtasks,
           notificationId,
           isPinned,
-          moodType
+          moodType,
+          firstAction,
+          minimumVersion,
+          startAssistUsedCount,
+          lastStartAssistAt,
+          stuckCount,
+          lastStuckAt
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nextTask.title || "Task",
           nextTask.section || "Morning",
@@ -2842,6 +2912,12 @@ export default function Home() {
           JSON.stringify([]),
           0,
           nextTask.moodType || "",
+          nextTask.firstAction || "",
+          nextTask.minimumVersion || "",
+          Number(nextTask.startAssistUsedCount || 0),
+          nextTask.lastStartAssistAt || null,
+          Number(nextTask.stuckCount || 0),
+          nextTask.lastStuckAt || null,
         ]
       );
 
@@ -2873,6 +2949,12 @@ export default function Home() {
           createdAt,
           isPinned: false,
           moodType: nextTask.moodType || "",
+          firstAction: nextTask.firstAction || "",
+          minimumVersion: nextTask.minimumVersion || "",
+          startAssistUsedCount: Number(nextTask.startAssistUsedCount || 0),
+          lastStartAssistAt: nextTask.lastStartAssistAt || "",
+          stuckCount: Number(nextTask.stuckCount || 0),
+          lastStuckAt: nextTask.lastStuckAt || "",
         },
       ]);
   };
@@ -3027,9 +3109,15 @@ export default function Home() {
         subtasks,
         notificationId,
         isPinned,
-        moodType
+        moodType,
+        firstAction,
+        minimumVersion,
+        startAssistUsedCount,
+        lastStartAssistAt,
+        stuckCount,
+        lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
           task.title || "Task",
           task.section || "Morning",
@@ -3049,6 +3137,12 @@ export default function Home() {
           JSON.stringify([]),
           0,
           "",
+          task.firstAction || "",
+          task.minimumVersion || "",
+          Number(task.startAssistUsedCount || 0),
+          task.lastStartAssistAt || null,
+          Number(task.stuckCount || 0),
+          task.lastStuckAt || null,
         ]
       );
 
@@ -3084,6 +3178,12 @@ export default function Home() {
           notificationId: recreatedNotificationIds,
           isPinned: false,
           moodType: "",
+          firstAction: task.firstAction || "",
+          minimumVersion: task.minimumVersion || "",
+          startAssistUsedCount: Number(task.startAssistUsedCount || 0),
+          lastStartAssistAt: task.lastStartAssistAt || "",
+          stuckCount: Number(task.stuckCount || 0),
+          lastStuckAt: task.lastStuckAt || "",
         },
       ]);
 
@@ -3101,6 +3201,8 @@ export default function Home() {
   const resetTaskForm = () => {
     setTaskName("");
     setTaskDetails("");
+    setTaskFirstAction("");
+    setTaskMinimumVersion("");
     setScheduledDateTime("");
     setSelectedSection("Morning");
     setRepeatType(REPEAT_TYPES.NONE);
@@ -3113,6 +3215,7 @@ export default function Home() {
     setTimeAdjusted(false);
     setTimeError(false);
     setDetailsHeight(80);
+    setStartAssistEditHint("");
 
     setEditingTask(null);
     setIsEditMode(false);
@@ -3128,6 +3231,8 @@ export default function Home() {
     // Reset the create form so stale schedule values never reopen the picker.
     setTaskName("");
     setTaskDetails("");
+    setTaskFirstAction("");
+    setTaskMinimumVersion("");
     setSelectedSection("Morning");
     setScheduledDateTime("");
     setRepeatType(REPEAT_TYPES.NONE);
@@ -3139,14 +3244,18 @@ export default function Home() {
     setAttachmentName("");
     setTimeAdjusted(false);
     setTimeError(false);
+    setStartAssistEditHint("");
 
     setDetailsHeight(80);
 
     setModalVisible(true);
   };
 
-  const startFocus = (taskId) => {
-    const duration = taskDurations[taskId] || 1500; // default 25 min
+  const startFocus = (taskId, durationOverride = null) => {
+    const duration =
+      (Number.isFinite(durationOverride) && durationOverride > 0
+        ? durationOverride
+        : taskDurations[taskId]) || 1500; // default 25 min
 
     if (focusDismissTimeoutRef.current) {
       clearTimeout(focusDismissTimeoutRef.current);
@@ -3502,6 +3611,206 @@ export default function Home() {
     setIsDailyMoodExpanded((prev) => !prev);
   }, []);
 
+  const openTaskEditor = useCallback(
+    (task, assistHint = "") => {
+      if (!task) return;
+      const repeatSettings = normalizeTaskRepeatSettings(task);
+      setEditingTask(task);
+      setIsEditMode(true);
+      setTaskName(task.title || "");
+      setTaskDetails(task.details || "");
+      setTaskFirstAction(task.firstAction || "");
+      setTaskMinimumVersion(task.minimumVersion || "");
+      setScheduledDateTime(task.scheduledTime || "");
+      setSelectedSection(task.section || "Morning");
+      setRepeatType(repeatSettings.repeatType);
+      setRepeatDays(repeatSettings.repeatDays);
+      setRepeatMonthlyType(repeatSettings.repeatMonthlyType);
+      setRepeatCustomDate(repeatSettings.repeatCustomDate);
+      setRepeatYearlyDate(repeatSettings.repeatYearlyDate);
+      setStartAssistEditHint(assistHint || "");
+      setModalVisible(true);
+    },
+    []
+  );
+
+  const closeStartAssist = useCallback(() => {
+    setIsStartAssistVisible(false);
+    setStartAssistTaskId(null);
+    setStartAssistMode("main");
+    setStartAssistFirstActionDraft("");
+    setStartAssistMinimumVersionDraft("");
+  }, []);
+
+  const persistStartAssistTaskFields = useCallback(
+    (taskId, patch = {}) => {
+      if (!taskId) return null;
+      const currentTask = tasks.find((task) => task.id === taskId);
+      if (!currentTask) return null;
+
+      const nextTask = {
+        ...currentTask,
+        ...patch,
+        firstAction: patch.firstAction ?? currentTask.firstAction ?? "",
+        minimumVersion: patch.minimumVersion ?? currentTask.minimumVersion ?? "",
+        startAssistUsedCount: Number(
+          patch.startAssistUsedCount ?? currentTask.startAssistUsedCount ?? 0
+        ),
+        lastStartAssistAt:
+          patch.lastStartAssistAt ?? currentTask.lastStartAssistAt ?? "",
+        stuckCount: Number(patch.stuckCount ?? currentTask.stuckCount ?? 0),
+        lastStuckAt: patch.lastStuckAt ?? currentTask.lastStuckAt ?? "",
+      };
+
+      try {
+        db.runSync(
+          `UPDATE tasks
+           SET firstAction = ?,
+               minimumVersion = ?,
+               startAssistUsedCount = ?,
+               lastStartAssistAt = ?,
+               stuckCount = ?,
+               lastStuckAt = ?
+           WHERE id = ?`,
+          [
+            nextTask.firstAction || "",
+            nextTask.minimumVersion || "",
+            Number(nextTask.startAssistUsedCount || 0),
+            nextTask.lastStartAssistAt || null,
+            Number(nextTask.stuckCount || 0),
+            nextTask.lastStuckAt || null,
+            taskId,
+          ]
+        );
+      } catch (error) {
+        console.log("Start assist update error:", error);
+      }
+
+      setTasks((prev) =>
+        prev.map((task) => (task.id === taskId ? nextTask : task))
+      );
+
+      return nextTask;
+    },
+    [tasks]
+  );
+
+  const markStartAssistUsage = useCallback(
+    (taskId, { markStuck = false } = {}) => {
+      const currentTask = tasks.find((task) => task.id === taskId);
+      if (!currentTask) return;
+      const nowIso = new Date().toISOString();
+
+      persistStartAssistTaskFields(taskId, {
+        startAssistUsedCount: Number(currentTask.startAssistUsedCount || 0) + 1,
+        lastStartAssistAt: nowIso,
+        stuckCount: markStuck
+          ? Number(currentTask.stuckCount || 0) + 1
+          : Number(currentTask.stuckCount || 0),
+        lastStuckAt: markStuck ? nowIso : currentTask.lastStuckAt || "",
+      });
+    },
+    [persistStartAssistTaskFields, tasks]
+  );
+
+  const handleStartAssistTwoMinutes = () => {
+    if (!startAssistTaskId) return;
+    markStartAssistUsage(startAssistTaskId);
+    closeStartAssist();
+    setFirstStepOnlyTaskId(null);
+    scrollToTask(startAssistTaskId, { highlight: true });
+    startFocus(startAssistTaskId, START_ASSIST_SHORT_FOCUS_SECONDS);
+  };
+
+  const handleStartAssistShowFirstStep = useCallback(() => {
+    if (!startAssistTaskId) return;
+    markStartAssistUsage(startAssistTaskId);
+    setFirstStepOnlyTaskId(startAssistTaskId);
+    closeStartAssist();
+    scrollToTask(startAssistTaskId, { highlight: true });
+  }, [closeStartAssist, markStartAssistUsage, scrollToTask, startAssistTaskId]);
+
+  const handleStartAssistBreakDown = useCallback(() => {
+    if (!startAssistTask) return;
+    markStartAssistUsage(startAssistTask.id);
+    closeStartAssist();
+    setFirstStepOnlyTaskId(null);
+    openTaskEditor(startAssistTask, "Add one or two tiny steps.");
+  }, [closeStartAssist, markStartAssistUsage, openTaskEditor, startAssistTask]);
+
+  const handleStartAssistSaveMinimumVersion = useCallback(() => {
+    if (!startAssistTaskId) return;
+    const normalized = (startAssistMinimumVersionDraft || "").trim();
+    persistStartAssistTaskFields(startAssistTaskId, {
+      minimumVersion: normalized,
+    });
+    setStartAssistMode("main");
+  }, [
+    persistStartAssistTaskFields,
+    startAssistMinimumVersionDraft,
+    startAssistTaskId,
+  ]);
+
+  const handleStartAssistSaveFirstAction = useCallback(() => {
+    if (!startAssistTaskId) return;
+    const normalized = (startAssistFirstActionDraft || "").trim();
+    persistStartAssistTaskFields(startAssistTaskId, {
+      firstAction: normalized,
+    });
+    setStartAssistMode("main");
+  }, [
+    persistStartAssistTaskFields,
+    startAssistFirstActionDraft,
+    startAssistTaskId,
+  ]);
+
+  const handleStartAssistOpenMakeEasier = useCallback(() => {
+    if (!startAssistTask) return;
+    markStartAssistUsage(startAssistTask.id);
+    setStartAssistMinimumVersionDraft(startAssistTask.minimumVersion || "");
+    setStartAssistMode("make-easier");
+  }, [markStartAssistUsage, startAssistTask]);
+
+  const handleStartAssistOpenAddFirstStep = useCallback(() => {
+    if (!startAssistTask) return;
+    markStartAssistUsage(startAssistTask.id);
+    setStartAssistFirstActionDraft(startAssistTask.firstAction || "");
+    setStartAssistMode("add-first-step");
+  }, [markStartAssistUsage, startAssistTask]);
+
+  const handleStartAssistStuck = useCallback(() => {
+    if (!startAssistTaskId) return;
+    markStartAssistUsage(startAssistTaskId, { markStuck: true });
+    setStartAssistMode("stuck");
+  }, [markStartAssistUsage, startAssistTaskId]);
+
+  const handleStartAssistRescheduleLater = useCallback(() => {
+    if (!startAssistTask) return;
+    markStartAssistUsage(startAssistTask.id);
+    closeStartAssist();
+    setFirstStepOnlyTaskId(null);
+    startRecoveryEdit(startAssistTask);
+    setRecoveryModalVisible(true);
+    setRecoverySuccessMessage("");
+  }, [closeStartAssist, markStartAssistUsage, startRecoveryEdit, startAssistTask]);
+
+  useEffect(() => {
+    if (!isStartAssistVisible) return;
+    if (!startAssistTaskId) return;
+    const task = tasks.find((item) => item.id === startAssistTaskId);
+    if (!task || task.completed) {
+      closeStartAssist();
+    }
+  }, [closeStartAssist, isStartAssistVisible, startAssistTaskId, tasks]);
+
+  useEffect(() => {
+    if (!firstStepOnlyTaskId) return;
+    const task = tasks.find((item) => item.id === firstStepOnlyTaskId);
+    if (!task || task.completed) {
+      setFirstStepOnlyTaskId(null);
+    }
+  }, [firstStepOnlyTaskId, tasks]);
+
   const handleCurrentTaskFabPress = useCallback(() => {
     if (!currentTaskQuickTaskId) return;
     scrollToTask(currentTaskQuickTaskId, {
@@ -3599,6 +3908,9 @@ export default function Home() {
         ? repeatYearlyDate || finalTime || ""
         : "";
 
+    const normalizedFirstAction = (taskFirstAction || "").trim();
+    const normalizedMinimumVersion = (taskMinimumVersion || "").trim();
+
     return {
       finalTime,
       repeatType: normalizedType,
@@ -3606,6 +3918,8 @@ export default function Home() {
       repeatMonthlyType: normalizedMonthlyType,
       repeatCustomDate: normalizedCustomDate,
       repeatYearlyDate: normalizedYearlyDate,
+      firstAction: normalizedFirstAction,
+      minimumVersion: normalizedMinimumVersion,
       subtasksToSave:
         isEditMode && editingTask?.subtasks ? editingTask.subtasks : [],
     };
@@ -3621,6 +3935,8 @@ export default function Home() {
       repeatMonthlyType: draftRepeatMonthlyType,
       repeatCustomDate: draftRepeatCustomDate,
       repeatYearlyDate: draftRepeatYearlyDate,
+      firstAction: draftFirstAction,
+      minimumVersion: draftMinimumVersion,
       subtasksToSave,
     } = draft;
 
@@ -3693,6 +4009,8 @@ export default function Home() {
                 repeatCustomDate = ?,
                 repeatYearlyDate = ?,
                 repeatGroupId = ?,
+                firstAction = ?,
+                minimumVersion = ?,
                 moodType = ?
             WHERE id = ?`,
           [
@@ -3710,6 +4028,8 @@ export default function Home() {
             draftRepeatCustomDate || "",
             draftRepeatYearlyDate || "",
             nextGroupId,
+            draftFirstAction,
+            draftMinimumVersion,
             targetTask.moodType || "",
             targetTask.id,
           ]
@@ -3731,6 +4051,8 @@ export default function Home() {
           repeatCustomDate: draftRepeatCustomDate,
           repeatYearlyDate: draftRepeatYearlyDate,
           repeatGroupId: nextGroupId,
+          firstAction: draftFirstAction,
+          minimumVersion: draftMinimumVersion,
           moodType: targetTask.moodType || "",
         });
       }
@@ -3769,9 +4091,15 @@ export default function Home() {
         subtasks,
         notificationId,
         isPinned,
-        moodType
+        moodType,
+        firstAction,
+        minimumVersion,
+        startAssistUsedCount,
+        lastStartAssistAt,
+        stuckCount,
+        lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         taskName,
         selectedSection,
@@ -3791,6 +4119,12 @@ export default function Home() {
         JSON.stringify([]),
         0,
         "",
+        draftFirstAction,
+        draftMinimumVersion,
+        0,
+        null,
+        0,
+        null,
       ]
     );
 
@@ -3830,6 +4164,12 @@ export default function Home() {
         notificationId: reminderIds,
         isPinned: false,
         moodType: "",
+        firstAction: draftFirstAction,
+        minimumVersion: draftMinimumVersion,
+        startAssistUsedCount: 0,
+        lastStartAssistAt: "",
+        stuckCount: 0,
+        lastStuckAt: "",
       },
     ]);
 
@@ -3958,8 +4298,14 @@ export default function Home() {
         subtasks,
         notificationId,
         isPinned,
-        moodType
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        moodType,
+        firstAction,
+        minimumVersion,
+        startAssistUsedCount,
+        lastStartAssistAt,
+        stuckCount,
+        lastStuckAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
@@ -3980,6 +4326,12 @@ export default function Home() {
         JSON.stringify(lastDeletedTask.notificationId || []),
         lastDeletedTask.isPinned ? 1 : 0,
         lastDeletedTask.moodType || "",
+        lastDeletedTask.firstAction || "",
+        lastDeletedTask.minimumVersion || "",
+        Number(lastDeletedTask.startAssistUsedCount || 0),
+        lastDeletedTask.lastStartAssistAt || null,
+        Number(lastDeletedTask.stuckCount || 0),
+        lastDeletedTask.lastStuckAt || null,
       ]
     );
 
@@ -5576,6 +5928,13 @@ export default function Home() {
             const totalSubtasks = subtasks.length;
             const completedSubtasks = subtasks.filter((s) => s.completed).length;
             const isTaskExpanded = expandedTaskId === task.id;
+            const isFirstStepOnly = firstStepOnlyTaskId === task.id;
+            const firstIncompleteSubtask =
+              subtasks.find((subtask) => !subtask.completed) || null;
+            const firstStepText =
+              firstIncompleteSubtask?.title ||
+              (task.firstAction || "").trim() ||
+              "Choose one tiny first move.";
             const hasPendingNotification =
               Array.isArray(task.notificationId) && task.notificationId.length > 0;
             const repeatLabel = repeatLabelByTaskId[task.id] || "";
@@ -5729,6 +6088,29 @@ export default function Home() {
                             ) : null}
                           </View>
                         ) : null}
+
+                        {!task.completed ? (
+                          <TouchableOpacity
+                            accessibilityLabel="Help Me Start"
+                            accessibilityHint="Opens gentle start options for this task"
+                            activeOpacity={0.85}
+                            onPress={(event) => {
+                              event.stopPropagation?.();
+                              setStartAssistTaskId(task.id);
+                              setStartAssistMode("main");
+                              setStartAssistFirstActionDraft(task.firstAction || "");
+                              setStartAssistMinimumVersionDraft(
+                                task.minimumVersion || ""
+                              );
+                              setIsStartAssistVisible(true);
+                            }}
+                            className="self-start mt-2 px-2.5 py-1 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/75"
+                          >
+                            <Text className="text-[#D9A441] text-[9px] font-black uppercase tracking-widest">
+                              Help Me Start
+                            </Text>
+                          </TouchableOpacity>
+                        ) : null}
                       </View>
 
                       <View className="flex-row items-center">
@@ -5752,19 +6134,7 @@ export default function Home() {
                           activeOpacity={0.7}
                           onPress={(event) => {
                             event.stopPropagation?.();
-                            const repeatSettings = normalizeTaskRepeatSettings(task);
-                            setEditingTask(task);
-                            setIsEditMode(true);
-                            setTaskName(task.title);
-                            setTaskDetails(task.details || "");
-                            setScheduledDateTime(task.scheduledTime || "");
-                            setSelectedSection(task.section);
-                            setRepeatType(repeatSettings.repeatType);
-                            setRepeatDays(repeatSettings.repeatDays);
-                            setRepeatMonthlyType(repeatSettings.repeatMonthlyType);
-                            setRepeatCustomDate(repeatSettings.repeatCustomDate);
-                            setRepeatYearlyDate(repeatSettings.repeatYearlyDate);
-                            setModalVisible(true);
+                            openTaskEditor(task);
                           }}
                           className="p-1.5 mr-2 bg-[#66b9b9]/15 rounded-xl border border-[#66b9b9]/25"
                         >
@@ -5802,84 +6172,125 @@ export default function Home() {
                   </View>
                 </Pressable>
 
-                <TouchableOpacity
-                  onPress={() => toggleTaskCardExpansion(task.id)}
-                  className="mt-2 self-start flex-row items-center"
-                >
-                  <Text className="text-[#66b9b9] text-xs font-bold mr-1.5">
-                    Details
-                  </Text>
-                  <Feather
-                    name={isTaskExpanded ? "chevron-up" : "chevron-down"}
-                    size={14}
-                    color={COLORS.accent}
-                  />
-                </TouchableOpacity>
-
-                {isTaskExpanded && (
+                {isFirstStepOnly ? (
+                  <View className="mt-2 rounded-2xl border border-[#B6C26E]/35 bg-[#182419]/70 p-3">
+                    <Text className="text-[#B6C26E] text-[10px] font-black uppercase tracking-widest">
+                      First Step Only
+                    </Text>
+                    <Text className="text-[#E8F4F4] text-xs mt-1.5">
+                      {firstStepText}
+                    </Text>
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => setFirstStepOnlyTaskId(null)}
+                      className="self-start mt-2 px-3 py-1.5 rounded-full border border-[#B6C26E]/45 bg-[#2A2218]/75"
+                    >
+                      <Text className="text-[#B6C26E] text-[10px] font-black uppercase tracking-widest">
+                        Show Full Task
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
                   <>
-                    {task.details ? (
-                      <View className="mt-2 p-3 bg-[#061414]/45 rounded-2xl border border-[#337a7a]/25">
-                        <Text className="text-[#E8F4F4] text-xs leading-5">
-                          {task.details}
-                        </Text>
-                      </View>
-                    ) : null}
-
-                    <View className="pl-3 border-l-2 border-[#66b9b9]/35 my-2 mt-3">
-                      <View className="flex-row justify-between mb-2">
-                        <Text className="text-[#99bdbd] text-[10px] font-bold tracking-widest uppercase">
-                          Sub-Tasks
-                        </Text>
-                        {totalSubtasks > 0 && (
-                          <Text className="text-[#9FB5B5] text-[10px] font-bold">
-                            {completedSubtasks}/{totalSubtasks}
-                          </Text>
-                        )}
-                      </View>
-
-                      {subtasks.map((sub) => (
-                        <View
-                          key={sub.id}
-                          className="flex-row items-center mb-2"
-                        >
-                          <TouchableOpacity
-                            onPress={() => toggleSubtask(task.id, sub.id)}
-                            className={`w-4 h-4 rounded-[4px] border border-[#66b9b9] mr-2 justify-center items-center ${
-                              sub.completed ? "bg-[#66b9b9]" : "bg-transparent"
-                            }`}
-                          >
-                            {sub.completed ? (
-                              <Feather name="check" size={9} color={COLORS.bg} />
-                            ) : null}
-                          </TouchableOpacity>
-                          <Text
-                            className={`flex-1 text-xs ${
-                              sub.completed ? "text-[#9FB5B5] line-through" : "text-[#E8F4F4]"
-                            }`}
-                          >
-                            {sub.title}
-                          </Text>
-                          <TouchableOpacity
-                            onPress={() => deleteSubtask(task.id, sub.id)}
-                            className="p-1"
-                          >
-                            <Feather name="x" size={12} color={COLORS.danger} />
-                          </TouchableOpacity>
-                        </View>
-                      ))}
-
-                      <TextInput
-                        placeholder="+ Add step..."
-                        placeholderTextColor={COLORS.muted}
-                        onSubmitEditing={(e) => {
-                          addSubtask(task.id, e.nativeEvent.text);
-                          e.currentTarget.clear();
-                        }}
-                        className="text-[#E8F4F4] text-xs py-1 border-b border-[#66b9b9]/35"
+                    <TouchableOpacity
+                      onPress={() => toggleTaskCardExpansion(task.id)}
+                      className="mt-2 self-start flex-row items-center"
+                    >
+                      <Text className="text-[#66b9b9] text-xs font-bold mr-1.5">
+                        Details
+                      </Text>
+                      <Feather
+                        name={isTaskExpanded ? "chevron-up" : "chevron-down"}
+                        size={14}
+                        color={COLORS.accent}
                       />
-                    </View>
+                    </TouchableOpacity>
 
+                    {isTaskExpanded && (
+                      <>
+                        {task.details ? (
+                          <View className="mt-2 p-3 bg-[#061414]/45 rounded-2xl border border-[#337a7a]/25">
+                            <Text className="text-[#E8F4F4] text-xs leading-5">
+                              {task.details}
+                            </Text>
+                          </View>
+                        ) : null}
+
+                        {task.firstAction ? (
+                          <View className="mt-2 p-3 rounded-2xl border border-[#B6C26E]/30 bg-[#182419]/65">
+                            <Text className="text-[#B6C26E] text-[10px] font-black uppercase tracking-widest">
+                              First Small Action
+                            </Text>
+                            <Text className="text-[#E8F4F4] text-xs mt-1.5">
+                              {task.firstAction}
+                            </Text>
+                          </View>
+                        ) : null}
+
+                        {task.minimumVersion ? (
+                          <View className="mt-2 p-3 rounded-2xl border border-[#D9A441]/25 bg-[#2A2218]/65">
+                            <Text className="text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
+                              Smallest Useful Version
+                            </Text>
+                            <Text className="text-[#E8F4F4] text-xs mt-1.5">
+                              {task.minimumVersion}
+                            </Text>
+                          </View>
+                        ) : null}
+
+                        <View className="pl-3 border-l-2 border-[#66b9b9]/35 my-2 mt-3">
+                          <View className="flex-row justify-between mb-2">
+                            <Text className="text-[#99bdbd] text-[10px] font-bold tracking-widest uppercase">
+                              Sub-Tasks
+                            </Text>
+                            {totalSubtasks > 0 && (
+                              <Text className="text-[#9FB5B5] text-[10px] font-bold">
+                                {completedSubtasks}/{totalSubtasks}
+                              </Text>
+                            )}
+                          </View>
+
+                          {subtasks.map((sub) => (
+                            <View
+                              key={sub.id}
+                              className="flex-row items-center mb-2"
+                            >
+                              <TouchableOpacity
+                                onPress={() => toggleSubtask(task.id, sub.id)}
+                                className={`w-4 h-4 rounded-[4px] border border-[#66b9b9] mr-2 justify-center items-center ${
+                                  sub.completed ? "bg-[#66b9b9]" : "bg-transparent"
+                                }`}
+                              >
+                                {sub.completed ? (
+                                  <Feather name="check" size={9} color={COLORS.bg} />
+                                ) : null}
+                              </TouchableOpacity>
+                              <Text
+                                className={`flex-1 text-xs ${
+                                  sub.completed ? "text-[#9FB5B5] line-through" : "text-[#E8F4F4]"
+                                }`}
+                              >
+                                {sub.title}
+                              </Text>
+                              <TouchableOpacity
+                                onPress={() => deleteSubtask(task.id, sub.id)}
+                                className="p-1"
+                              >
+                                <Feather name="x" size={12} color={COLORS.danger} />
+                              </TouchableOpacity>
+                            </View>
+                          ))}
+
+                          <TextInput
+                            placeholder="+ Add step..."
+                            placeholderTextColor={COLORS.muted}
+                            onSubmitEditing={(e) => {
+                              addSubtask(task.id, e.nativeEvent.text);
+                              e.currentTarget.clear();
+                            }}
+                            className="text-[#E8F4F4] text-xs py-1 border-b border-[#66b9b9]/35"
+                          />
+                        </View>
                     <Animated.View
                       style={{ transform: [{ translateX: shakeAnim }] }}
                       className="flex-row mt-3 items-center flex-wrap"
@@ -6060,6 +6471,8 @@ export default function Home() {
                         )}
                       </View>
                     ) : null}
+                  </>
+                )}
                   </>
                 )}
               </Animated.View>
@@ -6489,6 +6902,268 @@ export default function Home() {
         </View>
       </Modal>
 
+      {/* Start Assist Sheet */}
+      <Modal
+        visible={isStartAssistVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeStartAssist}
+      >
+        <View className="flex-1 bg-[#061414]/90 justify-end px-4 pb-8">
+          <View className="bg-[#0B1F1F] rounded-[28px] border border-[#66b9b9]/30 p-5 shadow-2xl shadow-[#66b9b9]/15">
+            <View className="flex-row items-start justify-between">
+              <View className="flex-1 pr-3">
+                <Text className="text-[#E8F4F4] text-lg font-black">
+                  Need a gentle start?
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1" numberOfLines={2}>
+                  {startAssistTask?.title || "Task"}
+                </Text>
+                <Text className="text-[#66b9b9] text-[11px] font-semibold mt-2">
+                  Pick one tiny way in.
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={closeStartAssist}
+                className="w-8 h-8 rounded-full border border-[#337a7a]/35 bg-[#123131]/70 items-center justify-center"
+              >
+                <Feather name="x" size={14} color={COLORS.muted} />
+              </TouchableOpacity>
+            </View>
+
+            {!startAssistTask ? (
+              <View className="mt-4 rounded-2xl border border-[#337a7a]/25 bg-[#123131]/70 p-3">
+                <Text className="text-[#9FB5B5] text-xs">
+                  This task is no longer available.
+                </Text>
+              </View>
+            ) : null}
+
+            {startAssistTask && startAssistMode === "main" ? (
+              <View className="mt-4">
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistTwoMinutes}
+                  className="p-3 rounded-2xl border border-[#B6C26E]/40 bg-[#182419]/70 mb-2.5"
+                >
+                  <Text className="text-[#B6C26E] text-[11px] font-black uppercase tracking-widest">
+                    Start For 2 Minutes
+                  </Text>
+                  <Text className="text-[#E8F4F4] text-xs mt-1">
+                    One tiny action is enough.
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistShowFirstStep}
+                  className="p-3 rounded-2xl border border-[#66b9b9]/35 bg-[#123131]/75 mb-2.5"
+                >
+                  <Text className="text-[#66b9b9] text-[11px] font-black uppercase tracking-widest">
+                    Show First Step Only
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-xs mt-1" numberOfLines={1}>
+                    {startAssistFirstStepPreview}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistBreakDown}
+                  className="p-3 rounded-2xl border border-[#66b9b9]/35 bg-[#123131]/75 mb-2.5"
+                >
+                  <Text className="text-[#66b9b9] text-[11px] font-black uppercase tracking-widest">
+                    Break This Down
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-xs mt-1">
+                    Add one or two tiny steps.
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistOpenMakeEasier}
+                  className="p-3 rounded-2xl border border-[#D9A441]/35 bg-[#2A2218]/70 mb-2.5"
+                >
+                  <Text className="text-[#D9A441] text-[11px] font-black uppercase tracking-widest">
+                    Make This Easier
+                  </Text>
+                  <Text className="text-[#E8F4F4] text-xs mt-1">
+                    A smaller version still counts.
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistStuck}
+                  className="p-3 rounded-2xl border border-[#D9A441]/35 bg-[#2A2218]/70"
+                >
+                  <Text className="text-[#D9A441] text-[11px] font-black uppercase tracking-widest">
+                    I Feel Stuck
+                  </Text>
+                  <Text className="text-[#E8F4F4] text-xs mt-1">
+                    It is okay to feel stuck.
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            {startAssistTask && startAssistMode === "make-easier" ? (
+              <View className="mt-4">
+                <Text className="text-[#D9A441] text-[11px] font-black uppercase tracking-widest">
+                  What is the smallest useful version of this task?
+                </Text>
+                <Text className="text-[#E8F4F4] text-xs mt-2">
+                  You can make progress without doing the whole thing.
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1.5">
+                  What would make this feel 20% easier?
+                </Text>
+
+                <TextInput
+                  placeholder="Smallest useful version"
+                  placeholderTextColor={COLORS.muted}
+                  value={startAssistMinimumVersionDraft}
+                  onChangeText={setStartAssistMinimumVersionDraft}
+                  multiline
+                  textAlignVertical="top"
+                  className="mt-3 bg-[#061414]/45 text-[#E8F4F4] p-3 rounded-2xl border border-[#D9A441]/30 text-sm min-h-[72px]"
+                />
+
+                <View className="flex-row mt-3">
+                  <TouchableOpacity
+                    activeOpacity={0.86}
+                    onPress={handleStartAssistSaveMinimumVersion}
+                    className="flex-1 mr-2 p-3 rounded-2xl border border-[#D9A441]/45 bg-[#2A2218]/75"
+                  >
+                    <Text className="text-[#D9A441] text-center text-[10px] font-black uppercase tracking-widest">
+                      Save
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.86}
+                    onPress={() => setStartAssistMode("main")}
+                    className="flex-1 ml-2 p-3 rounded-2xl border border-[#337a7a]/35 bg-[#123131]/70"
+                  >
+                    <Text className="text-[#9FB5B5] text-center text-[10px] font-black uppercase tracking-widest">
+                      Back
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+            {startAssistTask && startAssistMode === "add-first-step" ? (
+              <View className="mt-4">
+                <Text className="text-[#B6C26E] text-[11px] font-black uppercase tracking-widest">
+                  First small action
+                </Text>
+                <Text className="text-[#E8F4F4] text-xs mt-2">
+                  Starting small still counts.
+                </Text>
+
+                <TextInput
+                  placeholder="Write one tiny first move"
+                  placeholderTextColor={COLORS.muted}
+                  value={startAssistFirstActionDraft}
+                  onChangeText={setStartAssistFirstActionDraft}
+                  className="mt-3 bg-[#061414]/45 text-[#E8F4F4] p-3 rounded-2xl border border-[#B6C26E]/30 text-sm"
+                />
+
+                <View className="flex-row mt-3">
+                  <TouchableOpacity
+                    activeOpacity={0.86}
+                    onPress={handleStartAssistSaveFirstAction}
+                    className="flex-1 mr-2 p-3 rounded-2xl border border-[#B6C26E]/45 bg-[#182419]/75"
+                  >
+                    <Text className="text-[#B6C26E] text-center text-[10px] font-black uppercase tracking-widest">
+                      Save
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.86}
+                    onPress={() => setStartAssistMode("main")}
+                    className="flex-1 ml-2 p-3 rounded-2xl border border-[#337a7a]/35 bg-[#123131]/70"
+                  >
+                    <Text className="text-[#9FB5B5] text-center text-[10px] font-black uppercase tracking-widest">
+                      Back
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+            {startAssistTask && startAssistMode === "stuck" ? (
+              <View className="mt-4">
+                <View className="rounded-2xl border border-[#B6C26E]/35 bg-[#182419]/70 p-3">
+                  <Text className="text-[#B6C26E] text-sm font-black">
+                    It is okay to feel stuck.
+                  </Text>
+                  <Text className="text-[#E8F4F4] text-xs mt-1">
+                    Let us make this smaller, not harder.
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-xs mt-2">
+                    You are not failing. The task may just need a smaller doorway.
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistOpenAddFirstStep}
+                  className="mt-3 p-3 rounded-2xl border border-[#B6C26E]/40 bg-[#182419]/70"
+                >
+                  <Text className="text-[#B6C26E] text-[11px] font-black uppercase tracking-widest">
+                    Add First Step
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistTwoMinutes}
+                  className="mt-2.5 p-3 rounded-2xl border border-[#66b9b9]/35 bg-[#123131]/75"
+                >
+                  <Text className="text-[#66b9b9] text-[11px] font-black uppercase tracking-widest">
+                    Start 2-Minute Timer
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistRescheduleLater}
+                  className="mt-2.5 p-3 rounded-2xl border border-[#D9A441]/35 bg-[#2A2218]/70"
+                >
+                  <Text className="text-[#D9A441] text-[11px] font-black uppercase tracking-widest">
+                    Move To Later Today
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleStartAssistBreakDown}
+                  className="mt-2.5 p-3 rounded-2xl border border-[#66b9b9]/35 bg-[#123131]/75"
+                >
+                  <Text className="text-[#66b9b9] text-[11px] font-black uppercase tracking-widest">
+                    Break Into Smaller Steps
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={() => setStartAssistMode("main")}
+                  className="mt-3 self-start px-3 py-1.5 rounded-full border border-[#337a7a]/35 bg-[#123131]/70"
+                >
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                    Back
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
       {/* ✅ CREATE TASK MODAL */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View className="flex-1 justify-end bg-[#061414]/95 pt-10">
@@ -6520,6 +7195,32 @@ export default function Home() {
               style={{ minHeight: 80, height: Math.max(80, detailsHeight) }}
               className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-4 border border-[#66b9b9]/25 font-medium"
             />
+
+            <TextInput
+              placeholder="First small action (optional)"
+              placeholderTextColor={COLORS.muted}
+              value={taskFirstAction}
+              onChangeText={setTaskFirstAction}
+              className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-3 border border-[#66b9b9]/20 font-medium text-sm"
+            />
+
+            <TextInput
+              placeholder="Smallest useful version (optional)"
+              placeholderTextColor={COLORS.muted}
+              value={taskMinimumVersion}
+              onChangeText={setTaskMinimumVersion}
+              multiline
+              textAlignVertical="top"
+              className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-4 border border-[#66b9b9]/20 font-medium text-sm min-h-[68px]"
+            />
+
+            {startAssistEditHint ? (
+              <View className="mb-4 rounded-2xl border border-[#B6C26E]/35 bg-[#182419]/70 p-3">
+                <Text className="text-[#B6C26E] text-[11px] font-bold">
+                  {startAssistEditHint}
+                </Text>
+              </View>
+            ) : null}
 
             <View className="flex-row justify-between mb-5 space-x-2">
               {["Morning", "Work", "Evening"].map((sec) => (
