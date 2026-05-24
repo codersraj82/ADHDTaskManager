@@ -78,6 +78,8 @@ export const buildTaskReminderPayload = ({ task, type, minutesBefore = 0 }) => {
     category: sectionName,
     taskTitle,
     minutesBefore,
+    reminderOffsetMinutes: Number(minutesBefore) || 0,
+    scheduledFor: task?.scheduledTime || "",
   };
 };
 

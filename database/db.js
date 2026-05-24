@@ -78,6 +78,18 @@ export const initDB = () => {
     { name: "lastStartAssistAt", type: "TEXT" },
     { name: "stuckCount", type: "INTEGER DEFAULT 0" },
     { name: "lastStuckAt", type: "TEXT" },
+    { name: "reminderOpenCount", type: "INTEGER DEFAULT 0" },
+    { name: "reminderStartNowCount", type: "INTEGER DEFAULT 0" },
+    { name: "reminderSnoozeCount", type: "INTEGER DEFAULT 0" },
+    { name: "reminderMoveGentlyCount", type: "INTEGER DEFAULT 0" },
+    { name: "reminderMakeSmallerCount", type: "INTEGER DEFAULT 0" },
+    { name: "lastReminderActionAt", type: "TEXT" },
+    { name: "lastReminderAction", type: "TEXT DEFAULT ''" },
+    { name: "reminderActionHistory", type: "TEXT DEFAULT '[]'" },
+    { name: "snoozeCount", type: "INTEGER DEFAULT 0" },
+    { name: "lastSnoozedAt", type: "TEXT" },
+    { name: "rescheduleCount", type: "INTEGER DEFAULT 0" },
+    { name: "lastRescheduledAt", type: "TEXT" },
   ];
 
   migrations.forEach((column) => {

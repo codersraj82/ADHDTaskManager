@@ -81,6 +81,8 @@ import {
   cancelNotificationById,
   scheduleFocusCompletionNotification,
   sendTaskCompletionNotification,
+  TASK_REMINDER_ACTIONS_CATEGORY_ID,
+  TASK_REMINDER_ACTION_IDS,
 } from "../../services/notificationService";
 import {
   speakEncouragement,
@@ -216,6 +218,15 @@ const TASK_NAVIGATION_MAX_RETRIES = 5;
 const TASK_NAVIGATION_RETRY_DELAY_MS = 130;
 const CURRENT_TASK_FAB_BREATH_MS = 2600;
 const START_ASSIST_SHORT_FOCUS_SECONDS = 120;
+const REMINDER_ACTION_HISTORY_LIMIT = 30;
+const REMINDER_ACTIONS = Object.freeze({
+  OPENED: "opened",
+  START_NOW: "start_now",
+  SNOOZE_10: "snooze_10",
+  SNOOZE_30: "snooze_30",
+  MOVE_GENTLY: "move_gently",
+  MAKE_SMALLER: "make_smaller",
+});
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -251,6 +262,27 @@ const toTaskTimestamp = (value) => {
   const parsed = parseStoredDateTime(value);
   if (!parsed) return null;
   return parsed.getTime();
+};
+
+const parseReminderActionHistory = (value) => {
+  if (Array.isArray(value)) {
+    return value.filter(Boolean).slice(-REMINDER_ACTION_HISTORY_LIMIT);
+  }
+  if (typeof value !== "string" || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter(Boolean).slice(-REMINDER_ACTION_HISTORY_LIMIT)
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+const toIsoStringOrEmpty = (value) => {
+  if (!value || typeof value !== "string") return "";
+  return value;
 };
 
 const isTimestampWithinRange = (timestamp, start, end) =>
@@ -1297,7 +1329,11 @@ export default function Home() {
   const taskHighlightLoopRef = useRef(null);
   const taskHighlightTimeoutRef = useRef(null);
   const taskNavigationTimeoutRef = useRef(null);
-  const lastHandledNotificationKeyRef = useRef("");
+  const handledNotificationResponseKeysRef = useRef(new Set());
+  const handledNotificationResponseKeyOrderRef = useRef([]);
+  const notificationActionContextRef = useRef(null);
+  const tasksRef = useRef([]);
+  const startFocusActionRef = useRef(null);
   const subtaskDragStateRef = useRef({
     taskId: null,
     subtaskId: null,
@@ -1306,6 +1342,10 @@ export default function Home() {
   });
   const startAssistVoiceHintTimeoutRef = useRef(null);
   const startAssistAutoReadKeyRef = useRef("");
+
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
 
   const saveSetting = (key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
@@ -1965,6 +2005,8 @@ export default function Home() {
 
     const adjustedDate = restrictToSection(recoveryDraftSection, parsedDraft);
     const scheduledTime = formatSqliteDateTime(adjustedDate);
+    const nowIso = new Date().toISOString();
+    const nextRescheduleCount = Number(targetTask.rescheduleCount || 0) + 1;
 
     setRecoverySavingTaskId(targetTask.id);
     try {
@@ -1980,13 +2022,17 @@ export default function Home() {
          SET section = ?,
              scheduledTime = ?,
              notificationId = ?,
-             isPinned = ?
+             isPinned = ?,
+             rescheduleCount = ?,
+             lastRescheduledAt = ?
          WHERE id = ?`,
         [
           recoveryDraftSection,
           scheduledTime,
           JSON.stringify(reminderIds),
           targetTask.isPinned ? 1 : 0,
+          nextRescheduleCount,
+          nowIso,
           targetTask.id,
         ]
       );
@@ -1999,6 +2045,8 @@ export default function Home() {
                 section: recoveryDraftSection,
                 scheduledTime,
                 notificationId: reminderIds,
+                rescheduleCount: nextRescheduleCount,
+                lastRescheduledAt: nowIso,
               }
             : task
         )
@@ -2060,7 +2108,19 @@ export default function Home() {
           startAssistUsedCount INTEGER DEFAULT 0,
           lastStartAssistAt TEXT,
           stuckCount INTEGER DEFAULT 0,
-          lastStuckAt TEXT
+          lastStuckAt TEXT,
+          reminderOpenCount INTEGER DEFAULT 0,
+          reminderStartNowCount INTEGER DEFAULT 0,
+          reminderSnoozeCount INTEGER DEFAULT 0,
+          reminderMoveGentlyCount INTEGER DEFAULT 0,
+          reminderMakeSmallerCount INTEGER DEFAULT 0,
+          lastReminderActionAt TEXT,
+          lastReminderAction TEXT,
+          reminderActionHistory TEXT DEFAULT '[]',
+          snoozeCount INTEGER DEFAULT 0,
+          lastSnoozedAt TEXT,
+          rescheduleCount INTEGER DEFAULT 0,
+          lastRescheduledAt TEXT
         );
         CREATE TABLE IF NOT EXISTS section_settings (
           section_name TEXT PRIMARY KEY,
@@ -2168,6 +2228,50 @@ export default function Home() {
         if (!columnNames.includes("lastStuckAt")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN lastStuckAt TEXT;");
         }
+        if (!columnNames.includes("reminderOpenCount")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN reminderOpenCount INTEGER DEFAULT 0;");
+        }
+        if (!columnNames.includes("reminderStartNowCount")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN reminderStartNowCount INTEGER DEFAULT 0;"
+          );
+        }
+        if (!columnNames.includes("reminderSnoozeCount")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN reminderSnoozeCount INTEGER DEFAULT 0;");
+        }
+        if (!columnNames.includes("reminderMoveGentlyCount")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN reminderMoveGentlyCount INTEGER DEFAULT 0;"
+          );
+        }
+        if (!columnNames.includes("reminderMakeSmallerCount")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN reminderMakeSmallerCount INTEGER DEFAULT 0;"
+          );
+        }
+        if (!columnNames.includes("lastReminderActionAt")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN lastReminderActionAt TEXT;");
+        }
+        if (!columnNames.includes("lastReminderAction")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN lastReminderAction TEXT;");
+        }
+        if (!columnNames.includes("reminderActionHistory")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN reminderActionHistory TEXT DEFAULT '[]';"
+          );
+        }
+        if (!columnNames.includes("snoozeCount")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN snoozeCount INTEGER DEFAULT 0;");
+        }
+        if (!columnNames.includes("lastSnoozedAt")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN lastSnoozedAt TEXT;");
+        }
+        if (!columnNames.includes("rescheduleCount")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN rescheduleCount INTEGER DEFAULT 0;");
+        }
+        if (!columnNames.includes("lastRescheduledAt")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN lastRescheduledAt TEXT;");
+        }
         db.runSync(
           `UPDATE tasks
            SET createdAt = COALESCE(NULLIF(scheduledTime, ''), NULLIF(completedAt, ''), createdAt)
@@ -2188,6 +2292,19 @@ export default function Home() {
           lastStartAssistAt: t.lastStartAssistAt || "",
           stuckCount: Number(t.stuckCount || 0),
           lastStuckAt: t.lastStuckAt || "",
+          reminderOpenCount: Number(t.reminderOpenCount || 0),
+          reminderStartNowCount: Number(t.reminderStartNowCount || 0),
+          reminderSnoozeCount: Number(t.reminderSnoozeCount || 0),
+          reminderMoveGentlyCount: Number(t.reminderMoveGentlyCount || 0),
+          reminderMakeSmallerCount: Number(t.reminderMakeSmallerCount || 0),
+          lastReminderActionAt: toIsoStringOrEmpty(t.lastReminderActionAt),
+          lastReminderAction:
+            typeof t.lastReminderAction === "string" ? t.lastReminderAction : "",
+          reminderActionHistory: parseReminderActionHistory(t.reminderActionHistory),
+          snoozeCount: Number(t.snoozeCount || 0),
+          lastSnoozedAt: toIsoStringOrEmpty(t.lastSnoozedAt),
+          rescheduleCount: Number(t.rescheduleCount || 0),
+          lastRescheduledAt: toIsoStringOrEmpty(t.lastRescheduledAt),
           repeatType: normalizeRepeatType(t.repeatType),
           repeatDays: parseRepeatDays(t.repeatDays),
           repeatMonthlyType: t.repeatMonthlyType || "",
@@ -2332,6 +2449,230 @@ export default function Home() {
     initializeApp();
   }, [clearPersistedFocusTimerState, loadDailyMoodEntries]);
 
+  const hasHandledNotificationResponse = useCallback((dedupeKey = "") => {
+    if (!dedupeKey) return false;
+    return handledNotificationResponseKeysRef.current.has(dedupeKey);
+  }, []);
+
+  const markNotificationResponseHandled = useCallback((dedupeKey = "") => {
+    if (!dedupeKey) return;
+    if (handledNotificationResponseKeysRef.current.has(dedupeKey)) return;
+
+    handledNotificationResponseKeysRef.current.add(dedupeKey);
+    handledNotificationResponseKeyOrderRef.current.push(dedupeKey);
+
+    if (handledNotificationResponseKeyOrderRef.current.length > 80) {
+      const evicted = handledNotificationResponseKeyOrderRef.current.shift();
+      if (evicted) {
+        handledNotificationResponseKeysRef.current.delete(evicted);
+      }
+    }
+  }, []);
+
+  const trackReminderAction = useCallback((taskId, action, metadata = {}) => {
+    const numericTaskId = Number(taskId);
+    if (!Number.isFinite(numericTaskId) || !action) return false;
+
+    const allTasks = Array.isArray(tasksRef.current) ? tasksRef.current : [];
+    const currentTask = allTasks.find((task) => task.id === numericTaskId);
+    if (!currentTask || currentTask.completed) return false;
+
+    const nowIso =
+      typeof metadata.at === "string" && metadata.at.trim()
+        ? metadata.at.trim()
+        : new Date().toISOString();
+    const isSnoozeAction =
+      action === REMINDER_ACTIONS.SNOOZE_10 ||
+      action === REMINDER_ACTIONS.SNOOZE_30;
+
+    const reminderOffsetRaw =
+      metadata.reminderOffsetMinutes ?? metadata.minutesBefore;
+    const reminderOffsetMinutes = Number.isFinite(Number(reminderOffsetRaw))
+      ? Number(reminderOffsetRaw)
+      : undefined;
+
+    const historyEntry = {
+      id: `${metadata.notificationId || numericTaskId}:${action}:${nowIso}`,
+      action,
+      at: nowIso,
+      notificationId: metadata.notificationId || undefined,
+      reminderOffsetMinutes,
+      source: metadata.source || "notificationAction",
+    };
+
+    const nextTask = {
+      ...currentTask,
+      reminderOpenCount:
+        action === REMINDER_ACTIONS.OPENED
+          ? Number(currentTask.reminderOpenCount || 0) + 1
+          : Number(currentTask.reminderOpenCount || 0),
+      reminderStartNowCount:
+        action === REMINDER_ACTIONS.START_NOW
+          ? Number(currentTask.reminderStartNowCount || 0) + 1
+          : Number(currentTask.reminderStartNowCount || 0),
+      reminderSnoozeCount: isSnoozeAction
+        ? Number(currentTask.reminderSnoozeCount || 0) + 1
+        : Number(currentTask.reminderSnoozeCount || 0),
+      reminderMoveGentlyCount:
+        action === REMINDER_ACTIONS.MOVE_GENTLY
+          ? Number(currentTask.reminderMoveGentlyCount || 0) + 1
+          : Number(currentTask.reminderMoveGentlyCount || 0),
+      reminderMakeSmallerCount:
+        action === REMINDER_ACTIONS.MAKE_SMALLER
+          ? Number(currentTask.reminderMakeSmallerCount || 0) + 1
+          : Number(currentTask.reminderMakeSmallerCount || 0),
+      lastReminderAction: action,
+      lastReminderActionAt: nowIso,
+      reminderActionHistory: [
+        ...parseReminderActionHistory(currentTask.reminderActionHistory),
+        historyEntry,
+      ].slice(-REMINDER_ACTION_HISTORY_LIMIT),
+      snoozeCount: isSnoozeAction
+        ? Number(currentTask.snoozeCount || 0) + 1
+        : Number(currentTask.snoozeCount || 0),
+      lastSnoozedAt: isSnoozeAction
+        ? nowIso
+        : toIsoStringOrEmpty(currentTask.lastSnoozedAt),
+      rescheduleCount: Number(currentTask.rescheduleCount || 0),
+      lastRescheduledAt: toIsoStringOrEmpty(currentTask.lastRescheduledAt),
+    };
+
+    try {
+      db.runSync(
+        `UPDATE tasks
+         SET reminderOpenCount = ?,
+             reminderStartNowCount = ?,
+             reminderSnoozeCount = ?,
+             reminderMoveGentlyCount = ?,
+             reminderMakeSmallerCount = ?,
+             lastReminderAction = ?,
+             lastReminderActionAt = ?,
+             reminderActionHistory = ?,
+             snoozeCount = ?,
+             lastSnoozedAt = ?,
+             rescheduleCount = ?,
+             lastRescheduledAt = ?
+         WHERE id = ?`,
+        [
+          Number(nextTask.reminderOpenCount || 0),
+          Number(nextTask.reminderStartNowCount || 0),
+          Number(nextTask.reminderSnoozeCount || 0),
+          Number(nextTask.reminderMoveGentlyCount || 0),
+          Number(nextTask.reminderMakeSmallerCount || 0),
+          nextTask.lastReminderAction || "",
+          nextTask.lastReminderActionAt || null,
+          JSON.stringify(nextTask.reminderActionHistory || []),
+          Number(nextTask.snoozeCount || 0),
+          nextTask.lastSnoozedAt || null,
+          Number(nextTask.rescheduleCount || 0),
+          nextTask.lastRescheduledAt || null,
+          numericTaskId,
+        ]
+      );
+    } catch (error) {
+      console.log("Reminder tracking update error:", error);
+    }
+
+    setTasks((prev) =>
+      prev.map((task) => (task.id === numericTaskId ? nextTask : task))
+    );
+    return true;
+  }, []);
+
+  const handleSnoozeTaskReminder = useCallback(
+    async (taskId, minutes, metadata = {}) => {
+      const numericTaskId = Number(taskId);
+      const snoozeMinutes = Number(minutes);
+      if (
+        !Number.isFinite(numericTaskId) ||
+        !Number.isFinite(snoozeMinutes) ||
+        snoozeMinutes <= 0
+      ) {
+        return null;
+      }
+
+      const allTasks = Array.isArray(tasksRef.current) ? tasksRef.current : [];
+      const targetTask = allTasks.find((task) => task.id === numericTaskId);
+      if (!targetTask || targetTask.completed) return null;
+
+      const reminderDate = new Date(Date.now() + snoozeMinutes * 60 * 1000);
+      const taskTitle =
+        typeof targetTask.title === "string" && targetTask.title.trim()
+          ? targetTask.title.trim()
+          : "Task";
+
+      const contentTitle =
+        snoozeMinutes === 30 ? "Still here gently" : "Gentle reminder";
+      const contentBody =
+        snoozeMinutes === 30
+          ? "Still waiting gently. Want to try the smallest version?"
+          : "Gentle reminder again. Start with one tiny step.";
+
+      const reminderData = {
+        ...(metadata.originalData || {}),
+        type: "taskReminder",
+        taskId: numericTaskId,
+        sectionId:
+          metadata.sectionId ||
+          metadata.section ||
+          targetTask.section ||
+          null,
+        category:
+          metadata.category ||
+          metadata.section ||
+          targetTask.section ||
+          null,
+        taskTitle: metadata.taskTitle || taskTitle,
+        reminderOffsetMinutes: 0,
+        minutesBefore: 0,
+        source: "snooze",
+        snoozeMinutes,
+        originalNotificationId: metadata.notificationId || undefined,
+      };
+
+      try {
+        return await Notifications.scheduleNotificationAsync({
+          content: {
+            title: contentTitle,
+            body: contentBody,
+            sound: "default",
+            data: reminderData,
+            categoryIdentifier: TASK_REMINDER_ACTIONS_CATEGORY_ID,
+            priority: Notifications.AndroidNotificationPriority.MAX,
+            vibrate: [0, 250, 250, 250],
+            android: {
+              channelId: "adhd-alarms",
+              color: COLORS.accent,
+              pressAction: {
+                id: "default",
+              },
+            },
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: reminderDate,
+          },
+        });
+      } catch (error) {
+        console.log("Snooze schedule error:", error);
+        return null;
+      }
+    },
+    []
+  );
+
+  const queueNotificationTaskNavigation = useCallback((payload, actionMeta = {}) => {
+    if (!payload?.taskId) return false;
+    notificationActionContextRef.current = actionMeta;
+    setPendingNotificationTaskTarget({
+      ...payload,
+      handled: false,
+      actionIdentifier: actionMeta.actionIdentifier || null,
+      reminderAction: actionMeta.reminderAction || null,
+    });
+    return true;
+  }, []);
+
   useEffect(() => {
     const checkSystemSchedule = async () => {
       try {
@@ -2366,20 +2707,105 @@ export default function Home() {
         response?.notification?.request?.content || null
       );
 
-      const payload = extractTaskNavigationPayload(
-        response?.notification?.request?.content?.data || {}
-      );
-      if (!payload?.taskId) return;
-
+      const data = response?.notification?.request?.content?.data || {};
+      const payload = extractTaskNavigationPayload(data);
+      const actionIdentifier =
+        response?.actionIdentifier || Notifications.DEFAULT_ACTION_IDENTIFIER;
       const notificationIdentifier =
         response?.notification?.request?.identifier || "";
-      const dedupeKey = `${notificationIdentifier}:${payload.taskId}`;
-      if (lastHandledNotificationKeyRef.current === dedupeKey) return;
+      const dedupeTaskId = payload?.taskId ?? data?.taskId ?? "unknown-task";
+      const dedupeKey = `${notificationIdentifier}:${actionIdentifier}:${dedupeTaskId}`;
+      if (hasHandledNotificationResponse(dedupeKey)) return;
+      markNotificationResponseHandled(dedupeKey);
 
-      lastHandledNotificationKeyRef.current = dedupeKey;
-      setPendingNotificationTaskTarget({
-        ...payload,
-        handled: false,
+      const isTaskReminderType = data?.type === "taskReminder";
+
+      if (!isTaskReminderType) {
+        if (payload?.taskId) {
+          queueNotificationTaskNavigation(payload, {
+            actionIdentifier,
+            reminderAction: null,
+            taskId: payload.taskId,
+            notificationId: notificationIdentifier,
+            source: "notification",
+          });
+        }
+        void Notifications.clearLastNotificationResponseAsync().catch(() => null);
+        return;
+      }
+
+      if (!payload?.taskId) {
+        void Notifications.clearLastNotificationResponseAsync().catch(() => null);
+        return;
+      }
+
+      const trackingMetadata = {
+        notificationId: notificationIdentifier,
+        reminderOffsetMinutes:
+          data?.reminderOffsetMinutes ?? data?.minutesBefore ?? undefined,
+        source:
+          actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER
+            ? "notification"
+            : "notificationAction",
+      };
+
+      if (actionIdentifier === TASK_REMINDER_ACTION_IDS.SNOOZE_10) {
+        trackReminderAction(
+          payload.taskId,
+          REMINDER_ACTIONS.SNOOZE_10,
+          trackingMetadata
+        );
+        void handleSnoozeTaskReminder(payload.taskId, 10, {
+          ...data,
+          originalData: data,
+          notificationId: notificationIdentifier,
+          sectionId: payload.sectionId || data?.sectionId,
+          section: data?.section || data?.category,
+          category: data?.category || payload.sectionId,
+          taskTitle: payload.taskTitle || data?.taskTitle,
+        });
+        void Notifications.clearLastNotificationResponseAsync().catch(() => null);
+        return;
+      }
+
+      if (actionIdentifier === TASK_REMINDER_ACTION_IDS.SNOOZE_30) {
+        trackReminderAction(
+          payload.taskId,
+          REMINDER_ACTIONS.SNOOZE_30,
+          trackingMetadata
+        );
+        void handleSnoozeTaskReminder(payload.taskId, 30, {
+          ...data,
+          originalData: data,
+          notificationId: notificationIdentifier,
+          sectionId: payload.sectionId || data?.sectionId,
+          section: data?.section || data?.category,
+          category: data?.category || payload.sectionId,
+          taskTitle: payload.taskTitle || data?.taskTitle,
+        });
+        void Notifications.clearLastNotificationResponseAsync().catch(() => null);
+        return;
+      }
+
+      let reminderAction = REMINDER_ACTIONS.OPENED;
+      if (actionIdentifier === TASK_REMINDER_ACTION_IDS.START_NOW) {
+        reminderAction = REMINDER_ACTIONS.START_NOW;
+      } else if (actionIdentifier === TASK_REMINDER_ACTION_IDS.MOVE_GENTLY) {
+        reminderAction = REMINDER_ACTIONS.MOVE_GENTLY;
+      } else if (actionIdentifier === TASK_REMINDER_ACTION_IDS.MAKE_SMALLER) {
+        reminderAction = REMINDER_ACTIONS.MAKE_SMALLER;
+      } else if (actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) {
+        reminderAction = REMINDER_ACTIONS.OPENED;
+      }
+
+      trackReminderAction(payload.taskId, reminderAction, trackingMetadata);
+      queueNotificationTaskNavigation(payload, {
+        actionIdentifier,
+        reminderAction,
+        taskId: payload.taskId,
+        taskTitle: payload.taskTitle || data?.taskTitle || "",
+        notificationId: notificationIdentifier,
+        sectionId: payload.sectionId || data?.sectionId || data?.section || "",
       });
 
       void Notifications.clearLastNotificationResponseAsync().catch(() => null);
@@ -2404,7 +2830,14 @@ export default function Home() {
       receivedSubscription.remove();
       responseSubscription.remove();
     };
-  }, [speakNotificationReminder]);
+  }, [
+    handleSnoozeTaskReminder,
+    hasHandledNotificationResponse,
+    markNotificationResponseHandled,
+    queueNotificationTaskNavigation,
+    speakNotificationReminder,
+    trackReminderAction,
+  ]);
 
   useEffect(() => {
     if (
@@ -2995,6 +3428,18 @@ export default function Home() {
           lastStartAssistAt: nextTask.lastStartAssistAt || "",
           stuckCount: Number(nextTask.stuckCount || 0),
           lastStuckAt: nextTask.lastStuckAt || "",
+          reminderOpenCount: 0,
+          reminderStartNowCount: 0,
+          reminderSnoozeCount: 0,
+          reminderMoveGentlyCount: 0,
+          reminderMakeSmallerCount: 0,
+          lastReminderActionAt: "",
+          lastReminderAction: "",
+          reminderActionHistory: [],
+          snoozeCount: 0,
+          lastSnoozedAt: "",
+          rescheduleCount: 0,
+          lastRescheduledAt: "",
         },
       ]);
   };
@@ -3224,6 +3669,18 @@ export default function Home() {
           lastStartAssistAt: task.lastStartAssistAt || "",
           stuckCount: Number(task.stuckCount || 0),
           lastStuckAt: task.lastStuckAt || "",
+          reminderOpenCount: 0,
+          reminderStartNowCount: 0,
+          reminderSnoozeCount: 0,
+          reminderMoveGentlyCount: 0,
+          reminderMakeSmallerCount: 0,
+          lastReminderActionAt: "",
+          lastReminderAction: "",
+          reminderActionHistory: [],
+          snoozeCount: 0,
+          lastSnoozedAt: "",
+          rescheduleCount: 0,
+          lastRescheduledAt: "",
         },
       ]);
 
@@ -3342,6 +3799,7 @@ export default function Home() {
       });
     }, 100);
   };
+  startFocusActionRef.current = startFocus;
 
   const toggleTimer = () => {
     if (!activeTaskId) return;
@@ -3624,8 +4082,13 @@ export default function Home() {
 
     const taskId = pendingNotificationTaskTarget.taskId;
     const task = tasks.find((row) => row.id === taskId);
+    const pendingAction =
+      pendingNotificationTaskTarget.reminderAction ||
+      notificationActionContextRef.current?.reminderAction ||
+      null;
 
     if (!task || task.completed) {
+      notificationActionContextRef.current = null;
       setPendingNotificationTaskTarget(null);
       return;
     }
@@ -3637,14 +4100,47 @@ export default function Home() {
     const didNavigate = focusTaskById(task.id, {
       highlight: true,
       onComplete: () => {
+        if (pendingAction === REMINDER_ACTIONS.START_NOW) {
+          setFirstStepOnlyTaskId(null);
+          startFocusActionRef.current?.(
+            task.id,
+            START_ASSIST_SHORT_FOCUS_SECONDS
+          );
+          setRecoverySuccessMessage("Just 2 minutes. Starting counts.");
+        }
+
+        if (pendingAction === REMINDER_ACTIONS.MOVE_GENTLY) {
+          setFirstStepOnlyTaskId(null);
+          startRecoveryEdit(task);
+          setRecoveryModalVisible(true);
+          setRecoverySuccessMessage("Moved gently. No reset needed.");
+        }
+
+        if (pendingAction === REMINDER_ACTIONS.MAKE_SMALLER) {
+          setFirstStepOnlyTaskId(null);
+          setStartAssistTaskId(task.id);
+          setStartAssistMode("make-easier");
+          setStartAssistFirstActionDraft(task.firstAction || "");
+          setStartAssistBreakdownDraft("");
+          setStartAssistMinimumVersionDraft(task.minimumVersion || "");
+          setIsStartAssistVisible(true);
+        }
+
+        notificationActionContextRef.current = null;
         setPendingNotificationTaskTarget(null);
       },
     });
 
     if (!didNavigate) {
+      notificationActionContextRef.current = null;
       setPendingNotificationTaskTarget(null);
     }
-  }, [focusTaskById, pendingNotificationTaskTarget, tasks]);
+  }, [
+    focusTaskById,
+    pendingNotificationTaskTarget,
+    startRecoveryEdit,
+    tasks,
+  ]);
 
   const toggleDailyMoodSection = useCallback(() => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -4394,6 +4890,18 @@ export default function Home() {
         lastStartAssistAt: "",
         stuckCount: 0,
         lastStuckAt: "",
+        reminderOpenCount: 0,
+        reminderStartNowCount: 0,
+        reminderSnoozeCount: 0,
+        reminderMoveGentlyCount: 0,
+        reminderMakeSmallerCount: 0,
+        lastReminderActionAt: "",
+        lastReminderAction: "",
+        reminderActionHistory: [],
+        snoozeCount: 0,
+        lastSnoozedAt: "",
+        rescheduleCount: 0,
+        lastRescheduledAt: "",
       },
     ]);
 
@@ -4528,8 +5036,20 @@ export default function Home() {
         startAssistUsedCount,
         lastStartAssistAt,
         stuckCount,
-        lastStuckAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        lastStuckAt,
+        reminderOpenCount,
+        reminderStartNowCount,
+        reminderSnoozeCount,
+        reminderMoveGentlyCount,
+        reminderMakeSmallerCount,
+        lastReminderActionAt,
+        lastReminderAction,
+        reminderActionHistory,
+        snoozeCount,
+        lastSnoozedAt,
+        rescheduleCount,
+        lastRescheduledAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
@@ -4556,6 +5076,20 @@ export default function Home() {
         lastDeletedTask.lastStartAssistAt || null,
         Number(lastDeletedTask.stuckCount || 0),
         lastDeletedTask.lastStuckAt || null,
+        Number(lastDeletedTask.reminderOpenCount || 0),
+        Number(lastDeletedTask.reminderStartNowCount || 0),
+        Number(lastDeletedTask.reminderSnoozeCount || 0),
+        Number(lastDeletedTask.reminderMoveGentlyCount || 0),
+        Number(lastDeletedTask.reminderMakeSmallerCount || 0),
+        lastDeletedTask.lastReminderActionAt || null,
+        lastDeletedTask.lastReminderAction || "",
+        JSON.stringify(
+          parseReminderActionHistory(lastDeletedTask.reminderActionHistory)
+        ),
+        Number(lastDeletedTask.snoozeCount || 0),
+        lastDeletedTask.lastSnoozedAt || null,
+        Number(lastDeletedTask.rescheduleCount || 0),
+        lastDeletedTask.lastRescheduledAt || null,
       ]
     );
 
@@ -5180,10 +5714,9 @@ export default function Home() {
 
     for (let mins of intervals) {
       const triggerDate = new Date(taskDate.getTime() - mins * 60000);
-      const notificationType = mins === 0 ? "reminder-alert" : "task-reminder";
       const reminderPayload = buildTaskReminderPayload({
         task,
-        type: notificationType,
+        type: "taskReminder",
         minutesBefore: mins,
       });
 
@@ -5195,6 +5728,7 @@ export default function Home() {
             body: getAffirmativeMessage(taskTitle, taskDate.toLocaleString(), mins),
             sound: "default",
             data: reminderPayload,
+            categoryIdentifier: TASK_REMINDER_ACTIONS_CATEGORY_ID,
 
             priority: Notifications.AndroidNotificationPriority.MAX,
 

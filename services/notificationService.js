@@ -6,6 +6,16 @@ import {
 import { getRandomAffirmation } from "../utils/getRandomAffirmation";
 
 const DEFAULT_CHANNEL_ID = "adhd-alarms";
+export const TASK_REMINDER_ACTIONS_CATEGORY_ID = "TASK_REMINDER_ACTIONS";
+export const TASK_REMINDER_ACTION_IDS = Object.freeze({
+  START_NOW: "START_NOW",
+  SNOOZE_10: "SNOOZE_10",
+  SNOOZE_30: "SNOOZE_30",
+  MOVE_GENTLY: "MOVE_GENTLY",
+  MAKE_SMALLER: "MAKE_SMALLER",
+});
+
+let hasRegisteredTaskReminderActions = false;
 
 const getTaskLabel = (taskTitle = "") => {
   const safeTitle = typeof taskTitle === "string" ? taskTitle.trim() : "";
@@ -15,6 +25,48 @@ const getTaskLabel = (taskTitle = "") => {
 const baseAndroidConfig = {
   channelId: DEFAULT_CHANNEL_ID,
   pressAction: { id: "default" },
+};
+
+export const registerTaskReminderActions = async () => {
+  if (hasRegisteredTaskReminderActions) return true;
+
+  try {
+    await Notifications.setNotificationCategoryAsync(
+      TASK_REMINDER_ACTIONS_CATEGORY_ID,
+      [
+        {
+          identifier: TASK_REMINDER_ACTION_IDS.START_NOW,
+          buttonTitle: "Start now",
+          options: { opensAppToForeground: true },
+        },
+        {
+          identifier: TASK_REMINDER_ACTION_IDS.SNOOZE_10,
+          buttonTitle: "Snooze 10",
+          options: { opensAppToForeground: false },
+        },
+        {
+          identifier: TASK_REMINDER_ACTION_IDS.SNOOZE_30,
+          buttonTitle: "Snooze 30",
+          options: { opensAppToForeground: false },
+        },
+        {
+          identifier: TASK_REMINDER_ACTION_IDS.MOVE_GENTLY,
+          buttonTitle: "Move gently",
+          options: { opensAppToForeground: true },
+        },
+        {
+          identifier: TASK_REMINDER_ACTION_IDS.MAKE_SMALLER,
+          buttonTitle: "Make smaller",
+          options: { opensAppToForeground: true },
+        },
+      ]
+    );
+    hasRegisteredTaskReminderActions = true;
+    return true;
+  } catch (error) {
+    console.log("Task reminder category registration error:", error);
+    return false;
+  }
 };
 
 export const scheduleFocusCompletionNotification = async ({
