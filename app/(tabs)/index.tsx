@@ -343,9 +343,15 @@ export default function Home() {
   const [startAssistMode, setStartAssistMode] = useState("main");
   const [startAssistFirstActionDraft, setStartAssistFirstActionDraft] =
     useState("");
+  const [startAssistBreakdownDraft, setStartAssistBreakdownDraft] =
+    useState("");
   const [startAssistMinimumVersionDraft, setStartAssistMinimumVersionDraft] =
     useState("");
   const [startAssistEditHint, setStartAssistEditHint] = useState("");
+  const [editingSubtaskTaskId, setEditingSubtaskTaskId] = useState(null);
+  const [editingSubtaskId, setEditingSubtaskId] = useState(null);
+  const [editingSubtaskDraft, setEditingSubtaskDraft] = useState("");
+  const [draggingSubtaskKey, setDraggingSubtaskKey] = useState("");
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
   const [timeError, setTimeError] = useState(false);
@@ -1292,6 +1298,12 @@ export default function Home() {
   const taskHighlightTimeoutRef = useRef(null);
   const taskNavigationTimeoutRef = useRef(null);
   const lastHandledNotificationKeyRef = useRef("");
+  const subtaskDragStateRef = useRef({
+    taskId: null,
+    subtaskId: null,
+    index: -1,
+    deltaY: 0,
+  });
   const startAssistVoiceHintTimeoutRef = useRef(null);
   const startAssistAutoReadKeyRef = useRef("");
 
@@ -3754,6 +3766,7 @@ export default function Home() {
     setStartAssistTaskId(null);
     setStartAssistMode("main");
     setStartAssistFirstActionDraft("");
+    setStartAssistBreakdownDraft("");
     setStartAssistMinimumVersionDraft("");
     startAssistAutoReadKeyRef.current = "";
     clearStartAssistVoiceHint();
@@ -3851,10 +3864,10 @@ export default function Home() {
   const handleStartAssistBreakDown = useCallback(() => {
     if (!startAssistTask) return;
     markStartAssistUsage(startAssistTask.id);
-    closeStartAssist();
     setFirstStepOnlyTaskId(null);
-    openTaskEditor(startAssistTask, "Add one or two tiny steps.");
-  }, [closeStartAssist, markStartAssistUsage, openTaskEditor, startAssistTask]);
+    setStartAssistBreakdownDraft("");
+    setStartAssistMode("breakdown");
+  }, [markStartAssistUsage, startAssistTask]);
 
   const handleStartAssistSaveMinimumVersion = useCallback(() => {
     if (!startAssistTaskId) return;
@@ -3869,18 +3882,31 @@ export default function Home() {
     startAssistTaskId,
   ]);
 
-  const handleStartAssistSaveFirstAction = useCallback(() => {
+  const handleStartAssistSaveFirstAction = () => {
     if (!startAssistTaskId) return;
     const normalized = (startAssistFirstActionDraft || "").trim();
     persistStartAssistTaskFields(startAssistTaskId, {
       firstAction: normalized,
     });
+    if (normalized) {
+      addSubtask(startAssistTaskId, normalized, {
+        prepend: true,
+        skipDuplicate: true,
+      });
+    }
     setStartAssistMode("main");
-  }, [
-    persistStartAssistTaskFields,
-    startAssistFirstActionDraft,
-    startAssistTaskId,
-  ]);
+  };
+
+  const handleStartAssistAddBreakdownSubtask = () => {
+    if (!startAssistTaskId) return;
+    const normalized = (startAssistBreakdownDraft || "").trim();
+    if (!normalized) return;
+    addSubtask(startAssistTaskId, normalized, {
+      prepend: false,
+      skipDuplicate: true,
+    });
+    setStartAssistBreakdownDraft("");
+  };
 
   const handleStartAssistOpenMakeEasier = useCallback(() => {
     if (!startAssistTask) return;
@@ -4098,6 +4124,17 @@ export default function Home() {
 
     const normalizedFirstAction = (taskFirstAction || "").trim();
     const normalizedMinimumVersion = (taskMinimumVersion || "").trim();
+    const baseSubtasks =
+      isEditMode && Array.isArray(editingTask?.subtasks) ? editingTask.subtasks : [];
+    const firstActionAlreadyInSubtasks = baseSubtasks.some(
+      (subtask) =>
+        normalizeSubtaskTitle(subtask?.title || "").toLowerCase() ===
+        normalizeSubtaskTitle(normalizedFirstAction).toLowerCase()
+    );
+    const subtasksToSave =
+      normalizedFirstAction && !firstActionAlreadyInSubtasks
+        ? [buildSubtask(normalizedFirstAction), ...baseSubtasks]
+        : baseSubtasks;
 
     return {
       finalTime,
@@ -4108,8 +4145,7 @@ export default function Home() {
       repeatYearlyDate: normalizedYearlyDate,
       firstAction: normalizedFirstAction,
       minimumVersion: normalizedMinimumVersion,
-      subtasksToSave:
-        isEditMode && editingTask?.subtasks ? editingTask.subtasks : [],
+      subtasksToSave,
     };
   };
   const executeTaskSave = async (scope = "single", explicitDraft = null) => {
@@ -4937,17 +4973,40 @@ export default function Home() {
     }
   };
 
-  const addSubtask = (taskId, title) => {
-    if (!title.trim()) return;
+  const normalizeSubtaskTitle = (value = "") =>
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const buildSubtask = (title = "") => ({
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    title,
+    completed: false,
+  });
+
+  const addSubtask = (taskId, title, options = {}) => {
+    const normalizedTitle = normalizeSubtaskTitle(title);
+    if (!normalizedTitle) return;
+
+    const { prepend = false, skipDuplicate = true } = options;
     setTasks((prev) =>
       prev.map((task) => {
-        if (task.id === taskId) {
-          const newSubtask = { id: Date.now(), title, completed: false };
-          const updatedSubtasks = [...(task.subtasks || []), newSubtask];
-          updateSubtasksInDB(taskId, updatedSubtasks);
-          return { ...task, subtasks: updatedSubtasks };
-        }
-        return task;
+        if (task.id !== taskId) return task;
+
+        const currentSubtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+        const hasDuplicate = currentSubtasks.some(
+          (subtask) =>
+            normalizeSubtaskTitle(subtask?.title || "").toLowerCase() ===
+            normalizedTitle.toLowerCase()
+        );
+        if (skipDuplicate && hasDuplicate) return task;
+
+        const nextSubtask = buildSubtask(normalizedTitle);
+        const updatedSubtasks = prepend
+          ? [nextSubtask, ...currentSubtasks]
+          : [...currentSubtasks, nextSubtask];
+        updateSubtasksInDB(taskId, updatedSubtasks);
+        return { ...task, subtasks: updatedSubtasks };
       })
     );
   };
@@ -4965,6 +5024,120 @@ export default function Home() {
         return task;
       })
     );
+  };
+
+  const updateSubtaskTitle = (taskId, subtaskId, nextTitle) => {
+    const normalizedTitle = normalizeSubtaskTitle(nextTitle);
+    if (!normalizedTitle) return;
+
+    setTasks((prev) =>
+      prev.map((task) => {
+        if (task.id !== taskId) return task;
+
+        const currentSubtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+        const duplicateExists = currentSubtasks.some(
+          (subtask) =>
+            subtask.id !== subtaskId &&
+            normalizeSubtaskTitle(subtask?.title || "").toLowerCase() ===
+              normalizedTitle.toLowerCase()
+        );
+        if (duplicateExists) return task;
+
+        const updatedSubtasks = currentSubtasks.map((subtask) =>
+          subtask.id === subtaskId ? { ...subtask, title: normalizedTitle } : subtask
+        );
+        updateSubtasksInDB(taskId, updatedSubtasks);
+        return { ...task, subtasks: updatedSubtasks };
+      })
+    );
+  };
+
+  const moveSubtask = (taskId, fromIndex, toIndex) => {
+    setTasks((prev) =>
+      prev.map((task) => {
+        if (task.id !== taskId) return task;
+
+        const currentSubtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+        if (!currentSubtasks.length) return task;
+
+        const safeFrom = Math.max(0, Math.min(fromIndex, currentSubtasks.length - 1));
+        const safeTo = Math.max(0, Math.min(toIndex, currentSubtasks.length - 1));
+        if (safeFrom === safeTo) return task;
+
+        const reordered = [...currentSubtasks];
+        const [moved] = reordered.splice(safeFrom, 1);
+        reordered.splice(safeTo, 0, moved);
+        updateSubtasksInDB(taskId, reordered);
+        return { ...task, subtasks: reordered };
+      })
+    );
+  };
+
+  const startSubtaskEditing = (taskId, subtask) => {
+    setEditingSubtaskTaskId(taskId);
+    setEditingSubtaskId(subtask?.id ?? null);
+    setEditingSubtaskDraft(subtask?.title || "");
+  };
+
+  const cancelSubtaskEditing = () => {
+    setEditingSubtaskTaskId(null);
+    setEditingSubtaskId(null);
+    setEditingSubtaskDraft("");
+  };
+
+  const saveSubtaskEditing = () => {
+    if (!editingSubtaskTaskId || !editingSubtaskId) return;
+    updateSubtaskTitle(editingSubtaskTaskId, editingSubtaskId, editingSubtaskDraft);
+    cancelSubtaskEditing();
+  };
+
+  const handleSubtaskDragStart = (taskId, subtaskId, index, startPageY = 0) => {
+    subtaskDragStateRef.current = {
+      taskId,
+      subtaskId,
+      index,
+      startPageY,
+      deltaY: 0,
+    };
+    setDraggingSubtaskKey(`${taskId}:${subtaskId}`);
+  };
+
+  const handleSubtaskDragMove = (currentPageY = 0) => {
+    const state = subtaskDragStateRef.current;
+    if (!state?.taskId || !state?.subtaskId) return;
+    state.deltaY = currentPageY - Number(state.startPageY || 0);
+    subtaskDragStateRef.current = state;
+  };
+
+  const resetSubtaskDrag = () => {
+    subtaskDragStateRef.current = {
+      taskId: null,
+      subtaskId: null,
+      index: -1,
+      deltaY: 0,
+    };
+    setDraggingSubtaskKey("");
+  };
+
+  const handleSubtaskDragRelease = () => {
+    const state = subtaskDragStateRef.current;
+    const hasDragTarget = state?.taskId && Number.isFinite(state.index);
+    const deltaY = Number(state?.deltaY || 0);
+
+    if (!hasDragTarget) {
+      resetSubtaskDrag();
+      return;
+    }
+
+    // gentle threshold so accidental taps don't reorder subtasks
+    if (Math.abs(deltaY) > 18) {
+      const approximateSteps = Math.round(deltaY / 32);
+      if (approximateSteps !== 0) {
+        moveSubtask(state.taskId, state.index, state.index + approximateSteps);
+      }
+    }
+
+    resetSubtaskDrag();
   };
 
   const deleteSubtask = (taskId, subtaskId) => {
@@ -6300,6 +6473,7 @@ export default function Home() {
                               setStartAssistTaskId(task.id);
                               setStartAssistMode("main");
                               setStartAssistFirstActionDraft(task.firstAction || "");
+                              setStartAssistBreakdownDraft("");
                               setStartAssistMinimumVersionDraft(
                                 task.minimumVersion || ""
                               );
@@ -6464,37 +6638,116 @@ export default function Home() {
                               </Text>
                             )}
                           </View>
+                          {totalSubtasks > 1 ? (
+                            <Text className="text-[#9FB5B5] text-[9px] font-semibold mb-2">
+                              Drag steps up or down to reorder.
+                            </Text>
+                          ) : null}
 
-                          {subtasks.map((sub) => (
-                            <View
-                              key={sub.id}
-                              className="flex-row items-center mb-2"
-                            >
-                              <TouchableOpacity
-                                onPress={() => toggleSubtask(task.id, sub.id)}
-                                className={`w-4 h-4 rounded-[4px] border border-[#66b9b9] mr-2 justify-center items-center ${
-                                  sub.completed ? "bg-[#66b9b9]" : "bg-transparent"
+                          {subtasks.map((sub, subIndex) => {
+                            const isEditingSubtask =
+                              editingSubtaskTaskId === task.id &&
+                              editingSubtaskId === sub.id;
+                            const isDraggingSubtask =
+                              draggingSubtaskKey === `${task.id}:${sub.id}`;
+
+                            return (
+                              <View
+                                key={sub.id}
+                                className={`flex-row items-center mb-2 rounded-xl px-1.5 py-1 ${
+                                  isDraggingSubtask ? "bg-[#123131]/75 border border-[#D9A441]/35" : ""
                                 }`}
                               >
-                                {sub.completed ? (
-                                  <Feather name="check" size={9} color={COLORS.bg} />
-                                ) : null}
-                              </TouchableOpacity>
-                              <Text
-                                className={`flex-1 text-xs ${
-                                  sub.completed ? "text-[#9FB5B5] line-through" : "text-[#E8F4F4]"
-                                }`}
-                              >
-                                {sub.title}
-                              </Text>
-                              <TouchableOpacity
-                                onPress={() => deleteSubtask(task.id, sub.id)}
-                                className="p-1"
-                              >
-                                <Feather name="x" size={12} color={COLORS.danger} />
-                              </TouchableOpacity>
-                            </View>
-                          ))}
+                                <View
+                                  onStartShouldSetResponder={() => true}
+                                  onMoveShouldSetResponder={() => true}
+                                  onResponderGrant={(event) =>
+                                    handleSubtaskDragStart(
+                                      task.id,
+                                      sub.id,
+                                      subIndex,
+                                      event.nativeEvent.pageY
+                                    )
+                                  }
+                                  onResponderMove={(event) =>
+                                    handleSubtaskDragMove(event.nativeEvent.pageY)
+                                  }
+                                  onResponderRelease={handleSubtaskDragRelease}
+                                  onResponderTerminate={handleSubtaskDragRelease}
+                                  className="p-1 mr-1"
+                                >
+                                  <Feather
+                                    name="menu"
+                                    size={12}
+                                    color={isDraggingSubtask ? "#D9A441" : COLORS.muted}
+                                  />
+                                </View>
+
+                                <TouchableOpacity
+                                  onPress={() => toggleSubtask(task.id, sub.id)}
+                                  className={`w-4 h-4 rounded-[4px] border border-[#66b9b9] mr-2 justify-center items-center ${
+                                    sub.completed ? "bg-[#66b9b9]" : "bg-transparent"
+                                  }`}
+                                >
+                                  {sub.completed ? (
+                                    <Feather name="check" size={9} color={COLORS.bg} />
+                                  ) : null}
+                                </TouchableOpacity>
+
+                                {isEditingSubtask ? (
+                                  <TextInput
+                                    value={editingSubtaskDraft}
+                                    onChangeText={setEditingSubtaskDraft}
+                                    onSubmitEditing={saveSubtaskEditing}
+                                    autoFocus
+                                    className="flex-1 text-xs text-[#E8F4F4] border-b border-[#66b9b9]/35 py-0.5"
+                                  />
+                                ) : (
+                                  <Text
+                                    className={`flex-1 text-xs ${
+                                      sub.completed
+                                        ? "text-[#9FB5B5] line-through"
+                                        : "text-[#E8F4F4]"
+                                    }`}
+                                  >
+                                    {sub.title}
+                                  </Text>
+                                )}
+
+                                {isEditingSubtask ? (
+                                  <>
+                                    <TouchableOpacity
+                                      onPress={saveSubtaskEditing}
+                                      className="p-1 ml-1"
+                                    >
+                                      <Feather name="check" size={12} color={COLORS.success} />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      onPress={cancelSubtaskEditing}
+                                      className="p-1"
+                                    >
+                                      <Feather name="x" size={12} color={COLORS.muted} />
+                                    </TouchableOpacity>
+                                  </>
+                                ) : (
+                                  <>
+                                    <TouchableOpacity
+                                      onPress={() => startSubtaskEditing(task.id, sub)}
+                                      className="p-1 ml-1"
+                                    >
+                                      <Feather name="edit-3" size={12} color={COLORS.accent} />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      onPress={() => deleteSubtask(task.id, sub.id)}
+                                      className="p-1"
+                                    >
+                                      <Feather name="x" size={12} color={COLORS.danger} />
+                                    </TouchableOpacity>
+                                  </>
+                                )}
+                              </View>
+                            );
+                          })}
 
                           <TextInput
                             placeholder="+ Add step..."
@@ -7297,6 +7550,9 @@ export default function Home() {
                 <Text className="text-[#E8F4F4] text-xs mt-2">
                   Starting small still counts.
                 </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1.5">
+                  Saved action is also added to Sub-Tasks.
+                </Text>
 
                 <TextInput
                   placeholder="Write one tiny first move"
@@ -7323,6 +7579,50 @@ export default function Home() {
                   >
                     <Text className="text-[#9FB5B5] text-center text-[10px] font-black uppercase tracking-widest">
                       Back
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+            {startAssistTask && startAssistMode === "breakdown" ? (
+              <View className="mt-4">
+                <Text className="text-[#66b9b9] text-[11px] font-black uppercase tracking-widest">
+                  Break Into Smaller Steps
+                </Text>
+                <Text className="text-[#E8F4F4] text-xs mt-2">
+                  Add one tiny step at a time.
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1.5">
+                  New steps are added to Sub-Tasks.
+                </Text>
+
+                <TextInput
+                  placeholder="Type one small step"
+                  placeholderTextColor={COLORS.muted}
+                  value={startAssistBreakdownDraft}
+                  onChangeText={setStartAssistBreakdownDraft}
+                  onSubmitEditing={handleStartAssistAddBreakdownSubtask}
+                  className="mt-3 bg-[#061414]/45 text-[#E8F4F4] p-3 rounded-2xl border border-[#66b9b9]/30 text-sm"
+                />
+
+                <View className="flex-row mt-3">
+                  <TouchableOpacity
+                    activeOpacity={0.86}
+                    onPress={handleStartAssistAddBreakdownSubtask}
+                    className="flex-1 mr-2 p-3 rounded-2xl border border-[#66b9b9]/45 bg-[#123131]/75"
+                  >
+                    <Text className="text-[#66b9b9] text-center text-[10px] font-black uppercase tracking-widest">
+                      Add Step
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.86}
+                    onPress={() => setStartAssistMode("main")}
+                    className="flex-1 ml-2 p-3 rounded-2xl border border-[#337a7a]/35 bg-[#123131]/70"
+                  >
+                    <Text className="text-[#9FB5B5] text-center text-[10px] font-black uppercase tracking-widest">
+                      Done
                     </Text>
                   </TouchableOpacity>
                 </View>

@@ -2,7 +2,7 @@
   "expo": {
     "name": "ADHD Task Manager",
     "slug": "adhd-task-manager",
-    "version": "1.0.0",
+    "version": "7.1",
     "orientation": "portrait",
     "icon": "./assets/images/notification-icon.png",
     "scheme": "adhdtaskmanager",
