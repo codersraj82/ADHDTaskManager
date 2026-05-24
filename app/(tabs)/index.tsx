@@ -395,6 +395,9 @@ export default function Home() {
   const [headerAffirmationTextWidth, setHeaderAffirmationTextWidth] =
     useState(0);
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
+  const [startAssistReadAloudEnabled, setStartAssistReadAloudEnabled] =
+    useState(false);
+  const [startAssistVoiceHint, setStartAssistVoiceHint] = useState("");
   const [sectionAffirmations, setSectionAffirmations] = useState(() =>
     getSectionAffirmations(SECTION_AFFIRMATION_KEYS, SECTION_HEADER_AFFIRMATIONS)
   );
@@ -729,6 +732,14 @@ export default function Home() {
       "Choose one tiny first move.",
     [startAssistFirstIncompleteSubtask, startAssistTask?.firstAction]
   );
+  const cleanSpeechSnippet = useCallback((value = "", maxChars = 120) => {
+    const normalized = String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!normalized) return "";
+    if (normalized.length <= maxChars) return normalized;
+    return `${normalized.slice(0, Math.max(24, maxChars - 1)).trim()}...`;
+  }, []);
 
   const smartActionTask = useMemo(() => {
     const activeTask = activeTaskId
@@ -1281,6 +1292,8 @@ export default function Home() {
   const taskHighlightTimeoutRef = useRef(null);
   const taskNavigationTimeoutRef = useRef(null);
   const lastHandledNotificationKeyRef = useRef("");
+  const startAssistVoiceHintTimeoutRef = useRef(null);
+  const startAssistAutoReadKeyRef = useRef("");
 
   const saveSetting = (key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
@@ -1792,6 +1805,14 @@ export default function Home() {
     });
   }, []);
 
+  const toggleStartAssistReadAloud = useCallback(() => {
+    setStartAssistReadAloudEnabled((prev) => {
+      const next = !prev;
+      saveSetting("startAssistReadAloudEnabled", next ? "true" : "false");
+      return next;
+    });
+  }, []);
+
   const pastPendingTaskCount = useMemo(() => {
     const { start } = getDayBounds(new Date());
     return tasks.reduce((count, task) => {
@@ -2214,7 +2235,10 @@ export default function Home() {
         );
         const lifetimeFocusTime = Number(appSettings.lifetimeFocusTime || 0);
         const isMutedFromSettings = appSettings.voiceMuted === "true";
+        const startAssistReadAloudFromSettings =
+          appSettings.startAssistReadAloudEnabled === "true";
         setIsVoiceMuted(isMutedFromSettings);
+        setStartAssistReadAloudEnabled(startAssistReadAloudFromSettings);
 
         if (
           !hasPlayedWelcomeVoiceRef.current &&
@@ -2563,6 +2587,10 @@ export default function Home() {
       if (welcomeVoiceTimeoutRef.current) {
         clearTimeout(welcomeVoiceTimeoutRef.current);
         welcomeVoiceTimeoutRef.current = null;
+      }
+      if (startAssistVoiceHintTimeoutRef.current) {
+        clearTimeout(startAssistVoiceHintTimeoutRef.current);
+        startAssistVoiceHintTimeoutRef.current = null;
       }
       void cancelFocusCompletionReminder();
       void stopEncouragement();
@@ -3634,13 +3662,103 @@ export default function Home() {
     []
   );
 
+  const clearStartAssistVoiceHint = useCallback(() => {
+    if (startAssistVoiceHintTimeoutRef.current) {
+      clearTimeout(startAssistVoiceHintTimeoutRef.current);
+      startAssistVoiceHintTimeoutRef.current = null;
+    }
+    setStartAssistVoiceHint("");
+  }, []);
+
+  const showStartAssistVoiceHint = useCallback(
+    (hint = "") => {
+      if (!hint) {
+        clearStartAssistVoiceHint();
+        return;
+      }
+      setStartAssistVoiceHint(hint);
+      if (startAssistVoiceHintTimeoutRef.current) {
+        clearTimeout(startAssistVoiceHintTimeoutRef.current);
+      }
+      startAssistVoiceHintTimeoutRef.current = setTimeout(() => {
+        setStartAssistVoiceHint("");
+        startAssistVoiceHintTimeoutRef.current = null;
+      }, 2200);
+    },
+    [clearStartAssistVoiceHint]
+  );
+
+  const buildStartAssistMainSpeechMessage = useCallback(
+    (task) => {
+      const taskTitle = cleanSpeechSnippet(task?.title || "", 72);
+      if (!taskTitle) return "Need a gentle start? Pick one tiny way in.";
+      return `Need a gentle start? Your task is ${taskTitle}. Pick one tiny way in.`;
+    },
+    [cleanSpeechSnippet]
+  );
+
+  const buildStartAssistFirstStepSpeechMessage = useCallback(
+    (task, firstIncompleteSubtask = null) => {
+      const firstSubtaskTitle = cleanSpeechSnippet(
+        firstIncompleteSubtask?.title || "",
+        96
+      );
+      if (firstSubtaskTitle) {
+        return `Your first step is: ${firstSubtaskTitle}. One tiny action is enough.`;
+      }
+
+      const firstAction = cleanSpeechSnippet(task?.firstAction || "", 96);
+      if (firstAction) {
+        return `Your first small action is: ${firstAction}. Starting small still counts.`;
+      }
+
+      return "Choose one tiny first move. You do not need to do the whole task right now.";
+    },
+    [cleanSpeechSnippet]
+  );
+
+  const buildStartAssistStuckSpeechMessage = useCallback(
+    () =>
+      "It's okay to feel stuck. You are not failing. The task may just need a smaller doorway. One tiny action is enough to restart.",
+    []
+  );
+
+  const speakStartAssist = useCallback(
+    async (message = "") => {
+      const normalized = String(message || "").trim();
+      if (!normalized) return false;
+
+      if (isVoiceMuted) {
+        showStartAssistVoiceHint("Voice is muted.");
+        return false;
+      }
+
+      try {
+        await stopEncouragement();
+        return await speakEncouragement({
+          muted: false,
+          message: normalized,
+          minGapMs: 900,
+          interruptExisting: true,
+        });
+      } catch (error) {
+        console.log("Start assist speech error:", error);
+        return false;
+      }
+    },
+    [isVoiceMuted, showStartAssistVoiceHint]
+  );
+
   const closeStartAssist = useCallback(() => {
     setIsStartAssistVisible(false);
     setStartAssistTaskId(null);
     setStartAssistMode("main");
     setStartAssistFirstActionDraft("");
     setStartAssistMinimumVersionDraft("");
-  }, []);
+    startAssistAutoReadKeyRef.current = "";
+    clearStartAssistVoiceHint();
+    void stopEncouragement();
+  }, [clearStartAssistVoiceHint]);
 
   const persistStartAssistTaskFields = useCallback(
     (taskId, patch = {}) => {
@@ -3794,6 +3912,57 @@ export default function Home() {
     setRecoverySuccessMessage("");
   }, [closeStartAssist, markStartAssistUsage, startRecoveryEdit, startAssistTask]);
 
+  const handleStartAssistReadMain = useCallback(() => {
+    if (!startAssistTask) return;
+    void speakStartAssist(buildStartAssistMainSpeechMessage(startAssistTask));
+  }, [buildStartAssistMainSpeechMessage, speakStartAssist, startAssistTask]);
+
+  const handleStartAssistReadFirstStep = useCallback(() => {
+    if (!startAssistTask) return;
+    void speakStartAssist(
+      buildStartAssistFirstStepSpeechMessage(
+        startAssistTask,
+        startAssistFirstIncompleteSubtask
+      )
+    );
+  }, [
+    buildStartAssistFirstStepSpeechMessage,
+    speakStartAssist,
+    startAssistFirstIncompleteSubtask,
+    startAssistTask,
+  ]);
+
+  const handleStartAssistReadStuck = useCallback(() => {
+    void speakStartAssist(buildStartAssistStuckSpeechMessage());
+  }, [buildStartAssistStuckSpeechMessage, speakStartAssist]);
+
+  const handleTaskFirstStepReadAloud = useCallback(
+    (task, firstIncompleteSubtask = null) => {
+      if (!task || task.completed) return;
+      void speakStartAssist(
+        buildStartAssistFirstStepSpeechMessage(task, firstIncompleteSubtask)
+      );
+    },
+    [buildStartAssistFirstStepSpeechMessage, speakStartAssist]
+  );
+
+  const handleStartAssistReadCurrentPanel = useCallback(() => {
+    if (startAssistMode === "stuck") {
+      handleStartAssistReadStuck();
+      return;
+    }
+    if (startAssistMode === "add-first-step") {
+      handleStartAssistReadFirstStep();
+      return;
+    }
+    handleStartAssistReadMain();
+  }, [
+    handleStartAssistReadFirstStep,
+    handleStartAssistReadMain,
+    handleStartAssistReadStuck,
+    startAssistMode,
+  ]);
+
   useEffect(() => {
     if (!isStartAssistVisible) return;
     if (!startAssistTaskId) return;
@@ -3810,6 +3979,25 @@ export default function Home() {
       setFirstStepOnlyTaskId(null);
     }
   }, [firstStepOnlyTaskId, tasks]);
+
+  useEffect(() => {
+    if (!startAssistReadAloudEnabled) return;
+    if (isVoiceMuted) return;
+    if (!isStartAssistVisible || startAssistMode !== "main" || !startAssistTask) return;
+
+    const key = `${startAssistTask.id}:main`;
+    if (startAssistAutoReadKeyRef.current === key) return;
+    startAssistAutoReadKeyRef.current = key;
+    void speakStartAssist(buildStartAssistMainSpeechMessage(startAssistTask));
+  }, [
+    buildStartAssistMainSpeechMessage,
+    isStartAssistVisible,
+    isVoiceMuted,
+    speakStartAssist,
+    startAssistMode,
+    startAssistReadAloudEnabled,
+    startAssistTask,
+  ]);
 
   const handleCurrentTaskFabPress = useCallback(() => {
     if (!currentTaskQuickTaskId) return;
@@ -5723,6 +5911,19 @@ export default function Home() {
               {productivityStats.showStreak ? "Hide streak badge" : "Show streak badge"}
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            onPress={toggleStartAssistReadAloud}
+            className="bg-[#123131]/70 p-4 rounded-2xl border border-[#B6C26E]/30 mb-3"
+          >
+            <Text className="text-[#B6C26E] font-black">
+              {startAssistReadAloudEnabled
+                ? "Read Start Assist prompts aloud: On"
+                : "Read Start Assist prompts aloud: Off"}
+            </Text>
+            <Text className="text-[#9FB5B5] text-xs font-semibold mt-1">
+              Optional. Global voice mute still overrides this.
+            </Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={resetStreak} className="bg-[#FFD166]/15 p-4 rounded-2xl border border-[#FFD166]/25">
             <Text className="text-[#FFD166] font-black">Reset streak gently</Text>
           </TouchableOpacity>
@@ -5967,7 +6168,7 @@ export default function Home() {
             }
 
             const cardBgClass = activeTaskId === task.id ? "bg-[#123131]" : task.completed ? "bg-[#0B1F1F]/90 opacity-90" : "bg-[#0B1F1F]";
-            const cardBorderClass = activeTaskId === task.id ? "border-[#5EEAD4] border" : task.completed ? "border-[#7DFFB3]/60 border-l-4" : "border-[#337a7a]/35 border";
+            const cardBorderClass = activeTaskId === task.id ? "border-[#5EEAD4] border" : task.completed ? "border-[#7DFFB3]/60 border-l-4" : "border-[#337a7a]/35 border border-l-4 border-l-[#9FB88D]/85";
             const cardShadowClass = activeTaskId === task.id ? "shadow-2xl shadow-[#5EEAD4]/20" : task.completed ? "shadow-lg shadow-[#7DFFB3]/10" : "shadow-md shadow-[#66b9b9]/10";
             const isTaskHighlighted = highlightedTaskId === task.id;
             const highlightOverlayOpacity = taskHighlightPulse.interpolate({
@@ -6180,6 +6381,20 @@ export default function Home() {
                     <Text className="text-[#E8F4F4] text-xs mt-1.5">
                       {firstStepText}
                     </Text>
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      accessibilityLabel="Read first step aloud"
+                      accessibilityHint="Reads a short first-step prompt for this task"
+                      onPress={() =>
+                        handleTaskFirstStepReadAloud(task, firstIncompleteSubtask)
+                      }
+                      className="self-start mt-2 px-2.5 py-1 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70 flex-row items-center"
+                    >
+                      <Feather name="volume-2" size={11} color={COLORS.accent} />
+                      <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest ml-1.5">
+                        Read Aloud
+                      </Text>
+                    </TouchableOpacity>
                     <TouchableOpacity
                       activeOpacity={0.85}
                       onPress={() => setFirstStepOnlyTaskId(null)}
@@ -6924,19 +7139,38 @@ export default function Home() {
                 </Text>
               </View>
 
-              <TouchableOpacity
-                activeOpacity={0.82}
-                onPress={closeStartAssist}
-                className="w-8 h-8 rounded-full border border-[#337a7a]/35 bg-[#123131]/70 items-center justify-center"
-              >
-                <Feather name="x" size={14} color={COLORS.muted} />
-              </TouchableOpacity>
+              <View className="flex-row items-center">
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  accessibilityLabel="Read Start Assist aloud"
+                  accessibilityHint="Reads a short supportive start prompt for this task"
+                  onPress={handleStartAssistReadCurrentPanel}
+                  className="w-8 h-8 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70 items-center justify-center mr-2"
+                >
+                  <Feather name="volume-2" size={14} color={COLORS.accent} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={closeStartAssist}
+                  className="w-8 h-8 rounded-full border border-[#337a7a]/35 bg-[#123131]/70 items-center justify-center"
+                >
+                  <Feather name="x" size={14} color={COLORS.muted} />
+                </TouchableOpacity>
+              </View>
             </View>
 
             {!startAssistTask ? (
               <View className="mt-4 rounded-2xl border border-[#337a7a]/25 bg-[#123131]/70 p-3">
                 <Text className="text-[#9FB5B5] text-xs">
                   This task is no longer available.
+                </Text>
+              </View>
+            ) : null}
+
+            {startAssistVoiceHint ? (
+              <View className="mt-3 self-start rounded-full border border-[#337a7a]/30 bg-[#123131]/75 px-3 py-1.5">
+                <Text className="text-[#9FB5B5] text-[10px] font-bold">
+                  {startAssistVoiceHint}
                 </Text>
               </View>
             ) : null}
@@ -7108,6 +7342,19 @@ export default function Home() {
                     You are not failing. The task may just need a smaller doorway.
                   </Text>
                 </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  accessibilityLabel="Read stuck support aloud"
+                  accessibilityHint="Reads a short compassionate stuck support message"
+                  onPress={handleStartAssistReadStuck}
+                  className="mt-3 self-start px-2.5 py-1 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70 flex-row items-center"
+                >
+                  <Feather name="volume-2" size={11} color={COLORS.accent} />
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest ml-1.5">
+                    Read Aloud
+                  </Text>
+                </TouchableOpacity>
 
                 <TouchableOpacity
                   activeOpacity={0.86}
