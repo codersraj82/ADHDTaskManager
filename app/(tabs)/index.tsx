@@ -103,6 +103,11 @@ import {
   buildMonthlyMoodCalendar,
   buildYearlyByMonth,
 } from "../../utils/moodAnalytics";
+import {
+  buildTaskReminderPayload,
+  extractTaskNavigationPayload,
+  findBestCurrentTask,
+} from "../../utils/taskNavigationHelpers";
 import Reanimated, {
   cancelAnimation,
   Easing,
@@ -204,6 +209,12 @@ const NOTIFICATION_SPEECH_MIN_GAP_MS = 6000;
 const SMART_TASK_BORDER_CYCLE_MS = 3600;
 const SMART_TASK_SHIMMER_CYCLE_MS = 2600;
 const SMART_TASK_SHIMMER_WIDTH = 52;
+const TASK_HIGHLIGHT_DURATION_MS = 5000;
+const TASK_HIGHLIGHT_PULSE_IN_MS = 900;
+const TASK_HIGHLIGHT_PULSE_OUT_MS = 1000;
+const TASK_NAVIGATION_MAX_RETRIES = 5;
+const TASK_NAVIGATION_RETRY_DELAY_MS = 130;
+const CURRENT_TASK_FAB_BREATH_MS = 2600;
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -321,6 +332,10 @@ export default function Home() {
   const [taskAttachment, setTaskAttachment] = useState("");
   const [detailsHeight, setDetailsHeight] = useState(80);
   const [expandedTaskId, setExpandedTaskId] = useState(null);
+  const [highlightedTaskId, setHighlightedTaskId] = useState(null);
+  const [currentFocusedTaskId, setCurrentFocusedTaskId] = useState(null);
+  const [pendingNotificationTaskTarget, setPendingNotificationTaskTarget] =
+    useState(null);
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
   const [timeError, setTimeError] = useState(false);
@@ -676,6 +691,17 @@ export default function Home() {
     [tasks]
   );
 
+  const currentTaskQuickTarget = useMemo(
+    () =>
+      findBestCurrentTask(tasks, {
+        activeTaskId,
+      }),
+    [activeTaskId, tasks]
+  );
+  const currentTaskQuickTask = currentTaskQuickTarget?.task || null;
+  const currentTaskQuickTaskId = currentTaskQuickTarget?.taskId || null;
+  const currentTaskQuickReason = currentTaskQuickTarget?.reason || "";
+
   const smartActionTask = useMemo(() => {
     const activeTask = activeTaskId
       ? tasks.find((task) => task.id === activeTaskId && !task.completed)
@@ -948,6 +974,7 @@ export default function Home() {
   const smartTaskBorderPhase = useSharedValue(0);
   const smartTaskShimmerPhase = useSharedValue(0);
   const smartTaskEmojiPulse = useSharedValue(0);
+  const currentTaskFabPulse = useSharedValue(0);
   const recoveryBackdropStyle = useAnimatedStyle(() => ({
     opacity: recoverySheetProgress.value * 0.86,
   }));
@@ -998,6 +1025,20 @@ export default function Home() {
       { scale: 1 + smartTaskEmojiPulse.value * 0.05 },
     ],
     opacity: 0.86 + smartTaskEmojiPulse.value * 0.14,
+  }));
+  const currentTaskFabAnimatedStyle = useAnimatedStyle(() => ({
+    borderColor: interpolateColor(
+      currentTaskFabPulse.value,
+      [0, 1],
+      ["rgba(182, 194, 110, 0.55)", "rgba(125, 255, 179, 0.82)"]
+    ),
+    shadowColor: interpolateColor(
+      currentTaskFabPulse.value,
+      [0, 1],
+      ["rgba(182, 194, 110, 0.45)", "rgba(125, 255, 179, 0.35)"]
+    ),
+    shadowOpacity: 0.18 + currentTaskFabPulse.value * 0.18,
+    transform: [{ scale: 1 + currentTaskFabPulse.value * 0.035 }],
   }));
   const floatingMenuAnimatedStyle = useAnimatedStyle(() => ({
     opacity: floatingMenuOpacity.value,
@@ -1122,6 +1163,27 @@ export default function Home() {
   ]);
 
   useEffect(() => {
+    cancelAnimation(currentTaskFabPulse);
+    currentTaskFabPulse.value = 0;
+
+    if (!currentTaskQuickTaskId) return;
+
+    currentTaskFabPulse.value = withRepeat(
+      withTiming(1, {
+        duration: CURRENT_TASK_FAB_BREATH_MS,
+        easing: Easing.inOut(Easing.quad),
+      }),
+      -1,
+      true
+    );
+
+    return () => {
+      cancelAnimation(currentTaskFabPulse);
+      currentTaskFabPulse.value = 0;
+    };
+  }, [currentTaskFabPulse, currentTaskQuickTaskId]);
+
+  useEffect(() => {
     setHeaderAffirmationTextWidth(0);
   }, [currentAffirmation]);
 
@@ -1186,6 +1248,11 @@ export default function Home() {
     message: "",
     at: 0,
   });
+  const taskHighlightPulse = useRef(new Animated.Value(0)).current;
+  const taskHighlightLoopRef = useRef(null);
+  const taskHighlightTimeoutRef = useRef(null);
+  const taskNavigationTimeoutRef = useRef(null);
+  const lastHandledNotificationKeyRef = useRef("");
 
   const saveSetting = (key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
@@ -1533,6 +1600,10 @@ export default function Home() {
     (taskId) => tasks.find((task) => task.id === taskId)?.title || "Focus Session",
     [tasks]
   );
+  const getTaskById = useCallback(
+    (taskId) => tasks.find((task) => task.id === taskId) || null,
+    [tasks]
+  );
 
   const cancelFocusCompletionReminder = useCallback(async () => {
     if (!focusCompletionNotificationIdRef.current) return;
@@ -1544,13 +1615,16 @@ export default function Home() {
     async (taskId, endTimestamp) => {
       if (!taskId || !endTimestamp) return;
       await cancelFocusCompletionReminder();
+      const targetTask = getTaskById(taskId);
       const notificationId = await scheduleFocusCompletionNotification({
         taskTitle: getTaskTitleById(taskId),
+        taskId,
+        sectionId: targetTask?.isPinned ? "Pinned" : targetTask?.section || null,
         endTimestamp,
       });
       focusCompletionNotificationIdRef.current = notificationId;
     },
-    [cancelFocusCompletionReminder, getTaskTitleById]
+    [cancelFocusCompletionReminder, getTaskById, getTaskTitleById]
   );
 
   const completeFocusSession = useCallback(
@@ -2189,17 +2263,44 @@ export default function Home() {
   }, []); // Runs once when the component mounts
 
   useEffect(() => {
+    const handleNotificationResponse = (response) => {
+      void speakNotificationReminder(
+        response?.notification?.request?.content || null
+      );
+
+      const payload = extractTaskNavigationPayload(
+        response?.notification?.request?.content?.data || {}
+      );
+      if (!payload?.taskId) return;
+
+      const notificationIdentifier =
+        response?.notification?.request?.identifier || "";
+      const dedupeKey = `${notificationIdentifier}:${payload.taskId}`;
+      if (lastHandledNotificationKeyRef.current === dedupeKey) return;
+
+      lastHandledNotificationKeyRef.current = dedupeKey;
+      setPendingNotificationTaskTarget({
+        ...payload,
+        handled: false,
+      });
+
+      void Notifications.clearLastNotificationResponseAsync().catch(() => null);
+    };
+
     const receivedSubscription = Notifications.addNotificationReceivedListener(
       (notification) => {
         void speakNotificationReminder(notification?.request?.content || null);
       }
     );
     const responseSubscription =
-      Notifications.addNotificationResponseReceivedListener((response) => {
-        void speakNotificationReminder(
-          response?.notification?.request?.content || null
-        );
-      });
+      Notifications.addNotificationResponseReceivedListener(handleNotificationResponse);
+
+    void Notifications.getLastNotificationResponseAsync()
+      .then((lastResponse) => {
+        if (!lastResponse) return;
+        handleNotificationResponse(lastResponse);
+      })
+      .catch(() => null);
 
     return () => {
       receivedSubscription.remove();
@@ -2228,6 +2329,26 @@ export default function Home() {
       setTaskMoodPromptTaskId(null);
     }
   }, [taskMoodPromptTaskId, tasks]);
+
+  useEffect(
+    () => () => {
+      if (taskHighlightTimeoutRef.current) {
+        clearTimeout(taskHighlightTimeoutRef.current);
+        taskHighlightTimeoutRef.current = null;
+      }
+      if (taskNavigationTimeoutRef.current) {
+        clearTimeout(taskNavigationTimeoutRef.current);
+        taskNavigationTimeoutRef.current = null;
+      }
+      if (taskHighlightLoopRef.current?.stop) {
+        taskHighlightLoopRef.current.stop();
+        taskHighlightLoopRef.current = null;
+      }
+      taskHighlightPulse.stopAnimation();
+      taskHighlightPulse.setValue(0);
+    },
+    [taskHighlightPulse]
+  );
 
   useEffect(() => {
     if (isPinnedSectionExpanded || activeTaskId || !nearestUpcomingSection) return;
@@ -2678,10 +2799,6 @@ export default function Home() {
 
       if (existing?.id) return;
 
-      const scheduledIds = await scheduleProReminders({
-        ...nextTask,
-        title: sourceWithRepeat.title,
-      });
       const createdAt = formatSqliteDateTime(new Date());
 
       const result = db.runSync(
@@ -2722,13 +2839,23 @@ export default function Home() {
           nextTask.details || "",
           nextTask.attachment || "",
           JSON.stringify(nextTask.subtasks || []),
-          JSON.stringify(scheduledIds),
+          JSON.stringify([]),
           0,
           nextTask.moodType || "",
         ]
       );
 
       const insertedId = result.lastInsertRowId;
+      const scheduledIds = await scheduleProReminders({
+        ...nextTask,
+        id: insertedId,
+        title: sourceWithRepeat.title,
+      });
+      db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
+        JSON.stringify(scheduledIds),
+        insertedId,
+      ]);
+
       setTasks((prev) => [
         ...prev,
         {
@@ -2880,12 +3007,6 @@ export default function Home() {
       }));
       const shouldCopyNotifications =
         Array.isArray(task.notificationId) && task.notificationId.length > 0;
-      const recreatedNotificationIds = shouldCopyNotifications
-        ? await scheduleProReminders({
-            ...task,
-            scheduledTime: newScheduledTime,
-          })
-        : [];
 
       const result = db.runSync(
         `INSERT INTO tasks (
@@ -2925,13 +3046,25 @@ export default function Home() {
           task.details || "",
           task.attachment || "",
           JSON.stringify(recreatedSubtasks),
-          JSON.stringify(recreatedNotificationIds),
+          JSON.stringify([]),
           0,
           "",
         ]
       );
 
       const newTaskId = result.lastInsertRowId;
+      const recreatedNotificationIds = shouldCopyNotifications
+        ? await scheduleProReminders({
+            ...task,
+            id: newTaskId,
+            scheduledTime: newScheduledTime,
+          })
+        : [];
+      db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
+        JSON.stringify(recreatedNotificationIds),
+        newTaskId,
+      ]);
+
       setTasks((prev) => [
         ...prev,
         {
@@ -3169,88 +3302,212 @@ export default function Home() {
     }).start();
   };
 
-  const scrollToTask = (taskId) => {
-    const task = tasks.find((t) => t.id === taskId);
-    if (!task) return;
-
-    let changedExpansion = false;
-    const targetSectionKey = task.isPinned ? "Pinned" : task.section;
-    setExpandedTaskId(taskId);
-
-    if (task.isPinned) {
-      if (!isPinnedSectionExpanded) {
-        changedExpansion = true;
-        runLayoutAnimation();
-        setIsPinnedSectionExpanded(true);
-        Animated.timing(pinnedChevronAnim, {
-          toValue: 1,
-          duration: 180,
-          useNativeDriver: true,
-        }).start();
-      }
-      setExpandedSection((current) => {
-        if (!current) return current;
-        changedExpansion = true;
-        animateSectionChevron(current, false);
-        return null;
-      });
-    } else {
-      if (isPinnedSectionExpanded) {
-        changedExpansion = true;
-        runLayoutAnimation();
-        setIsPinnedSectionExpanded(false);
-        Animated.timing(pinnedChevronAnim, {
-          toValue: 0,
-          duration: 180,
-          useNativeDriver: true,
-        }).start();
-      }
-
-      setExpandedSection((current) => {
-        if (current === task.section) return current;
-        changedExpansion = true;
-        runLayoutAnimation();
-        if (current) {
-          animateSectionChevron(current, false);
-        }
-        animateSectionChevron(task.section, true);
-        hasAutoExpandedInitialSection.current = true;
-        return task.section;
-      });
+  const stopTaskHighlight = useCallback(() => {
+    if (taskHighlightTimeoutRef.current) {
+      clearTimeout(taskHighlightTimeoutRef.current);
+      taskHighlightTimeoutRef.current = null;
     }
+    if (taskHighlightLoopRef.current?.stop) {
+      taskHighlightLoopRef.current.stop();
+      taskHighlightLoopRef.current = null;
+    }
+    taskHighlightPulse.stopAnimation();
+    taskHighlightPulse.setValue(0);
+    setHighlightedTaskId(null);
+  }, [taskHighlightPulse]);
 
-    setTimeout(
-      () => {
+  const triggerTaskHighlight = useCallback(
+    (taskId) => {
+      if (!taskId) return;
+
+      stopTaskHighlight();
+      setHighlightedTaskId(taskId);
+      taskHighlightPulse.setValue(0.25);
+
+      taskHighlightLoopRef.current = Animated.loop(
+        Animated.sequence([
+          Animated.timing(taskHighlightPulse, {
+            toValue: 1,
+            duration: TASK_HIGHLIGHT_PULSE_IN_MS,
+            useNativeDriver: false,
+          }),
+          Animated.timing(taskHighlightPulse, {
+            toValue: 0.25,
+            duration: TASK_HIGHLIGHT_PULSE_OUT_MS,
+            useNativeDriver: false,
+          }),
+        ])
+      );
+
+      taskHighlightLoopRef.current.start();
+
+      taskHighlightTimeoutRef.current = setTimeout(() => {
+        if (taskHighlightLoopRef.current?.stop) {
+          taskHighlightLoopRef.current.stop();
+          taskHighlightLoopRef.current = null;
+        }
+        taskHighlightPulse.stopAnimation();
+        taskHighlightPulse.setValue(0);
+        setHighlightedTaskId(null);
+        taskHighlightTimeoutRef.current = null;
+      }, TASK_HIGHLIGHT_DURATION_MS);
+    },
+    [stopTaskHighlight, taskHighlightPulse]
+  );
+
+  const focusTaskById = useCallback(
+    (taskId, options = {}) => {
+      const { highlight = false, onComplete = null } = options;
+      if (!taskId) return false;
+
+      const targetTask = tasks.find((task) => task.id === taskId);
+      if (!targetTask || targetTask.completed) return false;
+
+      if (taskNavigationTimeoutRef.current) {
+        clearTimeout(taskNavigationTimeoutRef.current);
+        taskNavigationTimeoutRef.current = null;
+      }
+
+      let changedExpansion = false;
+      const targetSectionKey = targetTask.isPinned ? "Pinned" : targetTask.section;
+      setExpandedTaskId(targetTask.id);
+      setCurrentFocusedTaskId(targetTask.id);
+
+      if (targetTask.isPinned) {
+        if (!isPinnedSectionExpanded) {
+          changedExpansion = true;
+          runLayoutAnimation();
+          setIsPinnedSectionExpanded(true);
+          Animated.timing(pinnedChevronAnim, {
+            toValue: 1,
+            duration: 180,
+            useNativeDriver: true,
+          }).start();
+        }
+        setExpandedSection((current) => {
+          if (!current) return current;
+          changedExpansion = true;
+          animateSectionChevron(current, false);
+          return null;
+        });
+      } else {
+        if (isPinnedSectionExpanded) {
+          changedExpansion = true;
+          runLayoutAnimation();
+          setIsPinnedSectionExpanded(false);
+          Animated.timing(pinnedChevronAnim, {
+            toValue: 0,
+            duration: 180,
+            useNativeDriver: true,
+          }).start();
+        }
+
+        setExpandedSection((current) => {
+          if (current === targetTask.section) return current;
+          changedExpansion = true;
+          runLayoutAnimation();
+          if (current) {
+            animateSectionChevron(current, false);
+          }
+          animateSectionChevron(targetTask.section, true);
+          hasAutoExpandedInitialSection.current = true;
+          return targetTask.section;
+        });
+      }
+
+      const navigateToTask = (attempt = 0) => {
         const sectionY = sectionPositions.current[targetSectionKey] || 0;
-        const taskY = taskPositions.current[taskId] || 0;
+        const taskY = taskPositions.current[targetTask.id] || 0;
+        const hasTaskPosition = Number.isFinite(taskY) && taskY > 0;
 
-        if (!taskY) {
-          scrollRef.current?.scrollTo({
-            y: sectionY > 0 ? sectionY : 0,
-            animated: true,
-          });
+        if (!hasTaskPosition && attempt < TASK_NAVIGATION_MAX_RETRIES) {
+          taskNavigationTimeoutRef.current = setTimeout(() => {
+            navigateToTask(attempt + 1);
+          }, TASK_NAVIGATION_RETRY_DELAY_MS);
           return;
         }
 
-        const absoluteY = sectionY + taskY;
-
+        const absoluteY = hasTaskPosition ? sectionY + taskY : sectionY;
         const screenHeight = Dimensions.get("window").height;
-        const cardHeight = 110;
-        const centerY = absoluteY - screenHeight / 2 + cardHeight / 2;
+        const cardHeight = 116;
+        const centeredY = absoluteY - screenHeight / 2 + cardHeight / 2;
 
         scrollRef.current?.scrollTo({
-          y: centerY > 0 ? centerY : 0,
+          y: centeredY > 0 ? centeredY : 0,
           animated: true,
         });
-      },
-      changedExpansion ? 280 : 80
+
+        taskNavigationTimeoutRef.current = setTimeout(() => {
+          setExpandedTaskId(targetTask.id);
+          if (highlight) {
+            triggerTaskHighlight(targetTask.id);
+          }
+          if (typeof onComplete === "function") {
+            onComplete();
+          }
+        }, hasTaskPosition ? 140 : 80);
+      };
+
+      taskNavigationTimeoutRef.current = setTimeout(() => {
+        navigateToTask(0);
+      }, changedExpansion ? 280 : 90);
+
+      return true;
+    },
+    [
+      animateSectionChevron,
+      isPinnedSectionExpanded,
+      pinnedChevronAnim,
+      runLayoutAnimation,
+      tasks,
+      triggerTaskHighlight,
+    ]
+  );
+
+  const scrollToTask = useCallback(
+    (taskId, options = {}) => focusTaskById(taskId, options),
+    [focusTaskById]
+  );
+
+  useEffect(() => {
+    if (!pendingNotificationTaskTarget?.taskId) return;
+    if (pendingNotificationTaskTarget.handled) return;
+
+    const taskId = pendingNotificationTaskTarget.taskId;
+    const task = tasks.find((row) => row.id === taskId);
+
+    if (!task || task.completed) {
+      setPendingNotificationTaskTarget(null);
+      return;
+    }
+
+    setPendingNotificationTaskTarget((prev) =>
+      prev ? { ...prev, handled: true } : prev
     );
-  };
+
+    const didNavigate = focusTaskById(task.id, {
+      highlight: true,
+      onComplete: () => {
+        setPendingNotificationTaskTarget(null);
+      },
+    });
+
+    if (!didNavigate) {
+      setPendingNotificationTaskTarget(null);
+    }
+  }, [focusTaskById, pendingNotificationTaskTarget, tasks]);
 
   const toggleDailyMoodSection = useCallback(() => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setIsDailyMoodExpanded((prev) => !prev);
   }, []);
+
+  const handleCurrentTaskFabPress = useCallback(() => {
+    if (!currentTaskQuickTaskId) return;
+    scrollToTask(currentTaskQuickTaskId, {
+      highlight: true,
+    });
+  }, [currentTaskQuickTaskId, scrollToTask]);
 
   const handleSmartTaskPress = useCallback(() => {
     const targetTask = smartActionTask?.task;
@@ -3412,7 +3669,10 @@ export default function Home() {
 
         const reminderIds = scheduleForTarget
           ? await scheduleProReminders({
+              id: targetTask.id,
               title: taskName,
+              section: selectedSection,
+              isPinned: targetTask.isPinned,
               scheduledTime: scheduleForTarget,
             })
           : [];
@@ -3488,12 +3748,6 @@ export default function Home() {
     const repeatGroupId =
       draftRepeatType !== REPEAT_TYPES.NONE ? createRepeatGroupId() : "";
 
-    const reminderIds = finalTime
-      ? await scheduleProReminders({
-          title: taskName,
-          scheduledTime: finalTime,
-        })
-      : [];
     const createdAt = formatSqliteDateTime(new Date());
 
     const result = db.runSync(
@@ -3534,13 +3788,25 @@ export default function Home() {
         taskDetails,
         attachmentUri || "",
         JSON.stringify(subtasksToSave),
-        JSON.stringify(reminderIds),
+        JSON.stringify([]),
         0,
         "",
       ]
     );
 
     const insertedId = result.lastInsertRowId;
+    const reminderIds = finalTime
+      ? await scheduleProReminders({
+          id: insertedId,
+          title: taskName,
+          section: selectedSection,
+          scheduledTime: finalTime,
+        })
+      : [];
+    db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
+      JSON.stringify(reminderIds),
+      insertedId,
+    ]);
 
     setTasks((prev) => [
       ...prev,
@@ -4194,29 +4460,28 @@ export default function Home() {
     const taskDate = parseStoredDateTime(task.scheduledTime);
     if (!taskDate) return [];
     const now = new Date();
+    const taskTitle = task?.title || "Task";
 
     const intervals = [20, 10, 5, 0]; // Minutes before task
     const scheduledIds = [];
 
     for (let mins of intervals) {
       const triggerDate = new Date(taskDate.getTime() - mins * 60000);
+      const notificationType = mins === 0 ? "reminder-alert" : "task-reminder";
+      const reminderPayload = buildTaskReminderPayload({
+        task,
+        type: notificationType,
+        minutesBefore: mins,
+      });
 
       // Only schedule if the trigger time is in the future
       if (triggerDate > now) {
         const id = await Notifications.scheduleNotificationAsync({
           content: {
-            title: `🎯 ${task.title}`,
-            body: getAffirmativeMessage(
-              task.title,
-              taskDate.toLocaleString(),
-              mins
-            ),
+            title: `🎯 ${taskTitle}`,
+            body: getAffirmativeMessage(taskTitle, taskDate.toLocaleString(), mins),
             sound: "default",
-            data: {
-              type: mins === 0 ? "reminder-alert" : "task-reminder",
-              taskTitle: task.title || "Task",
-              minutesBefore: mins,
-            },
+            data: reminderPayload,
 
             priority: Notifications.AndroidNotificationPriority.MAX,
 
@@ -5345,15 +5610,57 @@ export default function Home() {
             const cardBgClass = activeTaskId === task.id ? "bg-[#123131]" : task.completed ? "bg-[#0B1F1F]/90 opacity-90" : "bg-[#0B1F1F]";
             const cardBorderClass = activeTaskId === task.id ? "border-[#5EEAD4] border" : task.completed ? "border-[#7DFFB3]/60 border-l-4" : "border-[#337a7a]/35 border";
             const cardShadowClass = activeTaskId === task.id ? "shadow-2xl shadow-[#5EEAD4]/20" : task.completed ? "shadow-lg shadow-[#7DFFB3]/10" : "shadow-md shadow-[#66b9b9]/10";
+            const isTaskHighlighted = highlightedTaskId === task.id;
+            const highlightOverlayOpacity = taskHighlightPulse.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.18, 0.58],
+            });
+            const highlightScale = taskHighlightPulse.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 1.01],
+            });
+            const highlightShadowOpacity = taskHighlightPulse.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.1, 0.36],
+            });
 
             return (
-              <View
+              <Animated.View
                 key={task.id}
                 onLayout={(event) => {
                   taskPositions.current[task.id] = event.nativeEvent.layout.y;
                 }}
+                style={
+                  isTaskHighlighted
+                    ? {
+                        transform: [{ scale: highlightScale }],
+                        shadowColor: "#B6C26E",
+                        shadowOpacity: highlightShadowOpacity,
+                        shadowRadius: 16,
+                        shadowOffset: { width: 0, height: 0 },
+                        elevation: 7,
+                      }
+                    : undefined
+                }
                 className={`p-4 rounded-[24px] mb-3 ${cardBgClass} ${cardBorderClass} ${cardShadowClass}`}
               >
+                {isTaskHighlighted ? (
+                  <Animated.View
+                    pointerEvents="none"
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      right: 0,
+                      bottom: 0,
+                      left: 0,
+                      borderRadius: 24,
+                      borderWidth: 1.8,
+                      borderColor: "#B6C26E",
+                      backgroundColor: "rgba(139, 154, 78, 0.08)",
+                      opacity: highlightOverlayOpacity,
+                    }}
+                  />
+                ) : null}
                 <Pressable onPress={() => toggleTaskCardExpansion(task.id)}>
                   <View className="flex-row items-center justify-between pb-3 mb-2 border-b border-[#337a7a]/25">
                     <View className="flex-row items-center flex-1">
@@ -5755,7 +6062,7 @@ export default function Home() {
                     ) : null}
                   </>
                 )}
-              </View>
+              </Animated.View>
             );
               })}
             </View>
@@ -6521,23 +6828,24 @@ export default function Home() {
         </View>
       </Modal>
 
-      {/* 🎯 Focus OR ✅ Last Completed Floating Button */}
-      {/* 🎯 Focus OR ✅ Last Completed Floating Button */}
-      {activeTaskId ? (
-        <TouchableOpacity
-          onPress={() => {
-            scrollRef.current?.scrollTo({
-              y: activeFocusY.current,
-              animated: true,
-            });
-          }}
-          style={{ bottom: focusFabBottom }}
-          className="absolute right-6 bg-[#66b9b9] py-3 px-5 rounded-full shadow-2xl shadow-[#66b9b9]/40 border border-[#99bdbd]/70"
+      {/* Current Task Quick Access OR ✅ Last Completed Floating Button */}
+      {currentTaskQuickTask ? (
+        <Reanimated.View
+          style={[{ bottom: focusFabBottom }, currentTaskFabAnimatedStyle]}
+          className="absolute right-6"
         >
-          <Text className="text-[#061414] font-black uppercase tracking-widest text-xs">
-            🎯 Focus
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.86}
+            onPress={handleCurrentTaskFabPress}
+            className="w-11 h-11 rounded-full bg-[#123131] border border-[#B6C26E]/65 items-center justify-center shadow-xl shadow-[#B6C26E]/25"
+          >
+            <Text className="text-[15px]">⏰</Text>
+            {currentTaskQuickReason === "active-task" ||
+            currentFocusedTaskId === currentTaskQuickTaskId ? (
+              <View className="absolute -bottom-0.5 w-2 h-2 rounded-full bg-[#7DFFB3]" />
+            ) : null}
+          </TouchableOpacity>
+        </Reanimated.View>
       ) : lastCompletedTaskId ? (
         <TouchableOpacity
           onPress={() => scrollToTask(lastCompletedTaskId)}

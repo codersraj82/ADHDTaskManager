@@ -19,6 +19,9 @@ const baseAndroidConfig = {
 
 export const scheduleFocusCompletionNotification = async ({
   taskTitle,
+  taskId = null,
+  sectionId = null,
+  category = null,
   endTimestamp,
 }) => {
   if (!endTimestamp) return null;
@@ -37,6 +40,9 @@ export const scheduleFocusCompletionNotification = async ({
         sound: "default",
         data: {
           type: "focus-session-complete",
+          taskId,
+          sectionId: sectionId || category || null,
+          category: category || sectionId || null,
           taskTitle: label,
         },
         android: baseAndroidConfig,
