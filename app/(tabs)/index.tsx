@@ -228,6 +228,9 @@ const REMINDER_ACTIONS = Object.freeze({
   MOVE_GENTLY: "move_gently",
   MAKE_SMALLER: "make_smaller",
 });
+const SNOOZE_AFFIRMATION_AUTO_CLOSE_DELAY_MS = 10000;
+const SNOOZE_AFFIRMATION_MESSAGE =
+  "No guilt. Your reminder will return gently. When you come back, one tiny step is enough.";
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -371,6 +374,13 @@ export default function Home() {
   const [currentFocusedTaskId, setCurrentFocusedTaskId] = useState(null);
   const [pendingNotificationTaskTarget, setPendingNotificationTaskTarget] =
     useState(null);
+  const [snoozeAffirmationModal, setSnoozeAffirmationModal] = useState({
+    visible: false,
+    taskId: null,
+    minutes: null,
+    title: "",
+    message: "",
+  });
   const [isStartAssistVisible, setIsStartAssistVisible] = useState(false);
   const [startAssistTaskId, setStartAssistTaskId] = useState(null);
   const [startAssistMode, setStartAssistMode] = useState("main");
@@ -1336,6 +1346,7 @@ export default function Home() {
   const handledNotificationResponseKeysRef = useRef(new Set());
   const handledNotificationResponseKeyOrderRef = useRef([]);
   const notificationActionContextRef = useRef(null);
+  const snoozeAffirmationTimeoutRef = useRef(null);
   const tasksRef = useRef([]);
   const startFocusActionRef = useRef(null);
   const subtaskDragStateRef = useRef({
@@ -2584,6 +2595,43 @@ export default function Home() {
     return true;
   }, []);
 
+  const clearSnoozeAffirmationTimer = useCallback(() => {
+    if (!snoozeAffirmationTimeoutRef.current) return;
+    clearTimeout(snoozeAffirmationTimeoutRef.current);
+    snoozeAffirmationTimeoutRef.current = null;
+  }, []);
+
+  const closeSnoozeAffirmation = useCallback(() => {
+    clearSnoozeAffirmationTimer();
+    setSnoozeAffirmationModal((prev) =>
+      prev.visible ? { ...prev, visible: false } : prev
+    );
+  }, [clearSnoozeAffirmationTimer]);
+
+  const showSnoozeAffirmation = useCallback(
+    ({ taskId, minutes }) => {
+      const normalizedMinutes = Number(minutes) === 30 ? 30 : 10;
+      const numericTaskId = Number(taskId);
+
+      clearSnoozeAffirmationTimer();
+      setSnoozeAffirmationModal({
+        visible: true,
+        taskId: Number.isFinite(numericTaskId) ? numericTaskId : null,
+        minutes: normalizedMinutes,
+        title: `Snoozed gently for ${normalizedMinutes} minutes`,
+        message: SNOOZE_AFFIRMATION_MESSAGE,
+      });
+
+      snoozeAffirmationTimeoutRef.current = setTimeout(() => {
+        setSnoozeAffirmationModal((prev) =>
+          prev.visible ? { ...prev, visible: false } : prev
+        );
+        snoozeAffirmationTimeoutRef.current = null;
+      }, SNOOZE_AFFIRMATION_AUTO_CLOSE_DELAY_MS);
+    },
+    [clearSnoozeAffirmationTimer]
+  );
+
   const handleSnoozeTaskReminder = useCallback(
     async (taskId, minutes, metadata = {}) => {
       const numericTaskId = Number(taskId);
@@ -2606,12 +2654,11 @@ export default function Home() {
           ? targetTask.title.trim()
           : "Task";
 
-      const contentTitle =
-        snoozeMinutes === 30 ? "Still here gently" : "Gentle reminder";
+      const contentTitle = "Gentle reminder";
       const contentBody =
         snoozeMinutes === 30
-          ? "Still waiting gently. Want to try the smallest version?"
-          : "Gentle reminder again. Start with one tiny step.";
+          ? "Still here gently. Want to try the smallest version?"
+          : "Still here gently. Start with one tiny step.";
 
       const reminderData = {
         ...(metadata.originalData || {}),
@@ -2620,6 +2667,11 @@ export default function Home() {
         sectionId:
           metadata.sectionId ||
           metadata.section ||
+          targetTask.section ||
+          null,
+        section:
+          metadata.section ||
+          metadata.category ||
           targetTask.section ||
           null,
         category:
@@ -2707,7 +2759,7 @@ export default function Home() {
   }, []); // Runs once when the component mounts
 
   useEffect(() => {
-    const handleNotificationResponse = (response) => {
+    const handleNotificationResponse = async (response) => {
       void speakNotificationReminder(
         response?.notification?.request?.content || null
       );
@@ -2760,7 +2812,7 @@ export default function Home() {
           REMINDER_ACTIONS.SNOOZE_10,
           trackingMetadata
         );
-        void handleSnoozeTaskReminder(payload.taskId, 10, {
+        await handleSnoozeTaskReminder(payload.taskId, 10, {
           ...data,
           originalData: data,
           notificationId: notificationIdentifier,
@@ -2768,6 +2820,15 @@ export default function Home() {
           section: data?.section || data?.category,
           category: data?.category || payload.sectionId,
           taskTitle: payload.taskTitle || data?.taskTitle,
+        });
+        queueNotificationTaskNavigation(payload, {
+          actionIdentifier,
+          reminderAction: REMINDER_ACTIONS.SNOOZE_10,
+          taskId: payload.taskId,
+          taskTitle: payload.taskTitle || data?.taskTitle || "",
+          notificationId: notificationIdentifier,
+          sectionId: payload.sectionId || data?.sectionId || data?.section || "",
+          snoozeMinutes: 10,
         });
         void Notifications.clearLastNotificationResponseAsync().catch(() => null);
         return;
@@ -2779,7 +2840,7 @@ export default function Home() {
           REMINDER_ACTIONS.SNOOZE_30,
           trackingMetadata
         );
-        void handleSnoozeTaskReminder(payload.taskId, 30, {
+        await handleSnoozeTaskReminder(payload.taskId, 30, {
           ...data,
           originalData: data,
           notificationId: notificationIdentifier,
@@ -2787,6 +2848,15 @@ export default function Home() {
           section: data?.section || data?.category,
           category: data?.category || payload.sectionId,
           taskTitle: payload.taskTitle || data?.taskTitle,
+        });
+        queueNotificationTaskNavigation(payload, {
+          actionIdentifier,
+          reminderAction: REMINDER_ACTIONS.SNOOZE_30,
+          taskId: payload.taskId,
+          taskTitle: payload.taskTitle || data?.taskTitle || "",
+          notificationId: notificationIdentifier,
+          sectionId: payload.sectionId || data?.sectionId || data?.section || "",
+          snoozeMinutes: 30,
         });
         void Notifications.clearLastNotificationResponseAsync().catch(() => null);
         return;
@@ -2821,13 +2891,16 @@ export default function Home() {
         void speakNotificationReminder(notification?.request?.content || null);
       }
     );
-    const responseSubscription =
-      Notifications.addNotificationResponseReceivedListener(handleNotificationResponse);
+    const responseSubscription = Notifications.addNotificationResponseReceivedListener(
+      (response) => {
+        void handleNotificationResponse(response);
+      }
+    );
 
     void Notifications.getLastNotificationResponseAsync()
       .then((lastResponse) => {
         if (!lastResponse) return;
-        handleNotificationResponse(lastResponse);
+        void handleNotificationResponse(lastResponse);
       })
       .catch(() => null);
 
@@ -3041,6 +3114,10 @@ export default function Home() {
       if (startAssistVoiceHintTimeoutRef.current) {
         clearTimeout(startAssistVoiceHintTimeoutRef.current);
         startAssistVoiceHintTimeoutRef.current = null;
+      }
+      if (snoozeAffirmationTimeoutRef.current) {
+        clearTimeout(snoozeAffirmationTimeoutRef.current);
+        snoozeAffirmationTimeoutRef.current = null;
       }
       void cancelFocusCompletionReminder();
       void stopEncouragement();
@@ -4092,6 +4169,11 @@ export default function Home() {
       pendingNotificationTaskTarget.reminderAction ||
       notificationActionContextRef.current?.reminderAction ||
       null;
+    const pendingSnoozeMinutesRaw =
+      pendingNotificationTaskTarget.snoozeMinutes ??
+      notificationActionContextRef.current?.snoozeMinutes ??
+      null;
+    const pendingSnoozeMinutes = Number(pendingSnoozeMinutesRaw);
 
     if (!task || task.completed) {
       notificationActionContextRef.current = null;
@@ -4106,6 +4188,18 @@ export default function Home() {
     const didNavigate = focusTaskById(task.id, {
       highlight: true,
       onComplete: () => {
+        if (
+          pendingAction === REMINDER_ACTIONS.SNOOZE_10 ||
+          pendingAction === REMINDER_ACTIONS.SNOOZE_30
+        ) {
+          const snoozeMinutes =
+            pendingSnoozeMinutes === 30 ||
+            pendingAction === REMINDER_ACTIONS.SNOOZE_30
+              ? 30
+              : 10;
+          showSnoozeAffirmation({ taskId: task.id, minutes: snoozeMinutes });
+        }
+
         if (pendingAction === REMINDER_ACTIONS.START_NOW) {
           setFirstStepOnlyTaskId(null);
           startFocusActionRef.current?.(
@@ -4144,6 +4238,7 @@ export default function Home() {
   }, [
     focusTaskById,
     pendingNotificationTaskTarget,
+    showSnoozeAffirmation,
     startRecoveryEdit,
     tasks,
   ]);
@@ -8797,6 +8892,51 @@ export default function Home() {
               </Text>
             </TouchableOpacity>
           </Animated.View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={snoozeAffirmationModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeSnoozeAffirmation}
+      >
+        <View className="flex-1 bg-[#061414]/88 justify-center px-6">
+          <View
+            accessible
+            accessibilityRole="alert"
+            className="bg-[#0B1F1F] p-5 rounded-[30px] border border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/15"
+          >
+            <View className="flex-row items-start justify-between mb-3">
+              <Text
+                accessibilityRole="header"
+                className="flex-1 text-[#E8F4F4] text-base font-black pr-3"
+              >
+                {snoozeAffirmationModal.title}
+              </Text>
+              <TouchableOpacity
+                onPress={closeSnoozeAffirmation}
+                accessibilityLabel="Close snooze message"
+                className="w-8 h-8 rounded-full bg-[#123131]/85 border border-[#66b9b9]/35 items-center justify-center"
+              >
+                <Feather name="x" size={14} color="#9FB5B5" />
+              </TouchableOpacity>
+            </View>
+
+            <Text className="text-[#9FB5B5] text-[13px] leading-5 mb-5">
+              {snoozeAffirmationModal.message}
+            </Text>
+
+            <TouchableOpacity
+              onPress={closeSnoozeAffirmation}
+              accessibilityLabel="Close snooze message"
+              className="self-end bg-[#66b9b9]/15 border border-[#66b9b9]/35 rounded-2xl px-4 py-2.5"
+            >
+              <Text className="text-[#66b9b9] font-black uppercase tracking-widest text-[11px]">
+                Okay
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
 

@@ -41,13 +41,13 @@ export const registerTaskReminderActions = async () => {
         },
         {
           identifier: TASK_REMINDER_ACTION_IDS.SNOOZE_10,
-          buttonTitle: "Snooze 10",
-          options: { opensAppToForeground: false },
+          buttonTitle: "↺ 10m",
+          options: { opensAppToForeground: true },
         },
         {
           identifier: TASK_REMINDER_ACTION_IDS.SNOOZE_30,
-          buttonTitle: "Snooze 30",
-          options: { opensAppToForeground: false },
+          buttonTitle: "↺ 30m",
+          options: { opensAppToForeground: true },
         },
         {
           identifier: TASK_REMINDER_ACTION_IDS.MOVE_GENTLY,
