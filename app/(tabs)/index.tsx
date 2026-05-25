@@ -16,6 +16,7 @@ import {
   Platform,
   UIManager,
   AppState,
+  KeyboardAvoidingView,
 } from "react-native";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { db, initDB } from "../../database/db";
@@ -384,6 +385,7 @@ export default function Home() {
   const [editingSubtaskId, setEditingSubtaskId] = useState(null);
   const [editingSubtaskDraft, setEditingSubtaskDraft] = useState("");
   const [draggingSubtaskKey, setDraggingSubtaskKey] = useState("");
+  const [isSubtaskReordering, setIsSubtaskReordering] = useState(false);
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
   const [timeError, setTimeError] = useState(false);
@@ -473,6 +475,8 @@ export default function Home() {
   );
   const listBottomPadding =
     maxFloatingStackBottom + 44;
+  const modalBottomPadding = Math.max(insets.bottom, 8) + 8;
+  const modalKeyboardOffset = Platform.OS === "ios" ? Math.max(insets.top, 10) : 0;
 
   const syncHeaderCollapsedState = useCallback((collapsed) => {
     setIsHeaderCollapsed((prev) => (prev === collapsed ? prev : collapsed));
@@ -1338,6 +1342,7 @@ export default function Home() {
     taskId: null,
     subtaskId: null,
     index: -1,
+    startPageY: 0,
     deltaY: 0,
   });
   const startAssistVoiceHintTimeoutRef = useRef(null);
@@ -3288,10 +3293,11 @@ export default function Home() {
 
   const toggleTaskCardExpansion = useCallback(
     (taskId) => {
+      if (isSubtaskReordering) return;
       runLayoutAnimation();
       setExpandedTaskId((prev) => (prev === taskId ? null : taskId));
     },
-    [runLayoutAnimation]
+    [isSubtaskReordering, runLayoutAnimation]
   );
 
   const cancelTaskReminders = useCallback(async (notificationValue) => {
@@ -5633,6 +5639,7 @@ export default function Home() {
       startPageY,
       deltaY: 0,
     };
+    setIsSubtaskReordering(true);
     setDraggingSubtaskKey(`${taskId}:${subtaskId}`);
   };
 
@@ -5648,8 +5655,10 @@ export default function Home() {
       taskId: null,
       subtaskId: null,
       index: -1,
+      startPageY: 0,
       deltaY: 0,
     };
+    setIsSubtaskReordering(false);
     setDraggingSubtaskKey("");
   };
 
@@ -5673,6 +5682,23 @@ export default function Home() {
 
     resetSubtaskDrag();
   };
+
+  useEffect(() => {
+    if (!draggingSubtaskKey) return;
+    const [taskIdPart, subtaskIdPart] = draggingSubtaskKey.split(":");
+    const activeTaskId = Number(taskIdPart);
+    const activeSubtaskId = Number(subtaskIdPart);
+
+    const taskExists = tasks.some((task) => {
+      if (task.id !== activeTaskId) return false;
+      const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+      return subtasks.some((subtask) => subtask.id === activeSubtaskId);
+    });
+
+    if (!taskExists) {
+      resetSubtaskDrag();
+    }
+  }, [draggingSubtaskKey, tasks]);
 
   const deleteSubtask = (taskId, subtaskId) => {
     setTasks((prev) =>
@@ -7193,21 +7219,39 @@ export default function Home() {
                                 }`}
                               >
                                 <View
+                                  accessible
+                                  accessibilityRole="button"
+                                  accessibilityLabel="Reorder subtask"
+                                  accessibilityHint="Hold and drag to change subtask order"
                                   onStartShouldSetResponder={() => true}
+                                  onStartShouldSetResponderCapture={() => true}
                                   onMoveShouldSetResponder={() => true}
+                                  onMoveShouldSetResponderCapture={() => true}
                                   onResponderGrant={(event) =>
-                                    handleSubtaskDragStart(
-                                      task.id,
-                                      sub.id,
-                                      subIndex,
-                                      event.nativeEvent.pageY
-                                    )
+                                    {
+                                      event.stopPropagation?.();
+                                      handleSubtaskDragStart(
+                                        task.id,
+                                        sub.id,
+                                        subIndex,
+                                        event.nativeEvent.pageY
+                                      );
+                                    }
                                   }
-                                  onResponderMove={(event) =>
-                                    handleSubtaskDragMove(event.nativeEvent.pageY)
-                                  }
-                                  onResponderRelease={handleSubtaskDragRelease}
-                                  onResponderTerminate={handleSubtaskDragRelease}
+                                  onResponderMove={(event) => {
+                                    event.stopPropagation?.();
+                                    handleSubtaskDragMove(event.nativeEvent.pageY);
+                                  }}
+                                  onResponderRelease={(event) => {
+                                    event.stopPropagation?.();
+                                    handleSubtaskDragRelease();
+                                  }}
+                                  onResponderTerminate={(event) => {
+                                    event.stopPropagation?.();
+                                    handleSubtaskDragRelease();
+                                  }}
+                                  onResponderTerminationRequest={() => false}
+                                  hitSlop={8}
                                   className="p-1 mr-1"
                                 >
                                   <Feather
@@ -7218,6 +7262,7 @@ export default function Home() {
                                 </View>
 
                                 <TouchableOpacity
+                                  disabled={isSubtaskReordering}
                                   onPress={() => toggleSubtask(task.id, sub.id)}
                                   className={`w-4 h-4 rounded-[4px] border border-[#66b9b9] mr-2 justify-center items-center ${
                                     sub.completed ? "bg-[#66b9b9]" : "bg-transparent"
@@ -7251,12 +7296,14 @@ export default function Home() {
                                 {isEditingSubtask ? (
                                   <>
                                     <TouchableOpacity
+                                      disabled={isSubtaskReordering}
                                       onPress={saveSubtaskEditing}
                                       className="p-1 ml-1"
                                     >
                                       <Feather name="check" size={12} color={COLORS.success} />
                                     </TouchableOpacity>
                                     <TouchableOpacity
+                                      disabled={isSubtaskReordering}
                                       onPress={cancelSubtaskEditing}
                                       className="p-1"
                                     >
@@ -7266,12 +7313,14 @@ export default function Home() {
                                 ) : (
                                   <>
                                     <TouchableOpacity
+                                      disabled={isSubtaskReordering}
                                       onPress={() => startSubtaskEditing(task.id, sub)}
                                       className="p-1 ml-1"
                                     >
                                       <Feather name="edit-3" size={12} color={COLORS.accent} />
                                     </TouchableOpacity>
                                     <TouchableOpacity
+                                      disabled={isSubtaskReordering}
                                       onPress={() => deleteSubtask(task.id, sub.id)}
                                       className="p-1"
                                     >
@@ -7495,6 +7544,7 @@ export default function Home() {
       <Reanimated.ScrollView
         ref={scrollRef}
         className="flex-1 bg-[#061414]"
+        scrollEnabled={!isSubtaskReordering}
         onScroll={homeScrollHandler}
         scrollEventThrottle={16}
         contentContainerStyle={{
@@ -7911,8 +7961,22 @@ export default function Home() {
         animationType="fade"
         onRequestClose={closeStartAssist}
       >
-        <View className="flex-1 bg-[#061414]/90 justify-end px-4 pb-8">
-          <View className="bg-[#0B1F1F] rounded-[28px] border border-[#66b9b9]/30 p-5 shadow-2xl shadow-[#66b9b9]/15">
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={modalKeyboardOffset}
+        >
+          <View
+            className="flex-1 bg-[#061414]/90 justify-end px-4"
+            style={{ paddingBottom: modalBottomPadding }}
+          >
+            <View className="max-h-[86%] bg-[#0B1F1F] rounded-[28px] border border-[#66b9b9]/30 p-5 shadow-2xl shadow-[#66b9b9]/15">
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+                contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 12) + 8 }}
+              >
             <View className="flex-row items-start justify-between">
               <View className="flex-1 pr-3">
                 <Text className="text-[#E8F4F4] text-lg font-black">
@@ -8241,17 +8305,32 @@ export default function Home() {
                 </TouchableOpacity>
               </View>
             ) : null}
+              </ScrollView>
+            </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ✅ CREATE TASK MODAL */}
       <Modal visible={modalVisible} transparent animationType="slide">
-        <View className="flex-1 justify-end bg-[#061414]/95 pt-10">
-          <ScrollView
-            className="bg-[#0B1F1F] rounded-t-[40px] border-t border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/20"
-            contentContainerStyle={{ padding: 24 }}
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={modalKeyboardOffset}
+        >
+          <View
+            className="flex-1 justify-end bg-[#061414]/95 pt-10"
+            style={{ paddingBottom: modalBottomPadding }}
           >
+            <ScrollView
+              className="bg-[#0B1F1F] rounded-t-[40px] border-t border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/20"
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              contentContainerStyle={{
+                padding: 24,
+                paddingBottom: Math.max(insets.bottom, 20) + 24,
+              }}
+            >
             <Text className="text-[#E8F4F4] text-2xl font-black mb-6 uppercase tracking-tight">
               {isEditMode ? "Edit Task ✏️" : "New Task ✨"}
             </Text>
@@ -8507,6 +8586,7 @@ export default function Home() {
             </TouchableOpacity>
           </ScrollView>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={editRepeatScopeModalVisible} transparent animationType="fade">
