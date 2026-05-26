@@ -36,27 +36,27 @@ export const registerTaskReminderActions = async () => {
       [
         {
           identifier: TASK_REMINDER_ACTION_IDS.START_NOW,
-          buttonTitle: "Start now",
+          buttonTitle: "Start",
           options: { opensAppToForeground: true },
         },
         {
           identifier: TASK_REMINDER_ACTION_IDS.SNOOZE_10,
-          buttonTitle: "↺ 10m",
+          buttonTitle: "10m",
           options: { opensAppToForeground: true },
         },
         {
           identifier: TASK_REMINDER_ACTION_IDS.SNOOZE_30,
-          buttonTitle: "↺ 30m",
+          buttonTitle: "30m",
           options: { opensAppToForeground: true },
         },
         {
           identifier: TASK_REMINDER_ACTION_IDS.MOVE_GENTLY,
-          buttonTitle: "Move gently",
+          buttonTitle: "Move",
           options: { opensAppToForeground: true },
         },
         {
           identifier: TASK_REMINDER_ACTION_IDS.MAKE_SMALLER,
-          buttonTitle: "Make smaller",
+          buttonTitle: "Smaller",
           options: { opensAppToForeground: true },
         },
       ]

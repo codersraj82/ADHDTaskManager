@@ -111,6 +111,10 @@ import {
   extractTaskNavigationPayload,
   findBestCurrentTask,
 } from "../../utils/taskNavigationHelpers";
+import {
+  getTaskAvoidanceSignal,
+  getAvoidanceReasonText,
+} from "../../utils/taskSupportSignals";
 import Reanimated, {
   cancelAnimation,
   Easing,
@@ -219,6 +223,7 @@ const TASK_NAVIGATION_MAX_RETRIES = 5;
 const TASK_NAVIGATION_RETRY_DELAY_MS = 130;
 const CURRENT_TASK_FAB_BREATH_MS = 2600;
 const START_ASSIST_SHORT_FOCUS_SECONDS = 120;
+const HEAVY_SUPPORT_MINIMUM_FOCUS_SECONDS = 300;
 const REMINDER_ACTION_HISTORY_LIMIT = 30;
 const REMINDER_ACTIONS = Object.freeze({
   OPENED: "opened",
@@ -231,6 +236,11 @@ const REMINDER_ACTIONS = Object.freeze({
 const SNOOZE_AFFIRMATION_AUTO_CLOSE_DELAY_MS = 10000;
 const SNOOZE_AFFIRMATION_MESSAGE =
   "No guilt. Your reminder will return gently. When you come back, one tiny step is enough.";
+const EMPTY_TASK_SUPPORT_SIGNAL = Object.freeze({
+  score: 0,
+  reasons: [],
+  level: "none",
+});
 
 const SECTION_SURFACE_CLASSES = {
   Pinned: "bg-[#0B1F1F]",
@@ -288,6 +298,16 @@ const toIsoStringOrEmpty = (value) => {
   if (!value || typeof value !== "string") return "";
   return value;
 };
+
+const isTaskDeletedOrArchived = (task) =>
+  task?.deleted === true ||
+  task?.deleted === 1 ||
+  task?.isDeleted === true ||
+  task?.isDeleted === 1 ||
+  task?.archived === true ||
+  task?.archived === 1 ||
+  task?.isArchived === true ||
+  task?.isArchived === 1;
 
 const isTimestampWithinRange = (timestamp, start, end) =>
   timestamp !== null && timestamp >= start && timestamp <= end;
@@ -993,6 +1013,18 @@ export default function Home() {
     });
 
     return labels;
+  }, [tasks]);
+
+  const taskSupportSignalById = useMemo(() => {
+    const now = new Date();
+    const nextMap = {};
+
+    tasks.forEach((task) => {
+      if (!task || typeof task.id !== "number") return;
+      nextMap[task.id] = getTaskAvoidanceSignal(task, now);
+    });
+
+    return nextMap;
   }, [tasks]);
 
   // 1. Prepare the JSON string for the DB
@@ -2657,8 +2689,8 @@ export default function Home() {
       const contentTitle = "Gentle reminder";
       const contentBody =
         snoozeMinutes === 30
-          ? "Still here gently. Want to try the smallest version?"
-          : "Still here gently. Start with one tiny step.";
+          ? "Still waiting gently. Want to try the smallest version?"
+          : "Gentle reminder again. Start with one tiny step.";
 
       const reminderData = {
         ...(metadata.originalData || {}),
@@ -2682,6 +2714,7 @@ export default function Home() {
         taskTitle: metadata.taskTitle || taskTitle,
         reminderOffsetMinutes: 0,
         minutesBefore: 0,
+        scheduledAt: reminderDate.toISOString(),
         source: "snooze",
         snoozeMinutes,
         originalNotificationId: metadata.notificationId || undefined,
@@ -4157,6 +4190,85 @@ export default function Home() {
   const scrollToTask = useCallback(
     (taskId, options = {}) => focusTaskById(taskId, options),
     [focusTaskById]
+  );
+
+  const openTaskInMakeSmallerSupport = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          setStartAssistTaskId(task.id);
+          setStartAssistMode("make-easier");
+          setStartAssistFirstActionDraft(task.firstAction || "");
+          setStartAssistBreakdownDraft("");
+          setStartAssistMinimumVersionDraft(task.minimumVersion || "");
+          setIsStartAssistVisible(true);
+        },
+      });
+    },
+    [scrollToTask]
+  );
+
+  const handleSupportStartTwoMinutes = useCallback(
+    (taskId) => {
+      const numericTaskId = Number(taskId);
+      if (!Number.isFinite(numericTaskId)) return;
+
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(numericTaskId, {
+        highlight: true,
+        onComplete: () => {
+          startFocusActionRef.current?.(
+            numericTaskId,
+            START_ASSIST_SHORT_FOCUS_SECONDS
+          );
+          setRecoverySuccessMessage("Just 2 minutes. Starting counts.");
+        },
+      });
+    },
+    [scrollToTask]
+  );
+
+  const handleSupportStartMinimumVersion = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      if (typeof task.minimumVersion !== "string" || !task.minimumVersion.trim()) {
+        return;
+      }
+
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          startFocusActionRef.current?.(
+            task.id,
+            HEAVY_SUPPORT_MINIMUM_FOCUS_SECONDS
+          );
+          setRecoverySuccessMessage(
+            "Small counts. Start with the minimum version."
+          );
+        },
+      });
+    },
+    [scrollToTask]
+  );
+
+  const openTaskInMoveGentlySupport = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          startRecoveryEdit(task);
+          setRecoveryModalVisible(true);
+          setRecoverySuccessMessage("");
+        },
+      });
+    },
+    [scrollToTask, startRecoveryEdit]
   );
 
   useEffect(() => {
@@ -6969,6 +7081,19 @@ export default function Home() {
             const repeatLabel = repeatLabelByTaskId[task.id] || "";
             const hasRepeatLabel = Boolean(repeatLabel);
             const showTaskHeaderMeta = task.isPinned || hasRepeatLabel;
+            const taskSupportSignal =
+              taskSupportSignalById[task.id] || EMPTY_TASK_SUPPORT_SIGNAL;
+            const supportReasonText = getAvoidanceReasonText(taskSupportSignal);
+            const isArchivedOrDeletedTask = isTaskDeletedOrArchived(task);
+            const showTaskSupportHint =
+              isTaskExpanded &&
+              !task.completed &&
+              !isArchivedOrDeletedTask &&
+              taskSupportSignal.level !== "none";
+            const isHeavySupportSignal = taskSupportSignal.level === "heavy";
+            const hasMinimumVersion =
+              typeof task.minimumVersion === "string" &&
+              task.minimumVersion.trim().length > 0;
             const taskMoodMeta = getMoodMeta(task.moodType);
             const taskMoodAffirmation = isValidMoodType(task.moodType)
               ? pickMoodAffirmation({
@@ -7252,6 +7377,87 @@ export default function Home() {
 
                     {isTaskExpanded && (
                       <>
+                        {showTaskSupportHint ? (
+                          <View className="mt-2 p-3 rounded-2xl border border-[#66b9b9]/30 bg-[#123131]/70">
+                            <Text className="text-[#E8F4F4] text-xs font-black">
+                              {isHeavySupportSignal
+                                ? "This may be feeling heavy."
+                                : "This may need a softer start."}
+                            </Text>
+                            <Text className="text-[#9FB5B5] text-[11px] leading-4 mt-1">
+                              {isHeavySupportSignal
+                                ? "No guilt. Try the smallest useful version or move it to a better time."
+                                : "Want to make the next step smaller?"}
+                            </Text>
+                            {supportReasonText ? (
+                              <Text className="text-[#66b9b9] text-[10px] mt-2 font-semibold">
+                                {supportReasonText}
+                              </Text>
+                            ) : null}
+                            <View className="flex-row flex-wrap mt-2">
+                              {isHeavySupportSignal && hasMinimumVersion ? (
+                                <TouchableOpacity
+                                  onPress={() =>
+                                    handleSupportStartMinimumVersion(task)
+                                  }
+                                  className="mr-2 mb-2 px-3 py-1.5 rounded-full border border-[#B6C26E]/45 bg-[#182419]/80"
+                                >
+                                  <Text className="text-[#B6C26E] text-[10px] font-black uppercase tracking-widest">
+                                    Start Minimum Version
+                                  </Text>
+                                </TouchableOpacity>
+                              ) : null}
+                              <TouchableOpacity
+                                onPress={() => handleSupportStartTwoMinutes(task.id)}
+                                className="mr-2 mb-2 px-3 py-1.5 rounded-full border border-[#66b9b9]/40 bg-[#123131]/80"
+                              >
+                                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                                  Start 2 Min
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                onPress={() => openTaskInMakeSmallerSupport(task)}
+                                className="mr-2 mb-2 px-3 py-1.5 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/80"
+                              >
+                                <Text className="text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
+                                  Make Smaller
+                                </Text>
+                              </TouchableOpacity>
+                              {isHeavySupportSignal ? (
+                                <TouchableOpacity
+                                  onPress={() => openTaskInMoveGentlySupport(task)}
+                                  className="mr-2 mb-2 px-3 py-1.5 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70"
+                                >
+                                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                                    Move Gently
+                                  </Text>
+                                </TouchableOpacity>
+                              ) : null}
+                            </View>
+                          </View>
+                        ) : null}
+
+                        {__DEV__ ? (
+                          <View className="mt-2 px-2.5 py-2 rounded-xl border border-[#337a7a]/30 bg-[#061414]/55">
+                            <Text className="text-[#9FB5B5] text-[9px] font-black uppercase tracking-widest">
+                              Support Debug
+                            </Text>
+                            <Text className="text-[#99bdbd] text-[9px] mt-1">
+                              Score {taskSupportSignal.score} | Level{" "}
+                              {taskSupportSignal.level} | Reasons{" "}
+                              {taskSupportSignal.reasons.length
+                                ? taskSupportSignal.reasons.join(", ")
+                                : "none"}
+                            </Text>
+                            <Text className="text-[#99bdbd] text-[9px] mt-0.5">
+                              reminderSnoozeCount {Number(task.reminderSnoozeCount || 0)} | reminderMoveGentlyCount {Number(task.reminderMoveGentlyCount || 0)} | reminderMakeSmallerCount {Number(task.reminderMakeSmallerCount || 0)}
+                            </Text>
+                            <Text className="text-[#99bdbd] text-[9px] mt-0.5">
+                              snoozeCount {Number(task.snoozeCount || 0)} | rescheduleCount {Number(task.rescheduleCount || 0)} | stuckCount {Number(task.stuckCount || 0)} | reminderActionHistory {Array.isArray(task.reminderActionHistory) ? task.reminderActionHistory.length : 0}
+                            </Text>
+                          </View>
+                        ) : null}
+
                         {task.details ? (
                           <View className="mt-2 p-3 bg-[#061414]/45 rounded-2xl border border-[#337a7a]/25">
                             <Text className="text-[#E8F4F4] text-xs leading-5">

@@ -70,6 +70,16 @@ export const buildTaskReminderPayload = ({ task, type, minutesBefore = 0 }) => {
     typeof task?.title === "string" && task.title.trim()
       ? task.title.trim()
       : "Task";
+  const reminderOffsetMinutes = Number(minutesBefore) || 0;
+  const scheduledFor = task?.scheduledTime || "";
+  const scheduledTaskDate = parseStoredDateTime(scheduledFor);
+  const scheduledAt =
+    scheduledTaskDate &&
+    !Number.isNaN(scheduledTaskDate.getTime() - reminderOffsetMinutes * 60000)
+      ? new Date(
+          scheduledTaskDate.getTime() - reminderOffsetMinutes * 60000
+        ).toISOString()
+      : "";
 
   return {
     type,
@@ -78,8 +88,9 @@ export const buildTaskReminderPayload = ({ task, type, minutesBefore = 0 }) => {
     category: sectionName,
     taskTitle,
     minutesBefore,
-    reminderOffsetMinutes: Number(minutesBefore) || 0,
-    scheduledFor: task?.scheduledTime || "",
+    reminderOffsetMinutes,
+    scheduledFor,
+    scheduledAt,
   };
 };
 
