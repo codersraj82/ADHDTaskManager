@@ -115,6 +115,8 @@ import {
   getTaskAvoidanceSignal,
   getAvoidanceReasonText,
 } from "../../utils/taskSupportSignals";
+import { getOverwhelmSuggestions } from "../../utils/overwhelmMode";
+import OverwhelmModeSheet from "../../components/task/OverwhelmModeSheet";
 import Reanimated, {
   cancelAnimation,
   Easing,
@@ -455,6 +457,7 @@ export default function Home() {
   const [recoverySavingTaskId, setRecoverySavingTaskId] = useState(null);
   const [recoverySuccessMessage, setRecoverySuccessMessage] = useState("");
   const [recoveryFabPromptVisible, setRecoveryFabPromptVisible] = useState(false);
+  const [isOverwhelmModeVisible, setIsOverwhelmModeVisible] = useState(false);
   const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
   const [headerContainerHeight, setHeaderContainerHeight] = useState(
     HEADER_HIDE_OFFSET_FALLBACK
@@ -1026,6 +1029,33 @@ export default function Home() {
 
     return nextMap;
   }, [tasks]);
+
+  const overwhelmSuggestions = useMemo(
+    () => getOverwhelmSuggestions(tasks, new Date()),
+    [tasks]
+  );
+
+  const overwhelmMoodMessage = useMemo(() => {
+    if (
+      dailyMoodType === MOOD_TYPES.FRUSTRATED ||
+      dailyMoodType === MOOD_TYPES.SAD
+    ) {
+      return "One tiny task can reduce pressure.";
+    }
+
+    if (dailyMoodType === MOOD_TYPES.NEUTRAL) {
+      return "Try the smallest task first.";
+    }
+
+    if (
+      dailyMoodType === MOOD_TYPES.HAPPY ||
+      dailyMoodType === MOOD_TYPES.VERY_HAPPY
+    ) {
+      return "You may be ready for one important task.";
+    }
+
+    return "";
+  }, [dailyMoodType]);
 
   // 1. Prepare the JSON string for the DB
   const subtasksJSON = JSON.stringify([]); 
@@ -4269,6 +4299,116 @@ export default function Home() {
       });
     },
     [scrollToTask, startRecoveryEdit]
+  );
+
+  const openOverwhelmMode = useCallback(() => {
+    setIsOverwhelmModeVisible(true);
+  }, []);
+
+  const closeOverwhelmMode = useCallback(() => {
+    setIsOverwhelmModeVisible(false);
+  }, []);
+
+  const handleOverwhelmGoToTask = useCallback(
+    (taskId) => {
+      const numericTaskId = Number(taskId);
+      closeOverwhelmMode();
+      if (!Number.isFinite(numericTaskId)) return;
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(numericTaskId, { highlight: true });
+    },
+    [closeOverwhelmMode, scrollToTask]
+  );
+
+  const handleOverwhelmStartTwoMinutes = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      closeOverwhelmMode();
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          startFocusActionRef.current?.(
+            task.id,
+            START_ASSIST_SHORT_FOCUS_SECONDS
+          );
+          setRecoverySuccessMessage("Just 2 minutes. Starting counts.");
+        },
+      });
+    },
+    [closeOverwhelmMode, scrollToTask]
+  );
+
+  const handleOverwhelmMakeSmaller = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      closeOverwhelmMode();
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          setStartAssistTaskId(task.id);
+          setStartAssistMode("make-easier");
+          setStartAssistFirstActionDraft(task.firstAction || "");
+          setStartAssistBreakdownDraft("");
+          setStartAssistMinimumVersionDraft(task.minimumVersion || "");
+          setIsStartAssistVisible(true);
+          setRecoverySuccessMessage("Let's make this easier to begin.");
+        },
+      });
+    },
+    [closeOverwhelmMode, scrollToTask]
+  );
+
+  const handleOverwhelmStartSmall = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+
+      const hasMinimumVersion =
+        typeof task.minimumVersion === "string" && task.minimumVersion.trim().length > 0;
+      const hasFirstAction =
+        typeof task.firstAction === "string" && task.firstAction.trim().length > 0;
+
+      if (!hasMinimumVersion && !hasFirstAction) {
+        handleOverwhelmMakeSmaller(task);
+        return;
+      }
+
+      closeOverwhelmMode();
+      setFirstStepOnlyTaskId(hasFirstAction ? task.id : null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          startFocusActionRef.current?.(
+            task.id,
+            HEAVY_SUPPORT_MINIMUM_FOCUS_SECONDS
+          );
+          setRecoverySuccessMessage(
+            hasMinimumVersion
+              ? "Small counts. Start with the minimum version."
+              : "Small counts. Start with one small step."
+          );
+        },
+      });
+    },
+    [closeOverwhelmMode, handleOverwhelmMakeSmaller, scrollToTask]
+  );
+
+  const handleOverwhelmMoveGently = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      closeOverwhelmMode();
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          startRecoveryEdit(task);
+          setRecoveryModalVisible(true);
+          setRecoverySuccessMessage("No guilt. Let's find a better time.");
+        },
+      });
+    },
+    [closeOverwhelmMode, scrollToTask, startRecoveryEdit]
   );
 
   useEffect(() => {
@@ -7938,6 +8078,21 @@ export default function Home() {
             )}
           </View>
 
+          <View className="mb-3">
+            <TouchableOpacity
+              onPress={openOverwhelmMode}
+              activeOpacity={0.86}
+              accessibilityLabel="I’m overwhelmed"
+              accessibilityHint="Opens a gentle list of small next steps"
+              className="self-start px-3.5 py-2 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/75 flex-row items-center"
+            >
+              <Feather name="life-buoy" size={12} color={COLORS.warning} />
+              <Text className="ml-1.5 text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
+                {"I'm overwhelmed"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
           {/* Empty State OR Progress */}
           <View className="h-3 bg-[#061414]/70 rounded-full overflow-hidden border border-[#337a7a]/25">
             <Reanimated.View
@@ -8209,6 +8364,17 @@ export default function Home() {
       {renderPageModal()}
       {renderOnboardingModal()}
       {renderRecoveryModal()}
+      <OverwhelmModeSheet
+        visible={isOverwhelmModeVisible}
+        suggestions={overwhelmSuggestions}
+        onClose={closeOverwhelmMode}
+        onGoToTask={handleOverwhelmGoToTask}
+        onStartTwoMinutes={handleOverwhelmStartTwoMinutes}
+        onStartSmall={handleOverwhelmStartSmall}
+        onMakeSmaller={handleOverwhelmMakeSmaller}
+        onMoveGently={handleOverwhelmMoveGently}
+        moodMessage={overwhelmMoodMessage}
+      />
       <Modal
         visible={taskMoodPromptVisible}
         transparent
