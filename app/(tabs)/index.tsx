@@ -108,6 +108,7 @@ import {
 } from "../../utils/moodAnalytics";
 import {
   buildTaskReminderPayload,
+  buildTaskReminderNotificationContent,
   extractTaskNavigationPayload,
   findBestCurrentTask,
 } from "../../utils/taskNavigationHelpers";
@@ -189,6 +190,29 @@ const getYesterdayKey = () => {
   return getDateKey(date);
 };
 
+const getLocalDateKey = (date = new Date()) => getDateKey(date);
+
+const normalizeTodayPlanSection = (value) => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === TODAY_PLAN_SECTIONS.MORNING ||
+    normalized === TODAY_PLAN_SECTIONS.WORK ||
+    normalized === TODAY_PLAN_SECTIONS.EVENING
+  ) {
+    return normalized;
+  }
+  return null;
+};
+
+const getSectionForCurrentTime = (now = new Date()) => {
+  const hour = now.getHours();
+  if (hour < 12) return "Morning";
+  if (hour < 17) return "Work";
+  return "Evening";
+};
+
 const hashSeed = (value = "") => {
   let hash = 0;
   const normalized = String(value);
@@ -238,6 +262,37 @@ const REMINDER_ACTIONS = Object.freeze({
 const SNOOZE_AFFIRMATION_AUTO_CLOSE_DELAY_MS = 10000;
 const SNOOZE_AFFIRMATION_MESSAGE =
   "No guilt. Your reminder will return gently. When you come back, one tiny step is enough.";
+const TODAY_PLAN_NOTIFICATION_SETTINGS_KEY = "todayPlanReminderNotificationIds";
+const LAST_TODAY_PLAN_PROMPT_DATE_KEY = "lastTodayPlanPromptDate";
+const TODAY_PLAN_CELEBRATION_AUTO_CLOSE_DELAY_MS = 7000;
+const TODAY_PLAN_SECTIONS = Object.freeze({
+  MORNING: "morning",
+  WORK: "work",
+  EVENING: "evening",
+});
+const TODAY_PLAN_NOTIFICATION_SLOTS = Object.freeze([
+  {
+    section: TODAY_PLAN_SECTIONS.MORNING,
+    hour: 8,
+    minute: 0,
+    title: "Plan your morning gently",
+    body: "Pick one small task to begin the day. 🌿",
+  },
+  {
+    section: TODAY_PLAN_SECTIONS.WORK,
+    hour: 10,
+    minute: 0,
+    title: "Plan your work block",
+    body: "One clear task can reduce mental load. ✨",
+  },
+  {
+    section: TODAY_PLAN_SECTIONS.EVENING,
+    hour: 18,
+    minute: 0,
+    title: "Plan your evening gently",
+    body: "Choose one small thing to close the day. 🤍",
+  },
+]);
 const EMPTY_TASK_SUPPORT_SIGNAL = Object.freeze({
   score: 0,
   reasons: [],
@@ -329,6 +384,60 @@ const isTaskScheduledForTodayOrCreatedToday = (task, start, end) => {
     isTimestampWithinRange(createdTimestamp, start, end);
 
   return isScheduledForToday || isCreatedTodayWithoutSchedule;
+};
+
+const hasPendingTodayTasks = (
+  tasks = [],
+  { now = new Date(), activeTaskId = null } = {}
+) => {
+  if (!Array.isArray(tasks) || !tasks.length) return false;
+  const { start, end } = getDayBounds(now);
+
+  return tasks.some((task) => {
+    if (!task || task.completed || isTaskDeletedOrArchived(task)) return false;
+
+    const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+    const dueTimestamp = toTaskTimestamp(task.dueDate);
+    const createdTimestamp = toTaskTimestamp(task.createdAt);
+    const isScheduledForToday = isTimestampWithinRange(
+      scheduledTimestamp,
+      start,
+      end
+    );
+    const isDueToday = isTimestampWithinRange(dueTimestamp, start, end);
+    const isCreatedTodayWithoutSchedule =
+      scheduledTimestamp === null &&
+      isTimestampWithinRange(createdTimestamp, start, end);
+    const isActiveTodayTask =
+      activeTaskId !== null &&
+      activeTaskId !== undefined &&
+      Number(task.id) === Number(activeTaskId) &&
+      (isScheduledForToday || isDueToday || isCreatedTodayWithoutSchedule);
+
+    return (
+      isScheduledForToday ||
+      isDueToday ||
+      isCreatedTodayWithoutSchedule ||
+      isActiveTodayTask
+    );
+  });
+};
+
+const getPastPendingTasks = (tasks = [], now = new Date()) => {
+  if (!Array.isArray(tasks) || !tasks.length) return [];
+  const { start } = getDayBounds(now);
+
+  return tasks
+    .filter((task) => {
+      if (!task || task.completed || isTaskDeletedOrArchived(task)) return false;
+      const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+      return scheduledTimestamp !== null && scheduledTimestamp < start;
+    })
+    .sort((a, b) => {
+      const aTime = toTaskTimestamp(a.scheduledTime) || 0;
+      const bTime = toTaskTimestamp(b.scheduledTime) || 0;
+      return bTime - aTime;
+    });
 };
 
 //*************main component function********* */
@@ -457,6 +566,23 @@ export default function Home() {
   const [recoverySavingTaskId, setRecoverySavingTaskId] = useState(null);
   const [recoverySuccessMessage, setRecoverySuccessMessage] = useState("");
   const [recoveryFabPromptVisible, setRecoveryFabPromptVisible] = useState(false);
+  const [tasksHydrated, setTasksHydrated] = useState(false);
+  const [todayPlanSheetVisible, setTodayPlanSheetVisible] = useState(false);
+  const [todayPlanNotificationSection, setTodayPlanNotificationSection] =
+    useState(null);
+  const [pendingTodayPlanSheet, setPendingTodayPlanSheet] = useState({
+    open: false,
+    section: null,
+  });
+  const [todayPlanCreateContextActive, setTodayPlanCreateContextActive] =
+    useState(false);
+  const [lastTodayPlanPromptDate, setLastTodayPlanPromptDate] = useState("");
+  const [todayPlanCelebration, setTodayPlanCelebration] = useState({
+    visible: false,
+    title: "",
+    message: "",
+    buttonLabel: "Okay",
+  });
   const [isOverwhelmModeVisible, setIsOverwhelmModeVisible] = useState(false);
   const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
   const [headerContainerHeight, setHeaderContainerHeight] = useState(
@@ -585,6 +711,18 @@ export default function Home() {
         : `${completedTodayTasks} of ${totalTodayTasks} tasks completed ✨`;
   const modalScale = useRef(new Animated.Value(0.8)).current;
   const todayDateKey = dailyStats?.date || getDateKey();
+  const hasPendingTodayTasksFlag = useMemo(
+    () => hasPendingTodayTasks(tasks, { now: new Date(), activeTaskId }),
+    [activeTaskId, tasks]
+  );
+  const todayPlanPastPendingTasks = useMemo(
+    () => getPastPendingTasks(tasks, new Date()),
+    [tasks]
+  );
+  const todayPlanPreviewPastTasks = useMemo(
+    () => todayPlanPastPendingTasks.slice(0, 5),
+    [todayPlanPastPendingTasks]
+  );
 
   const todayDailyMoodEntry = useMemo(
     () => dailyMoodEntries.find((entry) => entry.date === todayDateKey) || null,
@@ -1118,6 +1256,7 @@ export default function Home() {
     []
   );
   const recoverySheetProgress = useSharedValue(0);
+  const todayPlanSheetProgress = useSharedValue(0);
   const recoverySuccessPulse = useSharedValue(0);
   const headerCollapsedProgress = useSharedValue(0);
   const headerTranslateY = useSharedValue(0);
@@ -1138,6 +1277,13 @@ export default function Home() {
   const recoverySuccessStyle = useAnimatedStyle(() => ({
     opacity: recoverySuccessPulse.value,
     transform: [{ scale: 0.94 + recoverySuccessPulse.value * 0.06 }],
+  }));
+  const todayPlanBackdropStyle = useAnimatedStyle(() => ({
+    opacity: todayPlanSheetProgress.value * 0.82,
+  }));
+  const todayPlanSheetStyle = useAnimatedStyle(() => ({
+    opacity: todayPlanSheetProgress.value,
+    transform: [{ translateY: (1 - todayPlanSheetProgress.value) * 46 }],
   }));
   const headerAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: headerTranslateY.value }],
@@ -1409,6 +1555,8 @@ export default function Home() {
   const handledNotificationResponseKeyOrderRef = useRef([]);
   const notificationActionContextRef = useRef(null);
   const snoozeAffirmationTimeoutRef = useRef(null);
+  const todayPlanCelebrationTimeoutRef = useRef(null);
+  const todayPlanRescheduleTaskIdRef = useRef(null);
   const tasksRef = useRef([]);
   const startFocusActionRef = useRef(null);
   const subtaskDragStateRef = useRef({
@@ -1943,17 +2091,7 @@ export default function Home() {
     });
   }, []);
 
-  const pastPendingTaskCount = useMemo(() => {
-    const { start } = getDayBounds(new Date());
-    return tasks.reduce((count, task) => {
-      if (task.completed) return count;
-      const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
-      if (scheduledTimestamp === null || scheduledTimestamp >= start) {
-        return count;
-      }
-      return count + 1;
-    }, 0);
-  }, [tasks]);
+  const pastPendingTaskCount = todayPlanPastPendingTasks.length;
 
   const loadRecoveryPendingTasks = useCallback((preserveScroll = false) => {
     try {
@@ -2020,7 +2158,169 @@ export default function Home() {
     }
   }, []);
 
+  const clearTodayPlanCelebrationTimer = useCallback(() => {
+    if (todayPlanCelebrationTimeoutRef.current) {
+      clearTimeout(todayPlanCelebrationTimeoutRef.current);
+      todayPlanCelebrationTimeoutRef.current = null;
+    }
+  }, []);
+
+  const closeTodayPlanCelebration = useCallback(() => {
+    clearTodayPlanCelebrationTimer();
+    setTodayPlanCelebration((prev) =>
+      prev.visible ? { ...prev, visible: false } : prev
+    );
+  }, [clearTodayPlanCelebrationTimer]);
+
+  const showTodayPlanCelebration = useCallback(
+    (kind = "create") => {
+      clearTodayPlanCelebrationTimer();
+      const nextCelebration =
+        kind === "reschedule"
+          ? {
+              title: "Moved gently 🌿",
+              message: "This task has a place today now. No reset needed.",
+              buttonLabel: "Good",
+            }
+          : {
+              title: "Today has a starting point ✨",
+              message: "One useful task is enough to begin. You made the day clearer.",
+              buttonLabel: "Nice",
+            };
+
+      setTodayPlanCelebration({
+        visible: true,
+        ...nextCelebration,
+      });
+
+      todayPlanCelebrationTimeoutRef.current = setTimeout(() => {
+        setTodayPlanCelebration((prev) =>
+          prev.visible ? { ...prev, visible: false } : prev
+        );
+        todayPlanCelebrationTimeoutRef.current = null;
+      }, TODAY_PLAN_CELEBRATION_AUTO_CLOSE_DELAY_MS);
+    },
+    [clearTodayPlanCelebrationTimer]
+  );
+
+  const markTodayPlanPromptShown = useCallback((dateKey = getLocalDateKey()) => {
+    setLastTodayPlanPromptDate((prev) => (prev === dateKey ? prev : dateKey));
+    saveSetting(LAST_TODAY_PLAN_PROMPT_DATE_KEY, dateKey);
+  }, []);
+
+  const openTodayPlanSheet = useCallback((section = null) => {
+    const normalizedSection = normalizeTodayPlanSection(section);
+    setTodayPlanNotificationSection(normalizedSection);
+    setTodayPlanSheetVisible(true);
+  }, []);
+
+  const closeTodayPlanSheet = useCallback(() => {
+    todayPlanSheetProgress.value = withTiming(
+      0,
+      {
+        duration: 220,
+        easing: Easing.in(Easing.cubic),
+      },
+      (finished) => {
+        if (!finished) return;
+        runOnJS(setTodayPlanSheetVisible)(false);
+        runOnJS(setTodayPlanNotificationSection)(null);
+      }
+    );
+  }, [todayPlanSheetProgress]);
+
+  const openRecoveryModalFromTodayPlanTask = useCallback(
+    (task) => {
+      if (!task) return;
+      todayPlanRescheduleTaskIdRef.current = task.id;
+      setRecoveryEditingTaskId(task.id);
+      setRecoveryDraftSection(task.section || "Morning");
+      setRecoveryDraftDateTime(formatSqliteDateTime(new Date()));
+      setRecoverySuccessMessage("");
+      setRecoveryFabPromptVisible(false);
+      recoveryScrollOffsetRef.current = 0;
+      loadRecoveryPendingTasks(false);
+      setRecoveryModalVisible(true);
+    },
+    [loadRecoveryPendingTasks]
+  );
+
+  const scheduleTodayPlanNotifications = useCallback(async () => {
+    try {
+      const permissions = await Notifications.getPermissionsAsync();
+      if (permissions.status !== "granted") return;
+
+      const allScheduled =
+        await Notifications.getAllScheduledNotificationsAsync();
+      const scheduledBySection = {};
+
+      for (const slot of TODAY_PLAN_NOTIFICATION_SLOTS) {
+        const matches = allScheduled.filter((notification) => {
+          const data = notification?.content?.data || {};
+          return (
+            data?.type === "planTodayReminder" &&
+            normalizeTodayPlanSection(data?.section) === slot.section
+          );
+        });
+
+        if (matches.length > 0) {
+          const primary = matches[0];
+          if (primary?.identifier) {
+            scheduledBySection[slot.section] = primary.identifier;
+          }
+
+          if (matches.length > 1) {
+            await Promise.all(
+              matches
+                .slice(1)
+                .map((item) =>
+                  Notifications.cancelScheduledNotificationAsync(
+                    item.identifier
+                  ).catch(() => null)
+                )
+            );
+          }
+          continue;
+        }
+
+        const localDateKey = getLocalDateKey(new Date());
+        const id = await Notifications.scheduleNotificationAsync({
+          content: {
+            title: slot.title,
+            body: slot.body,
+            sound: "default",
+            data: {
+              type: "planTodayReminder",
+              section: slot.section,
+              localDateKey,
+              source: "dailyPlanNotification",
+            },
+            android: {
+              channelId: "adhd-alarms",
+              pressAction: { id: "default" },
+            },
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DAILY,
+            hour: slot.hour,
+            minute: slot.minute,
+          },
+        });
+
+        scheduledBySection[slot.section] = id;
+      }
+
+      saveSetting(
+        TODAY_PLAN_NOTIFICATION_SETTINGS_KEY,
+        JSON.stringify(scheduledBySection)
+      );
+    } catch (error) {
+      console.log("Today plan notification schedule error:", error);
+    }
+  }, []);
+
   const openRecoveryModal = useCallback(() => {
+    todayPlanRescheduleTaskIdRef.current = null;
     setRecoveryEditingTaskId(null);
     setRecoveryDraftDateTime("");
     setRecoveryDraftSection("Morning");
@@ -2040,6 +2340,7 @@ export default function Home() {
   }, [openRecoveryModal, recoveryFabPromptVisible]);
 
   const closeRecoveryModal = useCallback(() => {
+    todayPlanRescheduleTaskIdRef.current = null;
     recoverySheetProgress.value = withTiming(
       0,
       {
@@ -2093,7 +2394,7 @@ export default function Home() {
         ...targetTask,
         section: recoveryDraftSection,
         scheduledTime,
-      });
+      }, { source: "reschedule" });
 
       db.runSync(
         `UPDATE tasks
@@ -2150,6 +2451,18 @@ export default function Home() {
       setRecoveryEditingTaskId(null);
       setRecoveryDraftDateTime("");
       loadRecoveryPendingTasks(true);
+
+      const launchedFromTodayPlan =
+        todayPlanRescheduleTaskIdRef.current === targetTask.id;
+      if (launchedFromTodayPlan) {
+        const { start, end } = getDayBounds(new Date());
+        const scheduledTimestamp = toTaskTimestamp(scheduledTime);
+        if (isTimestampWithinRange(scheduledTimestamp, start, end)) {
+          showTodayPlanCelebration("reschedule");
+        }
+        todayPlanRescheduleTaskIdRef.current = null;
+        closeRecoveryModal();
+      }
     } catch (error) {
       console.log("Recovery task update error:", error);
     } finally {
@@ -2435,6 +2748,9 @@ export default function Home() {
         setOnboardingVisible(!nextProfile.onboardingComplete);
 
         const appSettings = getSettingsMap();
+        setLastTodayPlanPromptDate(
+          appSettings[LAST_TODAY_PLAN_PROMPT_DATE_KEY] || ""
+        );
         const todayRow = getDailyStatsRow(today);
         const existingCompleted = loadedTasks.filter((t) => t.completed).length;
         const lifetimeCompletedTasks = Number(
@@ -2521,6 +2837,8 @@ export default function Home() {
         checkDailyReset();
       } catch (e) {
         console.log("🚨 Master Boot Error:", e);
+      } finally {
+        setTasksHydrated(true);
       }
     };
 
@@ -2711,52 +3029,50 @@ export default function Home() {
       if (!targetTask || targetTask.completed) return null;
 
       const reminderDate = new Date(Date.now() + snoozeMinutes * 60 * 1000);
-      const taskTitle =
-        typeof targetTask.title === "string" && targetTask.title.trim()
-          ? targetTask.title.trim()
-          : "Task";
-
-      const contentTitle = "Gentle reminder";
       const contentBody =
         snoozeMinutes === 30
-          ? "Still waiting gently. Want to try the smallest version?"
-          : "Gentle reminder again. Start with one tiny step.";
+          ? "Still here gently. Want to try the smallest version?"
+          : "Still here gently. Start with one tiny step.";
 
-      const reminderData = {
-        ...(metadata.originalData || {}),
-        type: "taskReminder",
-        taskId: numericTaskId,
-        sectionId:
-          metadata.sectionId ||
-          metadata.section ||
-          targetTask.section ||
-          null,
-        section:
-          metadata.section ||
-          metadata.category ||
-          targetTask.section ||
-          null,
-        category:
-          metadata.category ||
-          metadata.section ||
-          targetTask.section ||
-          null,
-        taskTitle: metadata.taskTitle || taskTitle,
-        reminderOffsetMinutes: 0,
-        minutesBefore: 0,
-        scheduledAt: reminderDate.toISOString(),
+      const reminderContent = buildTaskReminderNotificationContent({
+        task: targetTask,
+        payload: {
+          ...(metadata.originalData || {}),
+          taskId: numericTaskId,
+          sectionId:
+            metadata.sectionId ||
+            metadata.section ||
+            targetTask.section ||
+            null,
+          section:
+            metadata.section ||
+            metadata.category ||
+            targetTask.section ||
+            null,
+          category:
+            metadata.category ||
+            metadata.section ||
+            targetTask.section ||
+            null,
+          taskTitle: metadata.taskTitle || targetTask.title || "",
+          minutesBefore: 0,
+          scheduledAt: reminderDate.toISOString(),
+          snoozeMinutes,
+          originalNotificationId: metadata.notificationId || undefined,
+        },
+        prefix: "Gentle reminder",
+        body: contentBody,
         source: "snooze",
-        snoozeMinutes,
-        originalNotificationId: metadata.notificationId || undefined,
-      };
+        reminderOffsetMinutes: 0,
+      });
 
       try {
         return await Notifications.scheduleNotificationAsync({
           content: {
-            title: contentTitle,
-            body: contentBody,
+            title: reminderContent.title,
+            body: reminderContent.body,
             sound: "default",
-            data: reminderData,
+            data: reminderContent.data,
             categoryIdentifier: TASK_REMINDER_ACTIONS_CATEGORY_ID,
             priority: Notifications.AndroidNotificationPriority.MAX,
             vibrate: [0, 250, 250, 250],
@@ -2837,6 +3153,14 @@ export default function Home() {
       const dedupeKey = `${notificationIdentifier}:${actionIdentifier}:${dedupeTaskId}`;
       if (hasHandledNotificationResponse(dedupeKey)) return;
       markNotificationResponseHandled(dedupeKey);
+
+      if (data?.type === "planTodayReminder") {
+        const section = normalizeTodayPlanSection(data?.section);
+        setPendingTodayPlanSheet({ open: true, section });
+        setTodayPlanNotificationSection(section);
+        void Notifications.clearLastNotificationResponseAsync().catch(() => null);
+        return;
+      }
 
       const isTaskReminderType = data?.type === "taskReminder";
 
@@ -3182,6 +3506,10 @@ export default function Home() {
         clearTimeout(snoozeAffirmationTimeoutRef.current);
         snoozeAffirmationTimeoutRef.current = null;
       }
+      if (todayPlanCelebrationTimeoutRef.current) {
+        clearTimeout(todayPlanCelebrationTimeoutRef.current);
+        todayPlanCelebrationTimeoutRef.current = null;
+      }
       void cancelFocusCompletionReminder();
       void stopEncouragement();
     },
@@ -3218,6 +3546,45 @@ export default function Home() {
     if (!recoveryModalVisible) return;
     loadRecoveryPendingTasks(true);
   }, [loadRecoveryPendingTasks, recoveryModalVisible, tasks]);
+
+  useEffect(() => {
+    if (!todayPlanSheetVisible) return;
+    todayPlanSheetProgress.value = 0;
+    requestAnimationFrame(() => {
+      todayPlanSheetProgress.value = withTiming(1, {
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+      });
+    });
+  }, [todayPlanSheetProgress, todayPlanSheetVisible]);
+
+  useEffect(() => {
+    if (!tasksHydrated || !pendingTodayPlanSheet.open) return;
+    openTodayPlanSheet(pendingTodayPlanSheet.section);
+    setPendingTodayPlanSheet({ open: false, section: null });
+  }, [openTodayPlanSheet, pendingTodayPlanSheet, tasksHydrated]);
+
+  useEffect(() => {
+    if (!tasksHydrated) return;
+    if (hasPendingTodayTasksFlag) return;
+
+    const todayKey = getLocalDateKey(new Date());
+    if (lastTodayPlanPromptDate === todayKey) return;
+
+    openTodayPlanSheet();
+    markTodayPlanPromptShown(todayKey);
+  }, [
+    hasPendingTodayTasksFlag,
+    lastTodayPlanPromptDate,
+    markTodayPlanPromptShown,
+    openTodayPlanSheet,
+    tasksHydrated,
+  ]);
+
+  useEffect(() => {
+    if (!tasksHydrated) return;
+    void scheduleTodayPlanNotifications();
+  }, [scheduleTodayPlanNotifications, tasksHydrated]);
 
   useEffect(() => {
     const interval = setInterval(checkDailyReset, 60000);
@@ -3545,7 +3912,7 @@ export default function Home() {
         ...nextTask,
         id: insertedId,
         title: sourceWithRepeat.title,
-      });
+      }, { source: "recurring" });
       db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
         JSON.stringify(scheduledIds),
         insertedId,
@@ -3783,7 +4150,7 @@ export default function Home() {
             ...task,
             id: newTaskId,
             scheduledTime: newScheduledTime,
-          })
+          }, { source: "recurring" })
         : [];
       db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
         JSON.stringify(recreatedNotificationIds),
@@ -3862,6 +4229,7 @@ export default function Home() {
 
     setEditingTask(null);
     setIsEditMode(false);
+    setTodayPlanCreateContextActive(false);
 
     setModalVisible(false);
   };
@@ -3890,9 +4258,23 @@ export default function Home() {
     setStartAssistEditHint("");
 
     setDetailsHeight(80);
+    setTodayPlanCreateContextActive(false);
 
     setModalVisible(true);
   };
+
+  const closeTaskModal = useCallback(() => {
+    setModalVisible(false);
+    setTodayPlanCreateContextActive(false);
+  }, []);
+
+  const openModalFromTodayPlan = useCallback(() => {
+    const now = new Date();
+    openModal();
+    setTodayPlanCreateContextActive(true);
+    setSelectedSection(getSectionForCurrentTime(now));
+    setScheduledDateTime(formatSqliteDateTime(now));
+  }, []);
 
   const startFocus = (taskId, durationOverride = null) => {
     const duration =
@@ -5063,7 +5445,7 @@ export default function Home() {
               section: selectedSection,
               isPinned: targetTask.isPinned,
               scheduledTime: scheduleForTarget,
-            })
+            }, { source: "normal" })
           : [];
 
         db.runSync(
@@ -5137,7 +5519,11 @@ export default function Home() {
       setAttachmentUri(null);
       setAttachmentName("");
       resetTaskForm();
-      return;
+      return {
+        mode: "edit",
+        finalTime,
+        tasks: Array.from(updatedById.values()),
+      };
     }
 
     const repeatGroupId =
@@ -5208,59 +5594,63 @@ export default function Home() {
           title: taskName,
           section: selectedSection,
           scheduledTime: finalTime,
-        })
+        }, { source: "normal" })
       : [];
     db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
       JSON.stringify(reminderIds),
       insertedId,
     ]);
 
-    setTasks((prev) => [
-      ...prev,
-      {
-        id: insertedId,
-        title: taskName,
-        section: selectedSection,
-        completed: false,
-        completedAt: null,
-        repeatType: draftRepeatType,
-        repeatDays: draftRepeatDays,
-        repeatMonthlyType: draftRepeatMonthlyType,
-        repeatCustomDate: draftRepeatCustomDate,
-        repeatYearlyDate: draftRepeatYearlyDate,
-        repeatGroupId,
-        createdAt,
-        scheduledTime: finalTime,
-        details: taskDetails,
-        attachment: attachmentUri,
-        subtasks: subtasksToSave,
-        notificationId: reminderIds,
-        isPinned: false,
-        moodType: "",
-        firstAction: draftFirstAction,
-        minimumVersion: draftMinimumVersion,
-        startAssistUsedCount: 0,
-        lastStartAssistAt: "",
-        stuckCount: 0,
-        lastStuckAt: "",
-        reminderOpenCount: 0,
-        reminderStartNowCount: 0,
-        reminderSnoozeCount: 0,
-        reminderMoveGentlyCount: 0,
-        reminderMakeSmallerCount: 0,
-        lastReminderActionAt: "",
-        lastReminderAction: "",
-        reminderActionHistory: [],
-        snoozeCount: 0,
-        lastSnoozedAt: "",
-        rescheduleCount: 0,
-        lastRescheduledAt: "",
-      },
-    ]);
+    const createdTask = {
+      id: insertedId,
+      title: taskName,
+      section: selectedSection,
+      completed: false,
+      completedAt: null,
+      repeatType: draftRepeatType,
+      repeatDays: draftRepeatDays,
+      repeatMonthlyType: draftRepeatMonthlyType,
+      repeatCustomDate: draftRepeatCustomDate,
+      repeatYearlyDate: draftRepeatYearlyDate,
+      repeatGroupId,
+      createdAt,
+      scheduledTime: finalTime,
+      details: taskDetails,
+      attachment: attachmentUri,
+      subtasks: subtasksToSave,
+      notificationId: reminderIds,
+      isPinned: false,
+      moodType: "",
+      firstAction: draftFirstAction,
+      minimumVersion: draftMinimumVersion,
+      startAssistUsedCount: 0,
+      lastStartAssistAt: "",
+      stuckCount: 0,
+      lastStuckAt: "",
+      reminderOpenCount: 0,
+      reminderStartNowCount: 0,
+      reminderSnoozeCount: 0,
+      reminderMoveGentlyCount: 0,
+      reminderMakeSmallerCount: 0,
+      lastReminderActionAt: "",
+      lastReminderAction: "",
+      reminderActionHistory: [],
+      snoozeCount: 0,
+      lastSnoozedAt: "",
+      rescheduleCount: 0,
+      lastRescheduledAt: "",
+    };
+
+    setTasks((prev) => [...prev, createdTask]);
 
     setAttachmentUri(null);
     setAttachmentName("");
     resetTaskForm();
+    return {
+      mode: "create",
+      finalTime,
+      tasks: [createdTask],
+    };
   };
 
   const applyEditScopeAndSave = async (scope) => {
@@ -5293,7 +5683,23 @@ export default function Home() {
     }
 
     try {
-      await executeTaskSave("single", draft);
+      const saveResult = await executeTaskSave("single", draft);
+      if (todayPlanCreateContextActive) {
+        const { start, end } = getDayBounds(new Date());
+        const savedTasks = Array.isArray(saveResult?.tasks) ? saveResult.tasks : [];
+        const hasTodayTask = savedTasks.some((task) => {
+          const scheduledTimestamp = toTaskTimestamp(task?.scheduledTime);
+          const createdTimestamp = toTaskTimestamp(task?.createdAt);
+          return (
+            isTimestampWithinRange(scheduledTimestamp, start, end) ||
+            (scheduledTimestamp === null &&
+              isTimestampWithinRange(createdTimestamp, start, end))
+          );
+        });
+        if (hasTodayTask) {
+          showTodayPlanCelebration("create");
+        }
+      }
     } catch (error) {
       console.log("Task Save Error:", error);
       alert("Task Save Error:\n" + error.message);
@@ -6062,25 +6468,15 @@ export default function Home() {
     );
   };
 
-  const getAffirmativeMessage = (title, time, minutesLeft) => {
-    const sentences = [
-      `You've got this! "${title}" is coming up at ${time}.`,
-      `Ready to shine? "${title}" starts in ${minutesLeft} minutes.`,
-      `Almost time to focus! "${title}" is scheduled for ${time}.`,
-      `Success starts with preparation. "${title}" is in ${minutesLeft} mins.`,
-    ];
-    if (minutesLeft === 0)
-      return `It's time! Let's conquer "${title}" right now! 🚀`;
-
-    return sentences[Math.floor(Math.random() * sentences.length)];
-  };
-
-  const scheduleProReminders = async (task) => {
+  const scheduleProReminders = async (task, options = {}) => {
     if (!task.scheduledTime) return [];
     const taskDate = parseStoredDateTime(task.scheduledTime);
     if (!taskDate) return [];
     const now = new Date();
-    const taskTitle = task?.title || "Task";
+    const source =
+      typeof options.source === "string" && options.source.trim()
+        ? options.source.trim()
+        : "normal";
 
     const intervals = [20, 10, 5, 0]; // Minutes before task
     const scheduledIds = [];
@@ -6092,15 +6488,23 @@ export default function Home() {
         type: "taskReminder",
         minutesBefore: mins,
       });
+      const reminderContent = buildTaskReminderNotificationContent({
+        task,
+        payload: reminderPayload,
+        prefix: "Reminder",
+        body: "Start with one small step.",
+        source,
+        reminderOffsetMinutes: mins,
+      });
 
       // Only schedule if the trigger time is in the future
       if (triggerDate > now) {
         const id = await Notifications.scheduleNotificationAsync({
           content: {
-            title: `🎯 ${taskTitle}`,
-            body: getAffirmativeMessage(taskTitle, taskDate.toLocaleString(), mins),
+            title: reminderContent.title,
+            body: reminderContent.body,
             sound: "default",
-            data: reminderPayload,
+            data: reminderContent.data,
             categoryIdentifier: TASK_REMINDER_ACTIONS_CATEGORY_ID,
 
             priority: Notifications.AndroidNotificationPriority.MAX,
@@ -6561,6 +6965,143 @@ export default function Home() {
           )}
         </Reanimated.View>
       </View>
+    </Modal>
+  );
+
+  const renderTodayPlanSheet = () => (
+    <Modal
+      visible={todayPlanSheetVisible}
+      transparent
+      animationType="none"
+      onRequestClose={closeTodayPlanSheet}
+    >
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={modalKeyboardOffset}
+      >
+        <View className="flex-1 justify-end">
+          <Pressable onPress={closeTodayPlanSheet} className="absolute inset-0">
+            <Reanimated.View
+              style={todayPlanBackdropStyle}
+              className="flex-1 bg-[#061414]"
+            />
+          </Pressable>
+
+          <Reanimated.View
+            style={todayPlanSheetStyle}
+            className="max-h-[84%] bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/20"
+          >
+            <View className="items-center pt-3">
+              <View className="w-14 h-1.5 rounded-full bg-[#337a7a]/70" />
+            </View>
+
+            <View className="px-5 pt-2 pb-3 border-b border-[#66b9b9]/25">
+              <View className="flex-row items-start justify-between">
+                <View className="flex-1 pr-3">
+                  <Text
+                    accessibilityRole="header"
+                    className="text-[#E8F4F4] text-xl font-black"
+                  >
+                    Plan today gently 🗓️
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-xs font-semibold mt-1">
+                    No pending tasks are planned for today. Let’s choose one small next step.
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={closeTodayPlanSheet}
+                  className="bg-[#123131]/80 border border-[#66b9b9]/30 rounded-full px-3 py-2"
+                >
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                    Not now
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <Text className="text-[#9FB5B5] text-xs mt-2">
+                You do not need to plan the whole day. One useful task is enough. 🌿
+              </Text>
+              {todayPlanNotificationSection ? (
+                <View className="self-start mt-2 bg-[#123131]/80 border border-[#66b9b9]/25 rounded-full px-3 py-1.5">
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                    {todayPlanNotificationSection} planning prompt
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              contentContainerStyle={{
+                paddingHorizontal: 16,
+                paddingTop: 14,
+                paddingBottom: Math.max(insets.bottom, 14) + 8,
+              }}
+            >
+              <TouchableOpacity
+                activeOpacity={0.86}
+                onPress={openModalFromTodayPlan}
+                className="bg-[#66b9b9]/18 border border-[#66b9b9]/40 rounded-2xl px-4 py-3.5"
+              >
+                <Text className="text-[#66b9b9] text-[11px] font-black uppercase tracking-widest">
+                  Add a task for today
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1">
+                  Create one small starting point. ✨
+                </Text>
+              </TouchableOpacity>
+
+              <View className="mt-4 bg-[#123131]/55 border border-[#337a7a]/25 rounded-2xl p-3.5">
+                <Text className="text-[#E8F4F4] text-sm font-black">
+                  Past tasks you can move gently
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1">
+                  No guilt. You can bring one task back into today. 🌿
+                </Text>
+
+                {todayPlanPreviewPastTasks.length === 0 ? (
+                  <Text className="text-[#9FB5B5] text-xs mt-3">
+                    No past pending tasks need recovery right now. 🤍
+                  </Text>
+                ) : (
+                  <View className="mt-2">
+                    {todayPlanPreviewPastTasks.map((task) => (
+                      <View
+                        key={`today-plan-task-${task.id}`}
+                        className="bg-[#0B1F1F] border border-[#337a7a]/25 rounded-xl px-3 py-3 mb-2"
+                      >
+                        <Text
+                          accessibilityLabel={`${task.title || "Task"} pending task`}
+                          className="text-[#E8F4F4] text-sm font-black"
+                          numberOfLines={2}
+                        >
+                          {task.title || "Task"}
+                        </Text>
+                        <Text className="text-[#9FB5B5] text-[11px] mt-1">
+                          {formatDateTimeForDisplay(task.scheduledTime) || "No schedule"} •{" "}
+                          {task.section || "Morning"}
+                        </Text>
+                        <TouchableOpacity
+                          activeOpacity={0.86}
+                          accessibilityLabel={`Move ${task.title || "task"} to today`}
+                          onPress={() => openRecoveryModalFromTodayPlanTask(task)}
+                          className="self-start mt-2 bg-[#66b9b9]/15 border border-[#66b9b9]/35 rounded-full px-3 py-1.5"
+                        >
+                          <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                            Move to today
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+          </Reanimated.View>
+        </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 
@@ -8078,17 +8619,29 @@ export default function Home() {
             )}
           </View>
 
-          <View className="mb-3">
+          <View className="mb-3 flex-row flex-wrap">
             <TouchableOpacity
               onPress={openOverwhelmMode}
               activeOpacity={0.86}
               accessibilityLabel="I’m overwhelmed"
               accessibilityHint="Opens a gentle list of small next steps"
-              className="self-start px-3.5 py-2 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/75 flex-row items-center"
+              className="self-start px-3.5 py-2 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/75 flex-row items-center mr-2 mb-2"
             >
               <Feather name="life-buoy" size={12} color={COLORS.warning} />
               <Text className="ml-1.5 text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
                 {"I'm overwhelmed"}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => openTodayPlanSheet(todayPlanNotificationSection)}
+              activeOpacity={0.86}
+              accessibilityLabel="Today’s plan"
+              accessibilityHint="Open planning options for today"
+              className="self-start px-3.5 py-2 rounded-full border border-[#66b9b9]/40 bg-[#123131]/80 flex-row items-center mb-2"
+            >
+              <Text className="text-[11px]">🗓️</Text>
+              <Text className="ml-1.5 text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                Today’s plan
               </Text>
             </TouchableOpacity>
           </View>
@@ -8364,6 +8917,51 @@ export default function Home() {
       {renderPageModal()}
       {renderOnboardingModal()}
       {renderRecoveryModal()}
+      {renderTodayPlanSheet()}
+      <Modal
+        visible={todayPlanCelebration.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeTodayPlanCelebration}
+      >
+        <View className="flex-1 bg-[#061414]/88 justify-center px-6">
+          <View
+            accessible
+            accessibilityRole="alert"
+            className="bg-[#0B1F1F] p-5 rounded-[30px] border border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/15"
+          >
+            <View className="flex-row items-start justify-between mb-3">
+              <Text
+                accessibilityRole="header"
+                className="flex-1 text-[#E8F4F4] text-base font-black pr-3"
+              >
+                {todayPlanCelebration.title}
+              </Text>
+              <TouchableOpacity
+                onPress={closeTodayPlanCelebration}
+                accessibilityLabel="Close planning encouragement"
+                className="w-8 h-8 rounded-full bg-[#123131]/85 border border-[#66b9b9]/35 items-center justify-center"
+              >
+                <Feather name="x" size={14} color="#9FB5B5" />
+              </TouchableOpacity>
+            </View>
+
+            <Text className="text-[#9FB5B5] text-[13px] leading-5 mb-5">
+              {todayPlanCelebration.message}
+            </Text>
+
+            <TouchableOpacity
+              onPress={closeTodayPlanCelebration}
+              accessibilityLabel="Close planning encouragement"
+              className="self-end bg-[#66b9b9]/15 border border-[#66b9b9]/35 rounded-2xl px-4 py-2.5"
+            >
+              <Text className="text-[#66b9b9] font-black uppercase tracking-widest text-[11px]">
+                {todayPlanCelebration.buttonLabel}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
       <OverwhelmModeSheet
         visible={isOverwhelmModeVisible}
         suggestions={overwhelmSuggestions}
@@ -8779,7 +9377,12 @@ export default function Home() {
       </Modal>
 
       {/* ✅ CREATE TASK MODAL */}
-      <Modal visible={modalVisible} transparent animationType="slide">
+      <Modal
+        visible={modalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={closeTaskModal}
+      >
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -9023,7 +9626,7 @@ export default function Home() {
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity onPress={() => setModalVisible(false)} className="mt-4 p-2">
+            <TouchableOpacity onPress={closeTaskModal} className="mt-4 p-2">
               <Text className="text-[#9FB5B5] text-center font-bold text-xs uppercase tracking-widest">
                 Cancel
               </Text>

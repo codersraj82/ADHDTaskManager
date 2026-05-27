@@ -37,6 +37,12 @@ const normalizeSectionName = (value) => {
   return SECTION_ORDER.includes(trimmed) ? trimmed : null;
 };
 
+const getSafeTaskReminderTitle = (value) => {
+  if (typeof value !== "string") return "this task";
+  const trimmed = value.trim();
+  return trimmed || "this task";
+};
+
 export const extractTaskNavigationPayload = (data = {}) => {
   if (!data || typeof data !== "object") return null;
 
@@ -66,10 +72,7 @@ export const buildTaskReminderPayload = ({ task, type, minutesBefore = 0 }) => {
   const sectionName = normalizeSectionName(
     task?.isPinned ? "Pinned" : task?.section ?? task?.sectionId
   );
-  const taskTitle =
-    typeof task?.title === "string" && task.title.trim()
-      ? task.title.trim()
-      : "Task";
+  const taskTitle = getSafeTaskReminderTitle(task?.title);
   const reminderOffsetMinutes = Number(minutesBefore) || 0;
   const scheduledFor = task?.scheduledTime || "";
   const scheduledTaskDate = parseStoredDateTime(scheduledFor);
@@ -85,12 +88,61 @@ export const buildTaskReminderPayload = ({ task, type, minutesBefore = 0 }) => {
     type,
     taskId,
     sectionId: sectionName,
+    section: sectionName,
     category: sectionName,
     taskTitle,
+    title: taskTitle,
     minutesBefore,
     reminderOffsetMinutes,
     scheduledFor,
     scheduledAt,
+  };
+};
+
+export const buildTaskReminderNotificationContent = ({
+  task = null,
+  payload = {},
+  prefix = "Reminder",
+  body = "Start with one small step.",
+  source = "normal",
+  reminderOffsetMinutes = undefined,
+} = {}) => {
+  const sectionName = normalizeSectionName(
+    payload?.sectionId ??
+      payload?.section ??
+      payload?.category ??
+      (task?.isPinned ? "Pinned" : task?.section ?? task?.sectionId)
+  );
+  const taskTitle = getSafeTaskReminderTitle(
+    payload?.taskTitle ?? payload?.title ?? task?.title
+  );
+  const numericTaskId = toNumericTaskId(payload?.taskId ?? task?.id ?? task?.taskId);
+
+  const normalizedOffset = Number(reminderOffsetMinutes);
+  const fallbackOffset = Number(
+    payload?.reminderOffsetMinutes ?? payload?.minutesBefore ?? 0
+  );
+  const nextReminderOffset = Number.isFinite(normalizedOffset)
+    ? normalizedOffset
+    : Number.isFinite(fallbackOffset)
+      ? fallbackOffset
+      : 0;
+
+  return {
+    title: `${prefix}: ${taskTitle}`,
+    body,
+    data: {
+      ...payload,
+      type: "taskReminder",
+      taskId: numericTaskId,
+      taskTitle,
+      title: taskTitle,
+      sectionId: sectionName,
+      section: sectionName,
+      category: sectionName,
+      reminderOffsetMinutes: nextReminderOffset,
+      source: source || payload?.source || "normal",
+    },
   };
 };
 
