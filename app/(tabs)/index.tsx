@@ -373,6 +373,24 @@ const TASK_CONTEXT_META_LABELS = Object.freeze({
   outside: "Outside",
 });
 
+const PROGRESS_TASK_SHEET_COPY = Object.freeze({
+  today: {
+    title: "Today's tasks",
+    subtitle: "Tasks planned for today.",
+    empty: "No tasks planned for today.",
+  },
+  done: {
+    title: "Completed today",
+    subtitle: "Small wins count.",
+    empty: "No completed tasks yet today. That's okay.",
+  },
+  pending: {
+    title: "Pending tasks",
+    subtitle: "One step at a time.",
+    empty: "No pending tasks waiting.",
+  },
+});
+
 const SECTION_AFFIRMATION_KEYS = ["Pinned", ...SECTION_ORDER];
 
 const getDayBounds = (now = new Date()) => {
@@ -672,6 +690,10 @@ export default function Home() {
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [activePage, setActivePage] = useState(null);
+  const [progressTaskSheet, setProgressTaskSheet] = useState({
+    visible: false,
+    type: null,
+  });
   const [moodTrackerView, setMoodTrackerView] = useState("daily");
   const [dailyMoodEntries, setDailyMoodEntries] = useState([]);
   const [dailyMoodType, setDailyMoodType] = useState("");
@@ -835,6 +857,72 @@ export default function Home() {
         : `${completedTodayTasks} of ${totalTodayTasks} tasks completed ✨`;
   const modalScale = useRef(new Animated.Value(0.8)).current;
   const todayDateKey = dailyStats?.date || getDateKey();
+  const progressTaskLists = useMemo(() => {
+    const now = new Date();
+    const { start, end } = getDayBounds(now);
+    const todayTasks = [];
+    const doneTasks = [];
+    const pendingTasks = [];
+
+    tasks.forEach((task) => {
+      if (!task) return;
+      if (isTaskDeletedOrArchived(task)) return;
+      if (!isTaskScheduledForTodayOrCreatedToday(task, start, end)) return;
+
+      todayTasks.push(task);
+      if (task.completed) {
+        doneTasks.push(task);
+      } else {
+        pendingTasks.push(task);
+      }
+    });
+
+    const sortByScheduleAndId = (items = [], keepPendingFirst = false) =>
+      [...items].sort((a, b) => {
+        if (keepPendingFirst && Boolean(a.completed) !== Boolean(b.completed)) {
+          return a.completed ? 1 : -1;
+        }
+
+        const aTime =
+          toTaskTimestamp(a.scheduledTime) ??
+          toTaskTimestamp(a.createdAt) ??
+          Number.MAX_SAFE_INTEGER;
+        const bTime =
+          toTaskTimestamp(b.scheduledTime) ??
+          toTaskTimestamp(b.createdAt) ??
+          Number.MAX_SAFE_INTEGER;
+
+        if (aTime !== bTime) return aTime - bTime;
+        return (Number(a.id) || 0) - (Number(b.id) || 0);
+      });
+
+    return {
+      today: sortByScheduleAndId(todayTasks, true),
+      done: sortByScheduleAndId(doneTasks, false),
+      pending: sortByScheduleAndId(pendingTasks, false),
+    };
+  }, [tasks, todayDateKey]);
+  const openProgressTaskSheet = useCallback((type) => {
+    if (!type) return;
+    setProgressTaskSheet({
+      visible: true,
+      type,
+    });
+  }, []);
+  const closeProgressTaskSheet = useCallback(() => {
+    setProgressTaskSheet({
+      visible: false,
+      type: null,
+    });
+  }, []);
+  const activeProgressTaskSheetTasks = useMemo(() => {
+    if (!progressTaskSheet?.type) return [];
+    return progressTaskLists[progressTaskSheet.type] || [];
+  }, [progressTaskLists, progressTaskSheet]);
+  const activeProgressTaskSheetCopy = useMemo(() => {
+    if (!progressTaskSheet?.type) return null;
+    return PROGRESS_TASK_SHEET_COPY[progressTaskSheet.type] || null;
+  }, [progressTaskSheet]);
   const hasPendingTodayTasksFlag = useMemo(
     () => hasPendingTodayTasks(tasks, { now: new Date(), activeTaskId }),
     [activeTaskId, tasks]
@@ -4994,12 +5082,23 @@ export default function Home() {
   );
 
   const focusTaskById = useCallback(
-    (taskId, options = {}) => {
-      const { highlight = false, onComplete = null } = options;
+    (
+      taskId,
+      options: {
+        highlight?: boolean;
+        onComplete?: (() => void) | null;
+        allowCompleted?: boolean;
+      } = {}
+    ) => {
+      const {
+        highlight = false,
+        onComplete = null,
+        allowCompleted = false,
+      } = options || {};
       if (!taskId) return false;
 
       const targetTask = tasks.find((task) => task.id === taskId);
-      if (!targetTask || targetTask.completed) return false;
+      if (!targetTask || (targetTask.completed && !allowCompleted)) return false;
 
       if (taskNavigationTimeoutRef.current) {
         clearTimeout(taskNavigationTimeoutRef.current);
@@ -5103,13 +5202,23 @@ export default function Home() {
   );
 
   const scrollToTask = useCallback(
-    (taskId, options = {}) => {
+    (
+      taskId,
+      options: {
+        highlight?: boolean;
+        onComplete?: (() => void) | null;
+        allowCompleted?: boolean;
+      } = {}
+    ) => {
+      const { allowCompleted = false } = options || {};
       const numericTaskId = Number(taskId);
       if (!Number.isFinite(numericTaskId)) return false;
 
       const targetTask =
         tasks.find((task) => Number(task?.id) === numericTaskId) || null;
-      if (!targetTask || targetTask.completed) return false;
+      if (!targetTask || (targetTask.completed && !allowCompleted)) {
+        return false;
+      }
 
       if (
         activeEnergyFilter &&
@@ -5130,6 +5239,20 @@ export default function Home() {
       isTaskMatchingActiveEnergyFilter,
       tasks,
     ]
+  );
+
+  const handleSelectProgressTask = useCallback(
+    (task) => {
+      if (!task?.id) return;
+      closeProgressTaskSheet();
+      setTimeout(() => {
+        scrollToTask(task.id, {
+          highlight: true,
+          allowCompleted: true,
+        });
+      }, 80);
+    },
+    [closeProgressTaskSheet, scrollToTask]
   );
 
   const openTaskInMakeSmallerSupport = useCallback(
@@ -8170,6 +8293,104 @@ export default function Home() {
     );
   };
 
+  const renderProgressTaskSheet = () => (
+    <Modal
+      visible={progressTaskSheet.visible}
+      transparent
+      animationType="slide"
+      onRequestClose={closeProgressTaskSheet}
+    >
+      <View className="flex-1 justify-end">
+        <Pressable
+          onPress={closeProgressTaskSheet}
+          className="absolute inset-0 bg-[#061414]/88"
+        />
+        <View className="bg-[#0B1F1F] rounded-t-[30px] border border-[#66b9b9]/30 px-4 pt-4 pb-5 max-h-[78%]">
+          <View className="flex-row items-start justify-between pb-3 border-b border-[#66b9b9]/20">
+            <View className="flex-1 pr-3">
+              <Text className="text-[#E8F4F4] text-xl font-black">
+                {activeProgressTaskSheetCopy?.title || "Related tasks"}
+              </Text>
+              <Text className="text-[#9FB5B5] text-xs font-semibold mt-1">
+                {activeProgressTaskSheetCopy?.subtitle || "Choose a task to open details."}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={closeProgressTaskSheet}
+              accessibilityRole="button"
+              accessibilityLabel="Close task list"
+              className="bg-[#123131]/80 px-4 py-2 rounded-full border border-[#66b9b9]/30"
+            >
+              <Text className="text-[#66b9b9] font-black text-[11px] uppercase tracking-widest">
+                Close
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {activeProgressTaskSheetTasks.length === 0 ? (
+            <View className="py-6">
+              <Text className="text-[#9FB5B5] text-sm text-center font-semibold">
+                {activeProgressTaskSheetCopy?.empty || "No tasks found."}
+              </Text>
+            </View>
+          ) : (
+            <ScrollView
+              className="mt-3"
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 14 }}
+            >
+              {activeProgressTaskSheetTasks.map((task) => {
+                const taskStatus = task?.completed ? "completed" : "pending";
+                const scheduleLabel = task?.scheduledTime
+                  ? formatDateTimeForDisplay(task.scheduledTime)
+                  : "No schedule yet";
+
+                return (
+                  <TouchableOpacity
+                    key={`progress-sheet-task-${task.id}`}
+                    onPress={() => handleSelectProgressTask(task)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open task details, ${task?.title || "Task"}, ${taskStatus}`}
+                    activeOpacity={0.84}
+                    className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-2xl px-3.5 py-3 mb-2.5"
+                  >
+                    <View className="flex-row items-start justify-between">
+                      <Text
+                        numberOfLines={2}
+                        className="text-[#E8F4F4] text-sm font-black flex-1 pr-2"
+                      >
+                        {task?.title || "Task"}
+                      </Text>
+                      {task?.completed ? (
+                        <Text className="text-[#7DFFB3] text-[10px] font-black uppercase tracking-widest">
+                          Done
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text
+                      numberOfLines={1}
+                      className="text-[#9FB5B5] text-[11px] mt-1"
+                    >
+                      {(task?.section || "Task")} | {scheduleLabel}
+                    </Text>
+                    {task?.details ? (
+                      <Text
+                        numberOfLines={2}
+                        className="text-[#9FB5B5] text-[11px] mt-1.5"
+                      >
+                        {task.details}
+                      </Text>
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+
   const renderPageModal = () => {
     const activeItem = MENU_ITEMS.find((item) => item.key === activePage);
     return (
@@ -9236,53 +9457,69 @@ export default function Home() {
           </View>
 
           <View className="mb-3">
-            <View className="flex-row flex-wrap -mx-1">
-              <View
-                className="w-1/2 px-1 mb-2"
-                accessibilityLabel={`Tasks planned for today, ${totalTodayTasks}`}
-              >
-                <View className="rounded-xl border border-[#337a7a]/32 bg-[#123131]/55 px-3 py-2.5">
+            <View className="flex-row -mx-1 mb-2">
+              <View className="flex-1 px-1">
+                <TouchableOpacity
+                  onPress={() => openProgressTaskSheet("today")}
+                  activeOpacity={0.84}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Today tasks, ${totalTodayTasks}`}
+                  accessibilityHint="Opens the list of tasks for today"
+                  className="rounded-xl border border-[#337a7a]/32 bg-[#123131]/55 px-3 py-2.5"
+                >
                   <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
                     Today
                   </Text>
                   <Text className="text-[#E8F4F4] text-base font-black mt-1">
                     {totalTodayTasks}
                   </Text>
-                </View>
+                </TouchableOpacity>
               </View>
 
-              <View
-                className="w-1/2 px-1 mb-2"
-                accessibilityLabel={`Completed tasks, ${completedTodayTasks}`}
-              >
-                <View className="rounded-xl border border-[#7DFFB3]/30 bg-[#123131]/55 px-3 py-2.5">
+              <View className="flex-1 px-1">
+                <TouchableOpacity
+                  onPress={() => openProgressTaskSheet("done")}
+                  activeOpacity={0.84}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Completed tasks, ${completedTodayTasks}`}
+                  accessibilityHint="Opens the list of completed tasks"
+                  className="rounded-xl border border-[#7DFFB3]/30 bg-[#123131]/55 px-3 py-2.5"
+                >
                   <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
                     Done
                   </Text>
                   <Text className="text-[#7DFFB3] text-base font-black mt-1">
                     {completedTodayTasks}
                   </Text>
-                </View>
+                </TouchableOpacity>
               </View>
 
-              {totalTodayTasks > 0 ? (
-                <View
-                  className="w-1/2 px-1 mb-2"
+              <View className="flex-1 px-1">
+                <TouchableOpacity
+                  onPress={() => openProgressTaskSheet("pending")}
+                  activeOpacity={0.84}
+                  accessibilityRole="button"
                   accessibilityLabel={`Pending tasks, ${pendingTodayTasks}`}
+                  accessibilityHint="Opens the list of pending tasks"
+                  className="rounded-xl border border-[#66b9b9]/28 bg-[#123131]/55 px-3 py-2.5"
                 >
-                  <View className="rounded-xl border border-[#66b9b9]/28 bg-[#123131]/55 px-3 py-2.5">
-                    <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
-                      Pending
-                    </Text>
-                    <Text className="text-[#66b9b9] text-base font-black mt-1">
-                      {pendingTodayTasks}
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                    Pending
+                  </Text>
+                  <Text className="text-[#66b9b9] text-base font-black mt-1">
+                    {pendingTodayTasks}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
 
+            <View className="flex-row -mx-1">
               <View
-                className="w-1/2 px-1 mb-2"
+                className="px-1"
+                style={{
+                  flexBasis: productivityStats.showStreak ? "40%" : "100%",
+                  flexGrow: productivityStats.showStreak ? 0 : 1,
+                }}
                 accessibilityLabel={`Daily focus time, ${formatDuration(dailyStats.totalFocusTime) || "0m"}`}
               >
                 <View className="rounded-xl border border-[#66b9b9]/28 bg-[#123131]/55 px-3 py-2.5">
@@ -9297,7 +9534,7 @@ export default function Home() {
 
               {productivityStats.showStreak ? (
                 <View
-                  className="w-1/2 px-1 mb-2"
+                  className="flex-1 px-1"
                   accessibilityLabel={`Current streak, ${productivityStats.currentStreak || 0} days`}
                 >
                   <View className="rounded-xl border border-[#FFD166]/28 bg-[#2A2218]/68 px-3 py-2.5">
@@ -9664,6 +9901,7 @@ export default function Home() {
       {renderFixedFooter()}
       {renderDrawer()}
       {renderPageModal()}
+      {renderProgressTaskSheet()}
       {renderOnboardingModal()}
       {renderRecoveryModal()}
       {renderTodayPlanSheet()}
