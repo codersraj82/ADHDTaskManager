@@ -4,6 +4,7 @@ import { getTaskAvoidanceSignal, isTaskFeelingHeavy } from "./taskSupportSignals
 export const ENERGY_TASK_FILTERS = Object.freeze([
   { key: "lowEnergy", label: "Low energy" },
   { key: "quickWin", label: "Quick win" },
+  { key: "bestNow", label: "Best now" },
   { key: "important", label: "Important" },
   { key: "needsFocus", label: "Needs focus" },
   { key: "canDoAnywhere", label: "Can do anywhere" },
@@ -14,6 +15,7 @@ export const ENERGY_TASK_FILTERS = Object.freeze([
 export const ENERGY_FILTER_EMPTY_MESSAGES = Object.freeze({
   lowEnergy: "No low-energy tasks found. You can make one task smaller.",
   quickWin: "No quick wins right now. Try adding a first small action.",
+  bestNow: "No best-now matches yet. Choose what fits your capacity.",
   important: "No important tasks waiting.",
   needsFocus: "No deep-focus tasks right now.",
   canDoAnywhere: "No anywhere tasks yet.",
@@ -65,6 +67,13 @@ const hasFirstAction = (task) => hasText(task?.firstAction);
 const hasMinimumVersion = (task) => hasText(task?.minimumVersion);
 
 const isHighPriority = (task) => normalize(task?.priority) === "high";
+
+const getMoodBucket = (moodType) => {
+  const normalized = normalize(moodType);
+  if (normalized === "frustrated" || normalized === "sad") return "low";
+  if (normalized === "happy" || normalized === "very_happy") return "high";
+  return "neutral";
+};
 
 const getEstimatedMinutes = (task) => {
   const rawValue = task?.estimatedMinutes ?? task?.estimateMinutes;
@@ -233,17 +242,57 @@ export const isQuickWinTask = (
   if (!isTaskPending(task)) return false;
 
   const entry = toFilterEntry(task, 0, now, options);
-  const hasQuickSignal =
-    (entry.estimatedMinutes !== null && entry.estimatedMinutes <= SHORT_DURATION_LIMIT) ||
-    entry.incompleteSubtasks <= 1 ||
-    entry.hasFirstAction ||
-    entry.hasMinimumVersion;
+  const isLowEnergy =
+    entry.energyRequired === "low" ||
+    entry.focusRequired === "light";
+  const isShort =
+    entry.estimatedMinutes !== null &&
+    entry.estimatedMinutes <= SHORT_DURATION_LIMIT;
 
-  if (!hasQuickSignal) return false;
+  if (!isLowEnergy || !isShort) return false;
   if (entry.isHeavy) return false;
-  if (entry.energyRequired === "high") return false;
 
   return true;
+};
+
+const isBestNowEntry = (entry, moodType) => {
+  if (!entry) return false;
+  const moodBucket = getMoodBucket(moodType);
+  const isLowEnergy =
+    entry.energyRequired === "low" ||
+    entry.focusRequired === "light" ||
+    (entry.estimatedMinutes !== null &&
+      entry.estimatedMinutes <= LOW_ENERGY_DURATION_LIMIT);
+  const isShort =
+    entry.estimatedMinutes !== null &&
+    entry.estimatedMinutes <= SHORT_DURATION_LIMIT;
+  const isNeedsFocus =
+    entry.focusRequired === "deep" ||
+    entry.energyRequired === "high" ||
+    (entry.estimatedMinutes !== null &&
+      entry.estimatedMinutes >= NEEDS_FOCUS_DURATION_MIN);
+  const isImportantSignal =
+    entry.isPinned || entry.isHighPriority || entry.isToday || entry.dueSoonRank <= 2;
+
+  if (moodBucket === "low") {
+    return isLowEnergy && isShort && !entry.isHeavy;
+  }
+
+  if (moodBucket === "high") {
+    return (isNeedsFocus || isImportantSignal) && !entry.isHeavy;
+  }
+
+  return (isLowEnergy || isImportantSignal) && !entry.isHeavy;
+};
+
+export const isBestNowTask = (
+  task,
+  now = new Date(),
+  options = {}
+) => {
+  if (!isTaskPending(task)) return false;
+  const entry = toFilterEntry(task, 0, now, options);
+  return isBestNowEntry(entry, options?.moodType);
 };
 
 export const isImportantTask = (task, now = new Date()) => {
@@ -296,6 +345,8 @@ export const doesTaskMatchEnergyFilter = (
       return isLowEnergyTask(task);
     case "quickWin":
       return isQuickWinTask(task, now, options);
+    case "bestNow":
+      return isBestNowTask(task, now, options);
     case "important":
       return isImportantTask(task, now);
     case "needsFocus":
@@ -347,6 +398,58 @@ const sortQuickWin = (a, b) => {
   }
 
   if (a.dueSoonRank !== b.dueSoonRank) return a.dueSoonRank - b.dueSoonRank;
+  return compareByStableOrder(a, b);
+};
+
+const getBestNowRank = (entry, moodType) => {
+  const moodBucket = getMoodBucket(moodType);
+  const isLowEnergy =
+    entry.energyRequired === "low" ||
+    entry.focusRequired === "light" ||
+    (entry.estimatedMinutes !== null &&
+      entry.estimatedMinutes <= LOW_ENERGY_DURATION_LIMIT);
+  const isShort =
+    entry.estimatedMinutes !== null &&
+    entry.estimatedMinutes <= SHORT_DURATION_LIMIT;
+  const isNeedsFocus =
+    entry.focusRequired === "deep" ||
+    entry.energyRequired === "high" ||
+    (entry.estimatedMinutes !== null &&
+      entry.estimatedMinutes >= NEEDS_FOCUS_DURATION_MIN);
+  const isImportantSignal =
+    entry.isPinned || entry.isHighPriority || entry.isToday || entry.dueSoonRank <= 2;
+
+  if (moodBucket === "low") {
+    if (isLowEnergy && isShort && !entry.isHeavy) return 0;
+    if (isLowEnergy && !entry.isHeavy) return 1;
+    if (!entry.isHeavy && isImportantSignal) return 2;
+    return 3;
+  }
+
+  if (moodBucket === "high") {
+    if (isNeedsFocus && !entry.isHeavy) return 0;
+    if (isImportantSignal && !entry.isHeavy) return 1;
+    if (!entry.isHeavy) return 2;
+    return 3;
+  }
+
+  if ((isLowEnergy || isImportantSignal) && !entry.isHeavy) return 0;
+  if (!entry.isHeavy && isShort) return 1;
+  return 2;
+};
+
+const sortBestNow = (a, b, options = {}) => {
+  const aRank = getBestNowRank(a, options?.moodType);
+  const bRank = getBestNowRank(b, options?.moodType);
+  if (aRank !== bRank) return aRank - bRank;
+
+  if (a.dueSoonRank !== b.dueSoonRank) return a.dueSoonRank - b.dueSoonRank;
+
+  const durationCompare = compareWithNullLast(a.estimatedMinutes, b.estimatedMinutes);
+  if (durationCompare !== 0) return durationCompare;
+
+  if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+  if (a.isHighPriority !== b.isHighPriority) return a.isHighPriority ? -1 : 1;
   return compareByStableOrder(a, b);
 };
 
@@ -418,7 +521,7 @@ const sortTodayOnly = (a, b) => {
   return compareByStableOrder(a, b);
 };
 
-const matchesEntryForFilter = (entry, filter) => {
+const matchesEntryForFilter = (entry, filter, options = {}) => {
   if (!entry || !isTaskPending(entry.task)) return false;
 
   switch (filter) {
@@ -430,17 +533,18 @@ const matchesEntryForFilter = (entry, filter) => {
         entry.focusRequired === "light"
       );
     case "quickWin": {
-      const hasQuickSignal =
-        (entry.estimatedMinutes !== null &&
-          entry.estimatedMinutes <= SHORT_DURATION_LIMIT) ||
-        entry.incompleteSubtasks <= 1 ||
-        entry.hasFirstAction ||
-        entry.hasMinimumVersion;
-      if (!hasQuickSignal) return false;
+      const isLowEnergy =
+        entry.energyRequired === "low" ||
+        entry.focusRequired === "light";
+      const isShort =
+        entry.estimatedMinutes !== null &&
+        entry.estimatedMinutes <= SHORT_DURATION_LIMIT;
+      if (!isLowEnergy || !isShort) return false;
       if (entry.isHeavy) return false;
-      if (entry.energyRequired === "high") return false;
       return true;
     }
+    case "bestNow":
+      return isBestNowEntry(entry, options?.moodType);
     case "important":
       return (
         entry.isPinned ||
@@ -480,6 +584,9 @@ const sortEntriesForFilter = (entries, filter, options = {}) => {
     case "quickWin":
       sorted.sort(sortQuickWin);
       break;
+    case "bestNow":
+      sorted.sort((a, b) => sortBestNow(a, b, options));
+      break;
     case "important":
       sorted.sort(sortImportant);
       break;
@@ -513,7 +620,7 @@ export const filterTasksByEnergyFilter = (
 
   const matchingEntries = safeTasks
     .map((task, index) => toFilterEntry(task, index, now, options))
-    .filter((entry) => matchesEntryForFilter(entry, filter));
+    .filter((entry) => matchesEntryForFilter(entry, filter, options));
 
   const sortedEntries = sortEntriesForFilter(matchingEntries, filter, options);
   return sortedEntries.map((entry) => entry.task);

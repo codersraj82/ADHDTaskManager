@@ -1307,20 +1307,32 @@ export default function Home() {
         now,
         {
           taskSupportSignalById,
+          moodType: effectiveMoodTypeForDailyProgress,
           keepInputOrderForTodayOnly: true,
         }
       );
       return acc;
     }, {});
-  }, [activeEnergyFilter, sectionTasksMap, taskSupportSignalById]);
+  }, [
+    activeEnergyFilter,
+    effectiveMoodTypeForDailyProgress,
+    sectionTasksMap,
+    taskSupportSignalById,
+  ]);
 
   const energyFilteredPinnedTasks = useMemo(() => {
     if (!activeEnergyFilter) return pinnedTasks;
     return filterTasksByEnergyFilter(pinnedTasks, activeEnergyFilter, new Date(), {
       taskSupportSignalById,
+      moodType: effectiveMoodTypeForDailyProgress,
       keepInputOrderForTodayOnly: true,
     });
-  }, [activeEnergyFilter, pinnedTasks, taskSupportSignalById]);
+  }, [
+    activeEnergyFilter,
+    effectiveMoodTypeForDailyProgress,
+    pinnedTasks,
+    taskSupportSignalById,
+  ]);
 
   const visibleSectionTasksMap = activeEnergyFilter
     ? energyFilteredSectionTasksMap
@@ -1426,9 +1438,10 @@ export default function Home() {
       if (!activeEnergyFilter) return true;
       return doesTaskMatchEnergyFilter(task, activeEnergyFilter, now, {
         taskSupportSignalById,
+        moodType: effectiveMoodTypeForDailyProgress,
       });
     },
-    [activeEnergyFilter, taskSupportSignalById]
+    [activeEnergyFilter, effectiveMoodTypeForDailyProgress, taskSupportSignalById]
   );
 
   const overwhelmSuggestions = useMemo(

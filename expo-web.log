@@ -1,0 +1,164 @@
+
+> adhdtaskmanager@7.1 web
+> expo start --web --port 8081 --localhost
+
+Starting project at C:\web_stack_development\AdhdTaskMgmt\ADHDTaskManager
+React Compiler enabled
+Starting Metro Bundler
+Waiting on http://localhost:8081
+Logs for your project will appear below.
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓░░░░░░░░░░ 40.5% (406/638)
+λ node_modules\expo-router\node\render.js ▓▓▓▓▓▓▓▓░░░░░░░░ 53.0% (520/714)
+Web node_modules\expo-router\entry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+λ node_modules\expo-router\node\render.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 96.8% (1403/1426)
+λ node_modules\expo-router\node\render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 98.1% (1351/1364)
+Web node_modules\expo-router\entry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+λ node_modules\expo-router\node\render.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+λ Bundling failed 4855ms node_modules\expo-router\node\render.js (1 module)
+λ Bundling failed 7024ms node_modules\expo-router\node\render.js (1364 modules)
+
+Metro error: Unable to resolve module ./wa-sqlite/wa-sqlite.wasm from C:\web_stack_development\AdhdTaskMgmt\ADHDTaskManager\node_modules\expo-sqlite\web\worker.ts: 
+
+None of these files exist:
+  * node_modules\expo-sqlite\web\wa-sqlite\wa-sqlite.wasm(.web.ts|.ts|.web.tsx|.tsx|.web.js|.js|.web.jsx|.jsx|.web.json|.json|.web.cjs|.cjs|.web.mjs|.mjs|.web.scss|.scss|.web.sass|.sass|.web.css|.css|.web.css|.css)
+  * node_modules\expo-sqlite\web\wa-sqlite\wa-sqlite.wasm
+[0m [90m 20 |[39m [36mimport[39m [33mWaSQLiteFactory[39m [36mfrom[39m [32m'./wa-sqlite/wa-sqlite'[39m[33m;[39m
+ [90m 21 |[39m [90m// @ts-expect-error wasm module is not typed[39m
+[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m wasmModule [36mfrom[39m [32m'./wa-sqlite/wa-sqlite.wasm'[39m[33m;[39m
+ [90m    |[39m                         [31m[1m^[22m[39m
+ [90m 23 |[39m [36mimport[39m {
+ [90m 24 |[39m   type [33mSQLiteWorkerMessage[39m[33m,[39m
+ [90m 25 |[39m   type [33mSQLiteWorkerMessageType[39m[33m,[39m[0m
+
+Import stack:
+
+ node_modules\expo-sqlite\web\worker.ts
+ | import "./wa-sqlite/wa-sqlite.wasm"
+
+ node_modules\expo-sqlite\web\SQLiteModule.ts
+ | import "./worker"
+
+ node_modules\expo-sqlite\build\ExpoSQLite.web.js
+ | import "../web/SQLiteModule"
+
+ node_modules\expo-sqlite\build\hooks.js
+ | import "./ExpoSQLite"
+
+ node_modules\expo-sqlite\build\index.js
+ | import "./hooks"
+
+ database\db.js
+ | import "expo-sqlite"
+
+ app\(tabs)\index.tsx
+ | import "../../database/db"
+
+ app (require.context)
+
+
+Import stack:
+
+ node_modules\expo-sqlite\web\worker.ts
+ | import "./wa-sqlite/wa-sqlite.wasm"
+
+ node_modules\expo-sqlite\web\SQLiteModule.ts
+ | import "./worker"
+
+ node_modules\expo-sqlite\build\ExpoSQLite.web.js
+ | import "../web/SQLiteModule"
+
+ node_modules\expo-sqlite\build\hooks.js
+ | import "./ExpoSQLite"
+
+ node_modules\expo-sqlite\build\index.js
+ | import "./hooks"
+
+ database\db.js
+ | import "expo-sqlite"
+
+ app\(tabs)\index.tsx
+ | import "../../database/db"
+
+ app (require.context)
+
+
+Call Stack
+  <unknown> (node_modules\expo-sqlite\web\worker.ts)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 98.9% (1418/1426)
+Web node_modules\expo-router\entry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+
+Metro error: Unable to resolve module ./wa-sqlite/wa-sqlite.wasm from C:\web_stack_development\AdhdTaskMgmt\ADHDTaskManager\node_modules\expo-sqlite\web\worker.ts: 
+
+None of these files exist:
+  * node_modules\expo-sqlite\web\wa-sqlite\wa-sqlite.wasm(.web.ts|.ts|.web.tsx|.tsx|.web.js|.js|.web.jsx|.jsx|.web.json|.json|.web.cjs|.cjs|.web.mjs|.mjs|.web.scss|.scss|.web.sass|.sass|.web.css|.css|.web.css|.css)
+  * node_modules\expo-sqlite\web\wa-sqlite\wa-sqlite.wasm
+[0m [90m 20 |[39m [36mimport[39m [33mWaSQLiteFactory[39m [36mfrom[39m [32m'./wa-sqlite/wa-sqlite'[39m[33m;[39m
+ [90m 21 |[39m [90m// @ts-expect-error wasm module is not typed[39m
+[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m wasmModule [36mfrom[39m [32m'./wa-sqlite/wa-sqlite.wasm'[39m[33m;[39m
+ [90m    |[39m                         [31m[1m^[22m[39m
+ [90m 23 |[39m [36mimport[39m {
+ [90m 24 |[39m   type [33mSQLiteWorkerMessage[39m[33m,[39m
+ [90m 25 |[39m   type [33mSQLiteWorkerMessageType[39m[33m,[39m[0m
+
+Import stack:
+
+ node_modules\expo-sqlite\web\worker.ts
+ | import "./wa-sqlite/wa-sqlite.wasm"
+
+ node_modules\expo-sqlite\web\SQLiteModule.ts
+ | import "./worker"
+
+ node_modules\expo-sqlite\build\ExpoSQLite.web.js
+ | import "../web/SQLiteModule"
+
+ node_modules\expo-sqlite\build\hooks.js
+ | import "./ExpoSQLite"
+
+ node_modules\expo-sqlite\build\index.js
+ | import "./hooks"
+
+ database\db.js
+ | import "expo-sqlite"
+
+ app\(tabs)\index.tsx
+ | import "../../database/db"
+
+ app (require.context)
+
+
+Import stack:
+
+ node_modules\expo-sqlite\web\worker.ts
+ | import "./wa-sqlite/wa-sqlite.wasm"
+
+ node_modules\expo-sqlite\web\SQLiteModule.ts
+ | import "./worker"
+
+ node_modules\expo-sqlite\build\ExpoSQLite.web.js
+ | import "../web/SQLiteModule"
+
+ node_modules\expo-sqlite\build\hooks.js
+ | import "./ExpoSQLite"
+
+ node_modules\expo-sqlite\build\index.js
+ | import "./hooks"
+
+ database\db.js
+ | import "expo-sqlite"
+
+ app\(tabs)\index.tsx
+ | import "../../database/db"
+
+ app (require.context)
+
+
+Call Stack
+  <unknown> (node_modules\expo-sqlite\web\worker.ts)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 98.9% (1418/1426)
+Web node_modules\expo-router\entry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web Bundled 8823ms node_modules\expo-router\entry.js (1434 modules)
+Web Bundled 6698ms node_modules\expo-router\entry.js (1 module)
+Web node_modules\expo-router\_error.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (398/398)
+Web Bundled 2631ms node_modules\expo-router\_error.js (398 modules)
+ LOG  [web] Logs will appear in the browser console
