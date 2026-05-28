@@ -157,30 +157,30 @@ const COLORS = {
 const DEFAULT_PROFILE = {
   name: "",
   profileImage: "",
-  vibe: "??",
+  vibe: "🌿",
   onboardingComplete: false,
 };
 
 const VIBE_OPTIONS = [
-  { emoji: "??", label: "Strong" },
-  { emoji: "??", label: "Calm" },
-  { emoji: "?", label: "Energetic" },
-  { emoji: "??", label: "Focused" },
-  { emoji: "??", label: "Balanced" },
+  { emoji: "💪", label: "Strong" },
+  { emoji: "🌿", label: "Calm" },
+  { emoji: "⚡", label: "Energetic" },
+  { emoji: "🧠", label: "Focused" },
+  { emoji: "🌊", label: "Balanced" },
 ];
 
 const affirmations = SECTION_HEADER_AFFIRMATIONS;
 
 const MENU_ITEMS = [
-  { key: "profile", label: "Profile Details", icon: "??" },
-  { key: "special", label: "Special Tasks", icon: "?" },
-  { key: "pending", label: "Pending Tasks", icon: "?" },
-  { key: "completed", label: "Completed Tasks", icon: "?" },
-  { key: "calendar", label: "Calendar View", icon: "??" },
-  { key: "mood-tracker", label: "Mood Tracker", icon: "??" },
-  { key: "settings", label: "Settings", icon: "??" },
-  { key: "about", label: "About", icon: "??" },
-  { key: "support", label: "Support This Project", icon: "??" },
+  { key: "profile", label: "Profile Details", icon: "👤" },
+  { key: "special", label: "Special Tasks", icon: "⭐" },
+  { key: "pending", label: "Pending Tasks", icon: "⏳" },
+  { key: "completed", label: "Completed Tasks", icon: "✅" },
+  { key: "calendar", label: "Calendar View", icon: "📅" },
+  { key: "mood-tracker", label: "Mood Tracker", icon: "🧠" },
+  { key: "settings", label: "Settings", icon: "⚙️" },
+  { key: "about", label: "About", icon: "ℹ️" },
+  { key: "support", label: "Support This Project", icon: "❤️" },
 ];
 
 const getDateKey = (date = new Date()) => {
@@ -286,21 +286,21 @@ const TODAY_PLAN_NOTIFICATION_SLOTS = Object.freeze([
     hour: 8,
     minute: 0,
     title: "Plan your morning gently",
-    body: "Pick one small task to begin the day. ??",
+    body: "Pick one small task to begin the day. 🌿",
   },
   {
     section: TODAY_PLAN_SECTIONS.WORK,
     hour: 10,
     minute: 0,
     title: "Plan your work block",
-    body: "One clear task can reduce mental load. ?",
+    body: "One clear task can reduce mental load. ✨",
   },
   {
     section: TODAY_PLAN_SECTIONS.EVENING,
     hour: 18,
     minute: 0,
     title: "Plan your evening gently",
-    body: "Choose one small thing to close the day. ??",
+    body: "Choose one small thing to close the day. 🤍",
   },
 ]);
 const EMPTY_TASK_SUPPORT_SIGNAL = Object.freeze({
@@ -566,9 +566,9 @@ const getPastPendingTasks = (tasks = [], now = new Date()) => {
 export default function Home() {
   const insets = useSafeAreaInsets();
   const [tasks, setTasks] = useState([
-    { id: 1, title: "Drink water ??", section: "Morning", completed: false, notificationId: [], isPinned: false, moodType: "" },
-    { id: 2, title: "Goto office ??", section: "Work", completed: false, notificationId: [], isPinned: false, moodType: "" },
-    { id: 3, title: "Walk 10 minutes ??", section: "Evening", completed: false, notificationId: [], isPinned: false, moodType: "" },
+    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [], isPinned: false, moodType: "" },
+    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [], isPinned: false, moodType: "" },
+    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [], isPinned: false, moodType: "" },
   ]);
   const [totalFocusTime, setTotalFocusTime] = useState(0); // seconds
 
@@ -594,7 +594,7 @@ export default function Home() {
   const [celebration, setCelebration] = useState({
     visible: false,
     message: "",
-    emoji: "??",
+    emoji: "🎉",
   });
 
   const [editingTask, setEditingTask] = useState(null);
@@ -799,27 +799,27 @@ export default function Home() {
 
   const dailyProgressCaption = useMemo(() => {
     if (totalTodayTasks === 0) {
-      return "Your day is ready ??";
+      return "Your day is ready 🌅";
     }
 
     if (completedTodayTasks === 0) {
       const firstWinMessages = [
-        "Ready for your first win today ?",
-        "Small progress still matters ??",
-        "One tiny task can start momentum ??",
+        "Ready for your first win today ✨",
+        "Small progress still matters 🌱",
+        "One tiny task can start momentum 🧠",
       ];
       return firstWinMessages[pendingTodayTasks % firstWinMessages.length];
     }
 
     if (progressPercentage >= 70) {
-      return "Momentum building nicely ??";
+      return "Momentum building nicely 🚀";
     }
 
     if (progressPercentage >= 40) {
-      return "Focused progress today ??";
+      return "Focused progress today 🧠";
     }
 
-    return "Consistency grows quietly ??";
+    return "Consistency grows quietly 🌱";
   }, [
     completedTodayTasks,
     pendingTodayTasks,
@@ -829,10 +829,10 @@ export default function Home() {
 
   const dailyProgressSummary =
     totalTodayTasks === 0
-      ? "Start with one small step ?"
+      ? "Start with one small step ✨"
       : completedTodayTasks === 0
-        ? "Ready for your first win today ?"
-        : `${completedTodayTasks} of ${totalTodayTasks} tasks completed ?`;
+        ? "Ready for your first win today ✨"
+        : `${completedTodayTasks} of ${totalTodayTasks} tasks completed ✨`;
   const modalScale = useRef(new Animated.Value(0.8)).current;
   const todayDateKey = dailyStats?.date || getDateKey();
   const hasPendingTodayTasksFlag = useMemo(
@@ -1000,7 +1000,7 @@ export default function Home() {
     effectiveMoodTypeForDailyProgress
   );
   const moodHeaderLabel = effectiveMoodMetaForDailyProgress?.label || "Not logged yet";
-  const moodHeaderEmoji = effectiveMoodMetaForDailyProgress?.emoji || "??";
+  const moodHeaderEmoji = effectiveMoodMetaForDailyProgress?.emoji || "🧠";
 
   const moodSupportBucketKey = useMemo(() => {
     if (!effectiveMoodTypeForDailyProgress) return "";
@@ -1086,7 +1086,7 @@ export default function Home() {
       return {
         task: activeTask,
         ctaLabel: "Continue",
-        icon: "?",
+        icon: "⚡",
       };
     }
 
@@ -1108,7 +1108,7 @@ export default function Home() {
       return {
         task: scheduledFuture,
         ctaLabel: "Upcoming",
-        icon: "?",
+        icon: "▶",
       };
     }
 
@@ -1127,7 +1127,7 @@ export default function Home() {
       ? {
           task: unscheduledFallback,
           ctaLabel: "Start",
-          icon: "??",
+          icon: "🚀",
         }
       : null;
   }, [activeTaskId, pendingActionableTasks, tasks]);
@@ -1476,14 +1476,14 @@ export default function Home() {
 
   //*****Focus time */
 
-  // Convert seconds ? readable format
+  // Convert seconds -> readable format
   const hours = Math.floor(focusTime / 3600);
   const minutes = Math.floor((focusTime % 3600) / 60);
   const seconds = focusTime % 60;
 
   const format = (n) => n.toString().padStart(2, "0");
 
-  const focusTimeText = `? ${format(hours)}:${format(minutes)}:${format(seconds)} `;
+  const focusTimeText = `⏱ ${format(hours)}:${format(minutes)}:${format(seconds)} `;
 
   const radius = 100;
   const circumference = 2 * Math.PI * radius;
@@ -1497,7 +1497,7 @@ export default function Home() {
 
   const totalFormat = (n) => n.toString().padStart(2, "0");
 
-  const totalFocusText = `? ${totalFormat(totalHours)}:${totalFormat(totalMinutes)}:${totalFormat(totalSeconds)} ??`;
+  const totalFocusText = `⏱ ${totalFormat(totalHours)}:${totalFormat(totalMinutes)}:${totalFormat(totalSeconds)} 🎯`;
 
   // progress (0 ? 1)
   // const progress = Math.min(focusTime / totalDuration, 1);
@@ -2126,13 +2126,13 @@ export default function Home() {
       [
         nextProfile.name,
         nextProfile.profileImage || "",
-        nextProfile.vibe || "??",
+        nextProfile.vibe || "🌿",
         nextProfile.onboardingComplete ? 1 : 0,
       ]
     );
     setProfile(nextProfile);
     setProfileDraftName(nextProfile.name);
-    setProfileDraftVibe(nextProfile.vibe || "??");
+    setProfileDraftVibe(nextProfile.vibe || "🌿");
   };
 
   const refreshSpecialTasks = () => {
@@ -2310,7 +2310,7 @@ export default function Home() {
       setFocusTime(currentDuration);
 
       const completionMessage = getRandomAffirmation(FOCUS_COMPLETION_AFFIRMATIONS);
-      showCelebration(completionMessage, "?");
+      showCelebration(completionMessage, "⏱");
 
       if (!focusSessionRecordedRef.current) {
         recordFocusSession(currentDuration);
@@ -2516,12 +2516,12 @@ export default function Home() {
       const nextCelebration =
         kind === "reschedule"
           ? {
-              title: "Moved gently ??",
+              title: "Moved gently 🌿",
               message: "This task has a place today now. No reset needed.",
               buttonLabel: "Good",
             }
           : {
-              title: "Today has a starting point ?",
+              title: "Today has a starting point ✨",
               message: "One useful task is enough to begin. You made the day clearer.",
               buttonLabel: "Nice",
             };
@@ -2769,7 +2769,7 @@ export default function Home() {
         )
       );
 
-      setRecoverySuccessMessage("Task rescheduled gently ?");
+      setRecoverySuccessMessage("Task rescheduled gently ✨");
       recoverySuccessPulse.value = 0;
       recoverySuccessPulse.value = withTiming(
         1,
@@ -2863,7 +2863,7 @@ export default function Home() {
           id INTEGER PRIMARY KEY CHECK (id = 1),
           name TEXT DEFAULT '',
           profileImage TEXT DEFAULT '',
-          vibe TEXT DEFAULT '??',
+          vibe TEXT DEFAULT '🌿',
           onboardingComplete INTEGER DEFAULT 0,
           updatedAt TEXT
         );
@@ -3091,7 +3091,7 @@ export default function Home() {
           ? {
               name: profileRow.name || "",
               profileImage: profileRow.profileImage || "",
-              vibe: profileRow.vibe || "??",
+              vibe: profileRow.vibe || "🌿",
               onboardingComplete: profileRow.onboardingComplete === 1,
             }
           : DEFAULT_PROFILE;
@@ -4130,19 +4130,19 @@ export default function Home() {
     const getContextAffirmations = () => {
       if (activeTaskId) {
         return [
-          "Stay with the moment. You're doing great ??",
-          "Calm focus beats rushed effort ??",
-          "This one task deserves gentle attention ?",
+          "Stay with the moment. You're doing great 🎯",
+          "Calm focus beats rushed effort ☁️",
+          "This one task deserves gentle attention ✨",
         ];
       }
       if (tasks.length === 0) {
-        return ["Let's begin with one simple win ??", "A tiny first step is enough today ?"];
+        return ["Let's begin with one simple win 🌱", "A tiny first step is enough today ✨"];
       }
       if (tasks.filter((task) => !task.completed).length >= 6) {
-        return ["One task at a time is enough today ??", "You do not need to carry the whole list at once ??"];
+        return ["One task at a time is enough today 💙", "You do not need to carry the whole list at once 🌊"];
       }
       if (progressPercentage >= 70) {
-        return ["Look how far you've already come ??", "Momentum is already on your side ?"];
+        return ["Look how far you've already come 🚀", "Momentum is already on your side ✨"];
       }
       return affirmations;
     };
@@ -5846,7 +5846,7 @@ export default function Home() {
     ]).start();
   };
 
-  const showCelebration = (message, emoji = "??") => {
+  const showCelebration = (message, emoji = "🎉") => {
     setCelebration({ visible: true, message, emoji });
 
     // auto close after 2.5 sec
@@ -6743,7 +6743,7 @@ export default function Home() {
     const nextProfile = {
       ...profile,
       name,
-      vibe: profileDraftVibe || "??",
+      vibe: profileDraftVibe || "🌿",
       onboardingComplete: true,
     };
     saveProfile(nextProfile);
@@ -6755,7 +6755,7 @@ export default function Home() {
     saveProfile({
       ...profile,
       name,
-      vibe: profileDraftVibe || profile.vibe || "??",
+      vibe: profileDraftVibe || profile.vibe || "🌿",
       onboardingComplete: true,
     });
   };
@@ -6797,9 +6797,9 @@ export default function Home() {
   const getGreeting = () => {
     const hour = new Date().getHours();
     const name = profile.name || "Friend";
-    if (hour < 12) return `Good Morning, ${name} ${profile.vibe || "??"}`;
-    if (hour < 17) return `Good Afternoon, ${name} ${profile.vibe || "??"}`;
-    return `Good Evening, ${name} ${profile.vibe || "??"}`;
+    if (hour < 12) return `Good Morning, ${name} ${profile.vibe || "🌿"}`;
+    if (hour < 17) return `Good Afternoon, ${name} ${profile.vibe || "🌿"}`;
+    return `Good Evening, ${name} ${profile.vibe || "🌿"}`;
   };
 
   const formatLongDate = () =>
@@ -6810,13 +6810,13 @@ export default function Home() {
     });
 
   const getStreakLabel = () => {
-    if (!productivityStats.currentStreak) return "?? Fresh start today";
-    if (productivityStats.currentStreak === 1) return "?? New Beginning";
+    if (!productivityStats.currentStreak) return "🌱 Fresh start today";
+    if (productivityStats.currentStreak === 1) return "🌱 New Beginning";
     if (productivityStats.currentStreak < 5)
-      return `?? ${productivityStats.currentStreak} Day Focus Streak`;
+      return `🔥 ${productivityStats.currentStreak} Day Focus Streak`;
     if (productivityStats.currentStreak < 10)
-      return `? ${productivityStats.currentStreak} Days Momentum`;
-    return `?? ${productivityStats.currentStreak} Days Consistent`;
+      return `⚡ ${productivityStats.currentStreak} Days Momentum`;
+    return `🚀 ${productivityStats.currentStreak} Days Consistent`;
   };
 
   const getMostProductiveSection = () => {
@@ -7137,7 +7137,7 @@ export default function Home() {
         {profile.profileImage ? (
           <Image source={{ uri: profile.profileImage }} className="w-full h-full" />
         ) : (
-          <Text className={`${textSize}`}>{profile.vibe || "??"}</Text>
+          <Text className={`${textSize}`}>{profile.vibe || "🌿"}</Text>
         )}
       </TouchableOpacity>
     );
@@ -7224,7 +7224,7 @@ export default function Home() {
             {formatLongDate()}
           </Text>
           <Text className="text-[#66b9b9] text-[10px] font-bold uppercase tracking-widest mt-1">
-            Ready to focus today? ?
+            Ready to focus today? ✨
           </Text>
         </View>
         <TouchableOpacity
@@ -7594,10 +7594,10 @@ export default function Home() {
                     accessibilityRole="header"
                     className="text-[#E8F4F4] text-xl font-black"
                   >
-                    Plan today gently ???
+                    Plan today gently 🗓️
                   </Text>
                   <Text className="text-[#9FB5B5] text-xs font-semibold mt-1">
-                    No pending tasks are planned for today. Let�s choose one small next step.
+                    No pending tasks are planned for today. Let’s choose one small next step.
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -7611,7 +7611,7 @@ export default function Home() {
                 </TouchableOpacity>
               </View>
               <Text className="text-[#9FB5B5] text-xs mt-2">
-                You do not need to plan the whole day. One useful task is enough. ??
+                You do not need to plan the whole day. One useful task is enough. 🌿
               </Text>
               {todayPlanNotificationSection ? (
                 <View className="self-start mt-2 bg-[#123131]/80 border border-[#66b9b9]/25 rounded-full px-3 py-1.5">
@@ -7640,7 +7640,7 @@ export default function Home() {
                   Add a task for today
                 </Text>
                 <Text className="text-[#9FB5B5] text-xs mt-1">
-                  Create one small starting point. ?
+                  Create one small starting point. ✨
                 </Text>
               </TouchableOpacity>
 
@@ -7649,12 +7649,12 @@ export default function Home() {
                   Past tasks you can move gently
                 </Text>
                 <Text className="text-[#9FB5B5] text-xs mt-1">
-                  No guilt. You can bring one task back into today. ??
+                  No guilt. You can bring one task back into today. 🌿
                 </Text>
 
                 {todayPlanPreviewPastTasks.length === 0 ? (
                   <Text className="text-[#9FB5B5] text-xs mt-3">
-                    No past pending tasks need recovery right now. ??
+                    No past pending tasks need recovery right now. 🤍
                   </Text>
                 ) : (
                   <View className="mt-2">
@@ -7671,7 +7671,7 @@ export default function Home() {
                           {task.title || "Task"}
                         </Text>
                         <Text className="text-[#9FB5B5] text-[11px] mt-1">
-                          {formatDateTimeForDisplay(task.scheduledTime) || "No schedule"} �{" "}
+                          {formatDateTimeForDisplay(task.scheduledTime) || "No schedule"} •{" "}
                           {task.section || "Morning"}
                         </Text>
                         <TouchableOpacity
@@ -7729,7 +7729,7 @@ export default function Home() {
                 <Text className="text-[#E8F4F4] font-bold flex-1">
                   {item.label}
                 </Text>
-                <Text className="text-[#66b9b9] font-black">�</Text>
+                <Text className="text-[#66b9b9] font-black">›</Text>
               </TouchableOpacity>
             ))}
           </Pressable>
@@ -7742,11 +7742,11 @@ export default function Home() {
     <View key={task.id} className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-2xl p-3 mb-2">
       <Text className="text-[#E8F4F4] font-black">{task.title}</Text>
       <Text className="text-[#9FB5B5] text-xs mt-1">
-        {task.section} {task.scheduledTime ? `� ${formatDateTimeForDisplay(task.scheduledTime)}` : "� No schedule yet"}
+        {task.section} {task.scheduledTime ? `• ${formatDateTimeForDisplay(task.scheduledTime)}` : "• No schedule yet"}
       </Text>
       {tone === "success" && (
         <Text className="text-[#7DFFB3] text-xs font-bold mt-2">
-          You completed this. That counts. ?
+          You completed this. That counts. ✨
         </Text>
       )}
       {allowRepeat && (
@@ -7783,7 +7783,7 @@ export default function Home() {
               {profile.name || "Your Profile"}
             </Text>
             <Text className="text-[#9FB5B5] text-sm mt-1">
-              Gentle focus, your way {profile.vibe || "??"}
+              Gentle focus, your way {profile.vibe || "🌿"}
             </Text>
           </View>
           <TextInput
@@ -7826,7 +7826,7 @@ export default function Home() {
           <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mt-2">
             <Text className="text-[#E8F4F4] font-black">Weekly Focus</Text>
             <Text className="text-[#9FB5B5] text-xs mt-2">
-              Calm graph placeholder � More history can grow here without pressure.
+              Calm graph placeholder • More history can grow here without pressure.
             </Text>
             <Text className="text-[#66b9b9] text-xs font-bold mt-3">
               Most productive section: {getMostProductiveSection()}
@@ -7863,7 +7863,7 @@ export default function Home() {
           </TouchableOpacity>
           {specialTasks.map((item) => (
             <View key={item.id} className="bg-[#123131]/65 rounded-2xl p-4 border border-[#FFD166]/25 mb-3">
-              <Text className="text-[#FFD166] font-black">? {item.title}</Text>
+              <Text className="text-[#FFD166] font-black">⭐ {item.title}</Text>
               {item.note ? <Text className="text-[#E8F4F4] text-sm mt-2">{item.note}</Text> : null}
               <TouchableOpacity onPress={() => deleteSpecialTask(item.id)} className="self-start mt-3">
                 <Text className="text-[#FF7B7B] text-xs font-bold">Remove</Text>
@@ -7878,7 +7878,7 @@ export default function Home() {
       return pendingTasks.length ? (
         pendingTasks.map((task) => renderTaskMiniCard(task))
       ) : (
-        <Text className="text-[#7DFFB3] font-bold">No pending tasks. Breathe that in. ??</Text>
+        <Text className="text-[#7DFFB3] font-bold">No pending tasks. Breathe that in. 🌿</Text>
       );
     }
 
@@ -8061,7 +8061,7 @@ export default function Home() {
                   >
                     <View className="h-11 rounded-xl border border-[#337a7a]/35 bg-[#061414]/50 items-center justify-center">
                       <Text className="text-[#9FB5B5] text-[9px] font-bold">{day.day}</Text>
-                      <Text className="text-[11px] mt-0.5">{day.moodMeta?.emoji || "�"}</Text>
+                      <Text className="text-[11px] mt-0.5">{day.moodMeta?.emoji || "•"}</Text>
                     </View>
                   </View>
                 ))}
@@ -8201,7 +8201,7 @@ export default function Home() {
       <View className="flex-1 bg-[#061414]/95 justify-center px-5">
         <View className="bg-[#0B1F1F] rounded-[32px] border border-[#66b9b9]/35 p-6 shadow-2xl shadow-[#66b9b9]/20">
           <Text className="text-[#E8F4F4] text-2xl font-black text-center">
-            Welcome in ??
+            Welcome in 🌿
           </Text>
           <Text className="text-[#9FB5B5] text-sm text-center mt-3 leading-6">
             What should we call you? This helps the app feel a little more human.
@@ -9092,7 +9092,7 @@ export default function Home() {
                       })}
                       <Text className="text-[#66b9b9] text-[10px] font-bold mt-1">
                         {taskMoodMeta
-                          ? `${taskMoodMeta.emoji} ${taskMoodMeta.label} � ${taskMoodAffirmation}`
+                          ? `${taskMoodMeta.emoji} ${taskMoodMeta.label} • ${taskMoodAffirmation}`
                           : taskMoodAffirmation}
                       </Text>
                     </View>
@@ -9169,7 +9169,7 @@ export default function Home() {
         <Text
           className="hidden"
         >
-          ADHD Task Manager <Text className="text-[#66b9b9]">?</Text>
+          ADHD Task Manager <Text className="text-[#66b9b9]">✨</Text>
         </Text>
 
         {/* Daily Progress Banner */}
@@ -9565,12 +9565,12 @@ export default function Home() {
           ) : null}
         </View>
 
-        {renderSection("?? Pinned Tasks", "Pinned")}
+        {renderSection("📌 Pinned Tasks", "Pinned")}
 
         {activeTaskId && (
           <View className="bg-[#0B1F1F] mx-4 p-5 rounded-[32px] border border-[#5EEAD4]/35 shadow-2xl shadow-[#5EEAD4]/15 mb-4">
             <Text className="text-[#5EEAD4] font-black text-xs uppercase tracking-widest mb-4">
-              Active Focus ??
+              Active Focus 🎯
             </Text>
             {isFocusCompleted ? (
               <Text className="text-[#7DFFB3] text-[10px] font-black uppercase tracking-widest mb-3">
@@ -9618,7 +9618,7 @@ export default function Home() {
                   {/* TIMER INSIDE */}
                   <View className="absolute items-center">
                     <Text className="text-[#5EEAD4] text-[40px] font-black tracking-tight">
-                      {focusTimeText.replace('? ', '')}
+                      {focusTimeText.replace('⏱ ', '')}
                     </Text>
                   </View>
                 </View>
@@ -9634,7 +9634,7 @@ export default function Home() {
                 {/* Task assigned durration */}
                 {activeTaskDuration && (
                   <Text className="text-[#99bdbd] text-xs mt-1 text-center font-semibold">
-                    ? {formatDuration(activeTaskDuration)} session
+                    ⏱ {formatDuration(activeTaskDuration)} session
                   </Text>
                 )}
 
@@ -9648,7 +9648,7 @@ export default function Home() {
                 ) : (
                   <TouchableOpacity onPress={toggleTimer} className="mt-5 bg-[#66b9b9]/15 px-6 py-3 rounded-full border border-[#66b9b9]/40 shadow-md shadow-[#66b9b9]/10">
                     <Text className="text-[#5EEAD4] font-black uppercase tracking-widest text-xs">
-                      {isTimerRunning ? "? Pause" : "? Resume"}
+                      {isTimerRunning ? "⏸ Pause" : "▶ Resume"}
                     </Text>
                   </TouchableOpacity>
                 )}
@@ -9657,9 +9657,9 @@ export default function Home() {
           </View>
         )}
 
-        {renderSection("Morning ??", "Morning")}
-        {renderSection("Work ??", "Work")}
-        {renderSection("Evening ??", "Evening")}
+        {renderSection("Morning ☀️", "Morning")}
+        {renderSection("Work 💼", "Work")}
+        {renderSection("Evening 🌙", "Evening")}
       </Reanimated.ScrollView>
       {renderFixedFooter()}
       {renderDrawer()}
@@ -10151,7 +10151,7 @@ export default function Home() {
               }}
             >
             <Text className="text-[#E8F4F4] text-2xl font-black mb-6 uppercase tracking-tight">
-              {isEditMode ? "Edit Task ??" : "New Task ?"}
+              {isEditMode ? "Edit Task ✏️" : "New Task ✨"}
             </Text>
 
             <TextInput
@@ -10240,7 +10240,7 @@ export default function Home() {
 
             {timeAdjusted && (
               <Text className="text-[#FFD166] text-xs font-bold mb-3">
-                ? Adjusted to section time
+                ⏱ Adjusted to section time
               </Text>
             )}
             <View className="bg-[#061414]/40 border border-[#337a7a]/30 rounded-2xl p-3 mb-3">
@@ -10534,8 +10534,8 @@ export default function Home() {
             >
               <Text className="text-[#E8F4F4] flex-1 font-semibold text-sm">
                 {attachmentUri
-                  ? `?? ${attachmentName || "File Selected"}`
-                  : "?? Upload Image or PDF"}
+                  ? `📎 ${attachmentName || "File Selected"}`
+                  : "📁 Upload Image or PDF"}
               </Text>
               {attachmentUri && (
                 <TouchableOpacity onPress={() => setAttachmentUri(null)} className="ml-2 bg-[#FF7B7B]/15 px-2 py-1 rounded-lg border border-[#FF7B7B]/25">
@@ -10547,7 +10547,7 @@ export default function Home() {
           <View className="bg-[#0B1F1F] px-6 pt-3 pb-2 border-t border-[#66b9b9]/20">
             {timeError ? (
               <Text className="text-[#FF7B7B] font-bold text-xs mb-2 text-center">
-                ?? Task time must be within section time
+                ⚠️ Task time must be within section time
               </Text>
             ) : null}
             <TouchableOpacity
@@ -10626,7 +10626,7 @@ export default function Home() {
         <View className="flex-1 bg-[#061414]/90 justify-center px-6">
           <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
             <Text className="text-[#E8F4F4] text-xl font-black mb-6 uppercase tracking-tighter text-center">
-              Set Focus Time ?
+              Set Focus Time ⏱
             </Text>
 
             {/* Inputs */}
@@ -10670,7 +10670,7 @@ export default function Home() {
         </View>
       </Modal>
 
-      {/* Current Task Quick Access OR ? Last Completed Floating Button */}
+      {/* Current Task Quick Access OR ✅ Last Completed Floating Button */}
       {currentTaskQuickTask ? (
         <Reanimated.View
           style={[{ bottom: focusFabBottom }, currentTaskFabAnimatedStyle]}
@@ -10681,7 +10681,7 @@ export default function Home() {
             onPress={handleCurrentTaskFabPress}
             className="w-11 h-11 rounded-full bg-[#123131] border border-[#B6C26E]/65 items-center justify-center shadow-xl shadow-[#B6C26E]/25"
           >
-            <Text className="text-[15px]">?</Text>
+            <Text className="text-[15px]">⏰</Text>
             {currentTaskQuickReason === "active-task" ||
             currentFocusedTaskId === currentTaskQuickTaskId ? (
               <View className="absolute -bottom-0.5 w-2 h-2 rounded-full bg-[#7DFFB3]" />
@@ -10695,7 +10695,7 @@ export default function Home() {
           className="absolute right-6 bg-[#7DFFB3] py-3 px-5 rounded-full shadow-2xl shadow-[#7DFFB3]/35 border border-[#7DFFB3]"
         >
           <Text className="text-[#061414] font-black uppercase tracking-widest text-xs">
-            ? Last Completed
+            ✅ Last Completed
           </Text>
         </TouchableOpacity>
       ) : null}
@@ -10999,4 +10999,5 @@ export default function Home() {
     </>
   );
 }
+
 
