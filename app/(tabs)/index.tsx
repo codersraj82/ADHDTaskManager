@@ -4181,6 +4181,7 @@ export default function Home() {
   const [taskContext, setTaskContext] = useState("");
   const [taskEstimatedMinutes, setTaskEstimatedMinutes] = useState(null);
   const [isEnergyEffortExpanded, setIsEnergyEffortExpanded] = useState(false);
+  const [isRepeatTaskExpanded, setIsRepeatTaskExpanded] = useState(false);
   const [selectedSection, setSelectedSection] = useState("Morning");
   const [repeatType, setRepeatType] = useState(REPEAT_TYPES.NONE);
   const [repeatDays, setRepeatDays] = useState([]);
@@ -4711,6 +4712,7 @@ export default function Home() {
     setTaskContext("");
     setTaskEstimatedMinutes(null);
     setIsEnergyEffortExpanded(false);
+    setIsRepeatTaskExpanded(false);
     setScheduledDateTime("");
     setSelectedSection("Morning");
     setRepeatType(REPEAT_TYPES.NONE);
@@ -4747,6 +4749,7 @@ export default function Home() {
     setTaskContext("");
     setTaskEstimatedMinutes(null);
     setIsEnergyEffortExpanded(false);
+    setIsRepeatTaskExpanded(false);
     setSelectedSection("Morning");
     setScheduledDateTime("");
     setRepeatType(REPEAT_TYPES.NONE);
@@ -5435,6 +5438,7 @@ export default function Home() {
             normalizedEstimatedMinutes !== null
         )
       );
+      setIsRepeatTaskExpanded(false);
       setScheduledDateTime(task.scheduledTime || "");
       setSelectedSection(task.section || "Morning");
       setRepeatType(repeatSettings.repeatType);
@@ -10240,127 +10244,143 @@ export default function Home() {
               </Text>
             )}
             <View className="bg-[#061414]/40 border border-[#337a7a]/30 rounded-2xl p-3 mb-3">
-              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
-                Repeat Task
-              </Text>
-              <View className="flex-row flex-wrap">
-                {REPEAT_TYPE_OPTIONS.map((option) => (
-                  <TouchableOpacity
-                    key={option.key}
-                    onPress={() => setRepeatType(option.key)}
-                    className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
-                      repeatType === option.key
-                        ? "bg-[#66b9b9] border-[#66b9b9]"
-                        : "bg-[#123131]/70 border-[#337a7a]/35"
-                    }`}
-                  >
-                    <Text
-                      className={`text-[10px] font-black uppercase tracking-wider ${
-                        repeatType === option.key
-                          ? "text-[#061414]"
-                          : "text-[#9FB5B5]"
-                      }`}
-                    >
-                      {option.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={() => setIsRepeatTaskExpanded((prev) => !prev)}
+                className="flex-row items-center justify-between"
+              >
+                <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                  Repeat Task
+                </Text>
+                <Feather
+                  name={isRepeatTaskExpanded ? "chevron-up" : "chevron-down"}
+                  size={14}
+                  color={COLORS.accent}
+                />
+              </TouchableOpacity>
 
-              {repeatType === REPEAT_TYPES.WEEKLY && (
-                <View className="flex-row flex-wrap mt-1">
-                  {WEEKDAY_OPTIONS.map((day) => (
-                    <TouchableOpacity
-                      key={day.key}
-                      onPress={() => toggleWeeklyRepeatDay(day.key)}
-                      className={`px-2.5 py-1.5 rounded-full border mr-2 mb-2 ${
-                        repeatDays.includes(day.key)
-                          ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
-                          : "bg-[#101416] border-[#337a7a]/35"
-                      }`}
-                    >
-                      <Text
-                        className={`text-[10px] font-bold ${
-                          repeatDays.includes(day.key)
-                            ? "text-[#66b9b9]"
-                            : "text-[#9FB5B5]"
-                        }`}
-                      >
-                        {day.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-
-              {repeatType === REPEAT_TYPES.MONTHLY && (
-                <View className="mt-1">
+              {isRepeatTaskExpanded ? (
+                <View className="mt-2">
                   <View className="flex-row flex-wrap">
-                    {[
-                      { key: MONTHLY_REPEAT_TYPES.FIRST, label: "First Day" },
-                      { key: MONTHLY_REPEAT_TYPES.LAST, label: "Last Day" },
-                      { key: MONTHLY_REPEAT_TYPES.CUSTOM, label: "Custom" },
-                    ].map((item) => (
+                    {REPEAT_TYPE_OPTIONS.map((option) => (
                       <TouchableOpacity
-                        key={item.key}
-                        onPress={() => setRepeatMonthlyType(item.key)}
+                        key={option.key}
+                        onPress={() => setRepeatType(option.key)}
                         className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
-                          repeatMonthlyType === item.key
-                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
-                            : "bg-[#101416] border-[#337a7a]/35"
+                          repeatType === option.key
+                            ? "bg-[#66b9b9] border-[#66b9b9]"
+                            : "bg-[#123131]/70 border-[#337a7a]/35"
                         }`}
                       >
                         <Text
-                          className={`text-[10px] font-bold uppercase tracking-wider ${
-                            repeatMonthlyType === item.key
-                              ? "text-[#66b9b9]"
+                          className={`text-[10px] font-black uppercase tracking-wider ${
+                            repeatType === option.key
+                              ? "text-[#061414]"
                               : "text-[#9FB5B5]"
                           }`}
                         >
-                          {item.label}
+                          {option.label}
                         </Text>
                       </TouchableOpacity>
                     ))}
                   </View>
-                  {repeatMonthlyType === MONTHLY_REPEAT_TYPES.CUSTOM && (
+
+                  {repeatType === REPEAT_TYPES.WEEKLY && (
+                    <View className="flex-row flex-wrap mt-1">
+                      {WEEKDAY_OPTIONS.map((day) => (
+                        <TouchableOpacity
+                          key={day.key}
+                          onPress={() => toggleWeeklyRepeatDay(day.key)}
+                          className={`px-2.5 py-1.5 rounded-full border mr-2 mb-2 ${
+                            repeatDays.includes(day.key)
+                              ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                              : "bg-[#101416] border-[#337a7a]/35"
+                          }`}
+                        >
+                          <Text
+                            className={`text-[10px] font-bold ${
+                              repeatDays.includes(day.key)
+                                ? "text-[#66b9b9]"
+                                : "text-[#9FB5B5]"
+                            }`}
+                          >
+                            {day.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+
+                  {repeatType === REPEAT_TYPES.MONTHLY && (
+                    <View className="mt-1">
+                      <View className="flex-row flex-wrap">
+                        {[
+                          { key: MONTHLY_REPEAT_TYPES.FIRST, label: "First Day" },
+                          { key: MONTHLY_REPEAT_TYPES.LAST, label: "Last Day" },
+                          { key: MONTHLY_REPEAT_TYPES.CUSTOM, label: "Custom" },
+                        ].map((item) => (
+                          <TouchableOpacity
+                            key={item.key}
+                            onPress={() => setRepeatMonthlyType(item.key)}
+                            className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+                              repeatMonthlyType === item.key
+                                ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                                : "bg-[#101416] border-[#337a7a]/35"
+                            }`}
+                          >
+                            <Text
+                              className={`text-[10px] font-bold uppercase tracking-wider ${
+                                repeatMonthlyType === item.key
+                                  ? "text-[#66b9b9]"
+                                  : "text-[#9FB5B5]"
+                              }`}
+                            >
+                              {item.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                      {repeatMonthlyType === MONTHLY_REPEAT_TYPES.CUSTOM && (
+                        <TouchableOpacity
+                          onPress={() =>
+                            openSchedulePicker({
+                              target: "repeat-monthly-custom",
+                              title: "Monthly Repeat Date",
+                              value: repeatCustomDate || scheduledDateTime || new Date(),
+                            })
+                          }
+                          className="bg-[#101416] p-3 rounded-xl border border-[#D9A441]/35"
+                        >
+                          <Text className="text-[#E8F4F4] font-semibold text-xs">
+                            {repeatCustomDate
+                              ? `Custom: ${formatDateTimeForDisplay(repeatCustomDate)}`
+                              : "Select Custom Monthly Date"}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  )}
+
+                  {repeatType === REPEAT_TYPES.YEARLY && (
                     <TouchableOpacity
                       onPress={() =>
                         openSchedulePicker({
-                          target: "repeat-monthly-custom",
-                          title: "Monthly Repeat Date",
-                          value: repeatCustomDate || scheduledDateTime || new Date(),
+                          target: "repeat-yearly",
+                          title: "Yearly Repeat Date",
+                          value: repeatYearlyDate || scheduledDateTime || new Date(),
                         })
                       }
-                      className="bg-[#101416] p-3 rounded-xl border border-[#D9A441]/35"
+                      className="bg-[#101416] p-3 rounded-xl border border-[#D9A441]/35 mt-1"
                     >
                       <Text className="text-[#E8F4F4] font-semibold text-xs">
-                        {repeatCustomDate
-                          ? `Custom: ${formatDateTimeForDisplay(repeatCustomDate)}`
-                          : "Select Custom Monthly Date"}
+                        {repeatYearlyDate
+                          ? `Every year on ${formatDateTimeForDisplay(repeatYearlyDate)}`
+                          : "Select Yearly Date"}
                       </Text>
                     </TouchableOpacity>
                   )}
                 </View>
-              )}
-
-              {repeatType === REPEAT_TYPES.YEARLY && (
-                <TouchableOpacity
-                  onPress={() =>
-                    openSchedulePicker({
-                      target: "repeat-yearly",
-                      title: "Yearly Repeat Date",
-                      value: repeatYearlyDate || scheduledDateTime || new Date(),
-                    })
-                  }
-                  className="bg-[#101416] p-3 rounded-xl border border-[#D9A441]/35 mt-1"
-                >
-                  <Text className="text-[#E8F4F4] font-semibold text-xs">
-                    {repeatYearlyDate
-                      ? `Every year on ${formatDateTimeForDisplay(repeatYearlyDate)}`
-                      : "Select Yearly Date"}
-                  </Text>
-                </TouchableOpacity>
-              )}
+              ) : null}
             </View>
 
             <View className="bg-[#061414]/40 border border-[#337a7a]/30 rounded-2xl p-3 mb-3">
