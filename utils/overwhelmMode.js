@@ -53,13 +53,19 @@ const hasMinimumVersion = (task) =>
   typeof task?.minimumVersion === "string" &&
   task.minimumVersion.trim().length > 0;
 
+const normalize = (value) => String(value || "").trim().toLowerCase();
+
+const getFocusRequired = (task) => normalize(task?.focusRequired || task?.focusNeed);
+
+const getTaskContext = (task) => normalize(task?.taskContext || task?.context);
+
 const hasLowEstimatedMinutes = (task) => {
   const minutes = Number(task?.estimatedMinutes ?? task?.estimateMinutes);
   return Number.isFinite(minutes) && minutes > 0 && minutes <= 10;
 };
 
 const isHighEnergy = (task) => {
-  const energy = String(task?.energy || "").trim().toLowerCase();
+  const energy = normalize(task?.energyRequired || task?.energy);
   return (
     energy === "high" ||
     energy === "high_energy" ||
@@ -137,6 +143,14 @@ const pickQuickWinEntry = (entries, usedKeys, now) => {
       const aLowEstimate = hasLowEstimatedMinutes(a.task) ? 1 : 0;
       const bLowEstimate = hasLowEstimatedMinutes(b.task) ? 1 : 0;
       if (aLowEstimate !== bLowEstimate) return bLowEstimate - aLowEstimate;
+
+      const aLightFocus = getFocusRequired(a.task) === "light" ? 1 : 0;
+      const bLightFocus = getFocusRequired(b.task) === "light" ? 1 : 0;
+      if (aLightFocus !== bLightFocus) return bLightFocus - aLightFocus;
+
+      const aAnywhere = getTaskContext(a.task) === "anywhere" ? 1 : 0;
+      const bAnywhere = getTaskContext(b.task) === "anywhere" ? 1 : 0;
+      if (aAnywhere !== bAnywhere) return bAnywhere - aAnywhere;
 
       if (a.incompleteSubtasks !== b.incompleteSubtasks) {
         return a.incompleteSubtasks - b.incompleteSubtasks;

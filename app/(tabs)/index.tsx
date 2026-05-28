@@ -117,6 +117,12 @@ import {
   getAvoidanceReasonText,
 } from "../../utils/taskSupportSignals";
 import { getOverwhelmSuggestions } from "../../utils/overwhelmMode";
+import {
+  ENERGY_TASK_FILTERS,
+  ENERGY_FILTER_EMPTY_MESSAGES,
+  filterTasksByEnergyFilter,
+  doesTaskMatchEnergyFilter,
+} from "../../utils/energyTaskMatching";
 import OverwhelmModeSheet from "../../components/task/OverwhelmModeSheet";
 import Reanimated, {
   cancelAnimation,
@@ -325,6 +331,48 @@ const REPEAT_TYPE_OPTIONS = [
   { key: REPEAT_TYPES.YEARLY, label: "Yearly" },
 ];
 
+const ENERGY_REQUIRED_OPTIONS = Object.freeze([
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+]);
+
+const FOCUS_REQUIRED_OPTIONS = Object.freeze([
+  { value: "light", label: "Light" },
+  { value: "medium", label: "Medium" },
+  { value: "deep", label: "Deep" },
+]);
+
+const TASK_CONTEXT_OPTIONS = Object.freeze([
+  { value: "anywhere", label: "Anywhere" },
+  { value: "home", label: "Home" },
+  { value: "work", label: "Work" },
+  { value: "study", label: "Study" },
+  { value: "outside", label: "Outside" },
+]);
+
+const ESTIMATED_MINUTES_OPTIONS = Object.freeze([2, 5, 10, 15, 25]);
+
+const ENERGY_REQUIRED_META_LABELS = Object.freeze({
+  low: "Low energy",
+  medium: "Medium energy",
+  high: "High energy",
+});
+
+const FOCUS_REQUIRED_META_LABELS = Object.freeze({
+  light: "Light focus",
+  medium: "Medium focus",
+  deep: "Deep focus",
+});
+
+const TASK_CONTEXT_META_LABELS = Object.freeze({
+  anywhere: "Anywhere",
+  home: "Home",
+  work: "Work",
+  study: "Study",
+  outside: "Outside",
+});
+
 const SECTION_AFFIRMATION_KEYS = ["Pinned", ...SECTION_ORDER];
 
 const getDayBounds = (now = new Date()) => {
@@ -425,6 +473,76 @@ const hasPendingTodayTasks = (
       isActiveTodayTask
     );
   });
+};
+
+const normalizeEnergyRequiredValue = (value) => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+    return normalized;
+  }
+  return "";
+};
+
+const normalizeFocusRequiredValue = (value) => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "light" || normalized === "medium" || normalized === "deep") {
+    return normalized;
+  }
+  return "";
+};
+
+const normalizeTaskContextValue = (value) => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "anywhere" ||
+    normalized === "home" ||
+    normalized === "work" ||
+    normalized === "study" ||
+    normalized === "outside"
+  ) {
+    return normalized;
+  }
+  return "";
+};
+
+const normalizeEstimatedMinutesValue = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return null;
+  return Math.round(numericValue);
+};
+
+const getTaskEnergyMetadataPills = (task) => {
+  if (!task) return [];
+
+  const energyRequired = normalizeEnergyRequiredValue(task.energyRequired);
+  const focusRequired = normalizeFocusRequiredValue(task.focusRequired);
+  const taskContext = normalizeTaskContextValue(task.taskContext);
+  const estimatedMinutes = normalizeEstimatedMinutesValue(
+    task.estimatedMinutes ?? task.estimateMinutes
+  );
+
+  const pills = [];
+  if (energyRequired) {
+    pills.push(ENERGY_REQUIRED_META_LABELS[energyRequired]);
+  }
+  if (estimatedMinutes !== null) {
+    pills.push(`${estimatedMinutes} min`);
+  }
+  if (focusRequired) {
+    pills.push(FOCUS_REQUIRED_META_LABELS[focusRequired]);
+  }
+  if (taskContext) {
+    pills.push(TASK_CONTEXT_META_LABELS[taskContext]);
+  }
+
+  return pills.filter(Boolean);
 };
 
 const getPastPendingTasks = (tasks = [], now = new Date()) => {
@@ -534,6 +652,7 @@ export default function Home() {
   const [isSubtaskReordering, setIsSubtaskReordering] = useState(false);
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
+  const [activeEnergyFilter, setActiveEnergyFilter] = useState(null);
   const [timeError, setTimeError] = useState(false);
   const [sectionTimes, setSectionTimes] = useState({
     Morning: { start: "", end: "" },
@@ -1172,6 +1291,145 @@ export default function Home() {
 
     return nextMap;
   }, [tasks]);
+
+  const handleEnergyFilterPress = useCallback((filter) => {
+    setActiveEnergyFilter((current) => (current === filter ? null : filter));
+  }, []);
+
+  const energyFilteredSectionTasksMap = useMemo(() => {
+    if (!activeEnergyFilter) return sectionTasksMap;
+    const now = new Date();
+
+    return SECTION_ORDER.reduce((acc, sectionName) => {
+      acc[sectionName] = filterTasksByEnergyFilter(
+        sectionTasksMap[sectionName] || [],
+        activeEnergyFilter,
+        now,
+        {
+          taskSupportSignalById,
+          keepInputOrderForTodayOnly: true,
+        }
+      );
+      return acc;
+    }, {});
+  }, [activeEnergyFilter, sectionTasksMap, taskSupportSignalById]);
+
+  const energyFilteredPinnedTasks = useMemo(() => {
+    if (!activeEnergyFilter) return pinnedTasks;
+    return filterTasksByEnergyFilter(pinnedTasks, activeEnergyFilter, new Date(), {
+      taskSupportSignalById,
+      keepInputOrderForTodayOnly: true,
+    });
+  }, [activeEnergyFilter, pinnedTasks, taskSupportSignalById]);
+
+  const visibleSectionTasksMap = activeEnergyFilter
+    ? energyFilteredSectionTasksMap
+    : sectionTasksMap;
+  const visiblePinnedTasks = activeEnergyFilter ? energyFilteredPinnedTasks : pinnedTasks;
+
+  const energyFilteredSectionHeaderStats = useMemo(() => {
+    if (!activeEnergyFilter) return null;
+    const now = new Date();
+    const nowTime = now.getTime();
+    const { start, end } = getDayBounds(now);
+
+    return SECTION_ORDER.reduce((acc, sectionName) => {
+      const sectionTasks = energyFilteredSectionTasksMap[sectionName] || [];
+      const todayPendingCount = sectionTasks.reduce((count, task) => {
+        const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+        return isTimestampWithinRange(scheduledTimestamp, start, end)
+          ? count + 1
+          : count;
+      }, 0);
+
+      const nearestUpcomingTaskTitle =
+        sectionTasks
+          .map((task) => ({
+            task,
+            timestamp: toTaskTimestamp(task.scheduledTime),
+          }))
+          .filter((item) => item.timestamp !== null && item.timestamp >= nowTime)
+          .sort((a, b) => {
+            if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+            return (a.task.id ?? 0) - (b.task.id ?? 0);
+          })[0]?.task?.title ?? null;
+
+      acc[sectionName] = {
+        pendingCount: sectionTasks.length,
+        todayPendingCount,
+        todayCompletedCount: 0,
+        nearestUpcomingTaskTitle,
+      };
+      return acc;
+    }, {});
+  }, [activeEnergyFilter, energyFilteredSectionTasksMap]);
+
+  const energyFilteredPinnedHeaderStats = useMemo(() => {
+    if (!activeEnergyFilter) return null;
+    const now = new Date();
+    const nowTime = now.getTime();
+    const { start, end } = getDayBounds(now);
+
+    let todayPendingCount = 0;
+    let nearestUpcomingTaskTitle = null;
+    let nearestUpcomingTime = Number.POSITIVE_INFINITY;
+
+    energyFilteredPinnedTasks.forEach((task) => {
+      const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+      if (isTimestampWithinRange(scheduledTimestamp, start, end)) {
+        todayPendingCount += 1;
+      }
+
+      if (
+        scheduledTimestamp !== null &&
+        scheduledTimestamp >= nowTime &&
+        scheduledTimestamp < nearestUpcomingTime
+      ) {
+        nearestUpcomingTime = scheduledTimestamp;
+        nearestUpcomingTaskTitle = task.title || null;
+      }
+    });
+
+    return {
+      pendingCount: energyFilteredPinnedTasks.length,
+      todayPendingCount,
+      todayCompletedCount: 0,
+      nearestUpcomingTaskTitle,
+    };
+  }, [activeEnergyFilter, energyFilteredPinnedTasks]);
+
+  const activeEnergyFilterEmptyMessage = activeEnergyFilter
+    ? ENERGY_FILTER_EMPTY_MESSAGES[activeEnergyFilter] || ""
+    : "";
+
+  const energyFilterMoodSuggestion = useMemo(() => {
+    if (
+      effectiveMoodTypeForDailyProgress === MOOD_TYPES.FRUSTRATED ||
+      effectiveMoodTypeForDailyProgress === MOOD_TYPES.SAD
+    ) {
+      return "Pick one tiny task to reduce pressure.";
+    }
+    if (
+      effectiveMoodTypeForDailyProgress === MOOD_TYPES.HAPPY ||
+      effectiveMoodTypeForDailyProgress === MOOD_TYPES.VERY_HAPPY
+    ) {
+      return "This may be a good time for a focus task.";
+    }
+    if (effectiveMoodTypeForDailyProgress === MOOD_TYPES.NEUTRAL) {
+      return "Try a low-energy task first.";
+    }
+    return "Match tasks to your energy.";
+  }, [effectiveMoodTypeForDailyProgress]);
+
+  const isTaskMatchingActiveEnergyFilter = useCallback(
+    (task, now = new Date()) => {
+      if (!activeEnergyFilter) return true;
+      return doesTaskMatchEnergyFilter(task, activeEnergyFilter, now, {
+        taskSupportSignalById,
+      });
+    },
+    [activeEnergyFilter, taskSupportSignalById]
+  );
 
   const overwhelmSuggestions = useMemo(
     () => getOverwhelmSuggestions(tasks, new Date()),
@@ -2563,6 +2821,10 @@ export default function Home() {
           moodType TEXT DEFAULT '',
           firstAction TEXT DEFAULT '',
           minimumVersion TEXT DEFAULT '',
+          energyRequired TEXT DEFAULT '',
+          focusRequired TEXT DEFAULT '',
+          taskContext TEXT DEFAULT '',
+          estimatedMinutes INTEGER,
           startAssistUsedCount INTEGER DEFAULT 0,
           lastStartAssistAt TEXT,
           stuckCount INTEGER DEFAULT 0,
@@ -2672,6 +2934,18 @@ export default function Home() {
             "ALTER TABLE tasks ADD COLUMN minimumVersion TEXT DEFAULT '';"
           );
         }
+        if (!columnNames.includes("energyRequired")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN energyRequired TEXT DEFAULT '';");
+        }
+        if (!columnNames.includes("focusRequired")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN focusRequired TEXT DEFAULT '';");
+        }
+        if (!columnNames.includes("taskContext")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN taskContext TEXT DEFAULT '';");
+        }
+        if (!columnNames.includes("estimatedMinutes")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN estimatedMinutes INTEGER;");
+        }
         if (!columnNames.includes("startAssistUsedCount")) {
           db.execSync(
             "ALTER TABLE tasks ADD COLUMN startAssistUsedCount INTEGER DEFAULT 0;"
@@ -2746,6 +3020,10 @@ export default function Home() {
           moodType: t.moodType || "",
           firstAction: t.firstAction || "",
           minimumVersion: t.minimumVersion || "",
+          energyRequired: normalizeEnergyRequiredValue(t.energyRequired),
+          focusRequired: normalizeFocusRequiredValue(t.focusRequired),
+          taskContext: normalizeTaskContextValue(t.taskContext),
+          estimatedMinutes: normalizeEstimatedMinutesValue(t.estimatedMinutes),
           startAssistUsedCount: Number(t.startAssistUsedCount || 0),
           lastStartAssistAt: t.lastStartAssistAt || "",
           stuckCount: Number(t.stuckCount || 0),
@@ -3885,6 +4163,11 @@ export default function Home() {
   const [taskName, setTaskName] = useState("");
   const [taskFirstAction, setTaskFirstAction] = useState("");
   const [taskMinimumVersion, setTaskMinimumVersion] = useState("");
+  const [taskEnergyRequired, setTaskEnergyRequired] = useState("");
+  const [taskFocusRequired, setTaskFocusRequired] = useState("");
+  const [taskContext, setTaskContext] = useState("");
+  const [taskEstimatedMinutes, setTaskEstimatedMinutes] = useState(null);
+  const [isEnergyEffortExpanded, setIsEnergyEffortExpanded] = useState(false);
   const [selectedSection, setSelectedSection] = useState("Morning");
   const [repeatType, setRepeatType] = useState(REPEAT_TYPES.NONE);
   const [repeatDays, setRepeatDays] = useState([]);
@@ -4049,12 +4332,16 @@ export default function Home() {
           moodType,
           firstAction,
           minimumVersion,
+          energyRequired,
+          focusRequired,
+          taskContext,
+          estimatedMinutes,
           startAssistUsedCount,
           lastStartAssistAt,
           stuckCount,
           lastStuckAt
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nextTask.title || "Task",
           nextTask.section || "Morning",
@@ -4076,6 +4363,10 @@ export default function Home() {
           nextTask.moodType || "",
           nextTask.firstAction || "",
           nextTask.minimumVersion || "",
+          normalizeEnergyRequiredValue(nextTask.energyRequired),
+          normalizeFocusRequiredValue(nextTask.focusRequired),
+          normalizeTaskContextValue(nextTask.taskContext),
+          normalizeEstimatedMinutesValue(nextTask.estimatedMinutes),
           Number(nextTask.startAssistUsedCount || 0),
           nextTask.lastStartAssistAt || null,
           Number(nextTask.stuckCount || 0),
@@ -4113,6 +4404,10 @@ export default function Home() {
           moodType: nextTask.moodType || "",
           firstAction: nextTask.firstAction || "",
           minimumVersion: nextTask.minimumVersion || "",
+          energyRequired: normalizeEnergyRequiredValue(nextTask.energyRequired),
+          focusRequired: normalizeFocusRequiredValue(nextTask.focusRequired),
+          taskContext: normalizeTaskContextValue(nextTask.taskContext),
+          estimatedMinutes: normalizeEstimatedMinutesValue(nextTask.estimatedMinutes),
           startAssistUsedCount: Number(nextTask.startAssistUsedCount || 0),
           lastStartAssistAt: nextTask.lastStartAssistAt || "",
           stuckCount: Number(nextTask.stuckCount || 0),
@@ -4283,12 +4578,16 @@ export default function Home() {
         moodType,
         firstAction,
         minimumVersion,
+        energyRequired,
+        focusRequired,
+        taskContext,
+        estimatedMinutes,
         startAssistUsedCount,
         lastStartAssistAt,
         stuckCount,
         lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
           task.title || "Task",
           task.section || "Morning",
@@ -4310,6 +4609,10 @@ export default function Home() {
           "",
           task.firstAction || "",
           task.minimumVersion || "",
+          normalizeEnergyRequiredValue(task.energyRequired),
+          normalizeFocusRequiredValue(task.focusRequired),
+          normalizeTaskContextValue(task.taskContext),
+          normalizeEstimatedMinutesValue(task.estimatedMinutes),
           Number(task.startAssistUsedCount || 0),
           task.lastStartAssistAt || null,
           Number(task.stuckCount || 0),
@@ -4351,6 +4654,10 @@ export default function Home() {
           moodType: "",
           firstAction: task.firstAction || "",
           minimumVersion: task.minimumVersion || "",
+          energyRequired: normalizeEnergyRequiredValue(task.energyRequired),
+          focusRequired: normalizeFocusRequiredValue(task.focusRequired),
+          taskContext: normalizeTaskContextValue(task.taskContext),
+          estimatedMinutes: normalizeEstimatedMinutesValue(task.estimatedMinutes),
           startAssistUsedCount: Number(task.startAssistUsedCount || 0),
           lastStartAssistAt: task.lastStartAssistAt || "",
           stuckCount: Number(task.stuckCount || 0),
@@ -4386,6 +4693,11 @@ export default function Home() {
     setTaskDetails("");
     setTaskFirstAction("");
     setTaskMinimumVersion("");
+    setTaskEnergyRequired("");
+    setTaskFocusRequired("");
+    setTaskContext("");
+    setTaskEstimatedMinutes(null);
+    setIsEnergyEffortExpanded(false);
     setScheduledDateTime("");
     setSelectedSection("Morning");
     setRepeatType(REPEAT_TYPES.NONE);
@@ -4407,7 +4719,7 @@ export default function Home() {
     setModalVisible(false);
   };
 
-  const openModal = () => {
+  const openModal = useCallback(() => {
     // ✅ RESET EDIT STATE
     setEditingTask(null);
     setIsEditMode(false);
@@ -4417,6 +4729,11 @@ export default function Home() {
     setTaskDetails("");
     setTaskFirstAction("");
     setTaskMinimumVersion("");
+    setTaskEnergyRequired("");
+    setTaskFocusRequired("");
+    setTaskContext("");
+    setTaskEstimatedMinutes(null);
+    setIsEnergyEffortExpanded(false);
     setSelectedSection("Morning");
     setScheduledDateTime("");
     setRepeatType(REPEAT_TYPES.NONE);
@@ -4434,7 +4751,7 @@ export default function Home() {
     setTodayPlanCreateContextActive(false);
 
     setModalVisible(true);
-  };
+  }, []);
 
   const closeTaskModal = useCallback(() => {
     setModalVisible(false);
@@ -4447,7 +4764,7 @@ export default function Home() {
     setTodayPlanCreateContextActive(true);
     setSelectedSection(getSectionForCurrentTime(now));
     setScheduledDateTime(formatSqliteDateTime(now));
-  }, []);
+  }, [openModal]);
 
   const startFocus = (taskId, durationOverride = null) => {
     const duration =
@@ -4770,8 +5087,33 @@ export default function Home() {
   );
 
   const scrollToTask = useCallback(
-    (taskId, options = {}) => focusTaskById(taskId, options),
-    [focusTaskById]
+    (taskId, options = {}) => {
+      const numericTaskId = Number(taskId);
+      if (!Number.isFinite(numericTaskId)) return false;
+
+      const targetTask =
+        tasks.find((task) => Number(task?.id) === numericTaskId) || null;
+      if (!targetTask || targetTask.completed) return false;
+
+      if (
+        activeEnergyFilter &&
+        !isTaskMatchingActiveEnergyFilter(targetTask, new Date())
+      ) {
+        setActiveEnergyFilter(null);
+        setTimeout(() => {
+          focusTaskById(numericTaskId, options);
+        }, 110);
+        return true;
+      }
+
+      return focusTaskById(numericTaskId, options);
+    },
+    [
+      activeEnergyFilter,
+      focusTaskById,
+      isTaskMatchingActiveEnergyFilter,
+      tasks,
+    ]
   );
 
   const openTaskInMakeSmallerSupport = useCallback(
@@ -4989,7 +5331,7 @@ export default function Home() {
       prev ? { ...prev, handled: true } : prev
     );
 
-    const didNavigate = focusTaskById(task.id, {
+    const didNavigate = scrollToTask(task.id, {
       highlight: true,
       onComplete: () => {
         if (
@@ -5040,8 +5382,8 @@ export default function Home() {
       setPendingNotificationTaskTarget(null);
     }
   }, [
-    focusTaskById,
     pendingNotificationTaskTarget,
+    scrollToTask,
     showSnoozeAffirmation,
     startRecoveryEdit,
     tasks,
@@ -5056,12 +5398,30 @@ export default function Home() {
     (task, assistHint = "") => {
       if (!task) return;
       const repeatSettings = normalizeTaskRepeatSettings(task);
+      const normalizedEnergyRequired = normalizeEnergyRequiredValue(task.energyRequired);
+      const normalizedFocusRequired = normalizeFocusRequiredValue(task.focusRequired);
+      const normalizedTaskContext = normalizeTaskContextValue(task.taskContext);
+      const normalizedEstimatedMinutes = normalizeEstimatedMinutesValue(
+        task.estimatedMinutes ?? task.estimateMinutes
+      );
       setEditingTask(task);
       setIsEditMode(true);
       setTaskName(task.title || "");
       setTaskDetails(task.details || "");
       setTaskFirstAction(task.firstAction || "");
       setTaskMinimumVersion(task.minimumVersion || "");
+      setTaskEnergyRequired(normalizedEnergyRequired);
+      setTaskFocusRequired(normalizedFocusRequired);
+      setTaskContext(normalizedTaskContext);
+      setTaskEstimatedMinutes(normalizedEstimatedMinutes);
+      setIsEnergyEffortExpanded(
+        Boolean(
+          normalizedEnergyRequired ||
+            normalizedFocusRequired ||
+            normalizedTaskContext ||
+            normalizedEstimatedMinutes !== null
+        )
+      );
       setScheduledDateTime(task.scheduledTime || "");
       setSelectedSection(task.section || "Morning");
       setRepeatType(repeatSettings.repeatType);
@@ -5525,6 +5885,10 @@ export default function Home() {
 
     const normalizedFirstAction = (taskFirstAction || "").trim();
     const normalizedMinimumVersion = (taskMinimumVersion || "").trim();
+    const normalizedEnergyRequired = normalizeEnergyRequiredValue(taskEnergyRequired);
+    const normalizedFocusRequired = normalizeFocusRequiredValue(taskFocusRequired);
+    const normalizedTaskContext = normalizeTaskContextValue(taskContext);
+    const normalizedEstimatedMinutes = normalizeEstimatedMinutesValue(taskEstimatedMinutes);
     const baseSubtasks =
       isEditMode && Array.isArray(editingTask?.subtasks) ? editingTask.subtasks : [];
     const firstActionAlreadyInSubtasks = baseSubtasks.some(
@@ -5546,6 +5910,10 @@ export default function Home() {
       repeatYearlyDate: normalizedYearlyDate,
       firstAction: normalizedFirstAction,
       minimumVersion: normalizedMinimumVersion,
+      energyRequired: normalizedEnergyRequired,
+      focusRequired: normalizedFocusRequired,
+      taskContext: normalizedTaskContext,
+      estimatedMinutes: normalizedEstimatedMinutes,
       subtasksToSave,
     };
   };
@@ -5562,6 +5930,10 @@ export default function Home() {
       repeatYearlyDate: draftRepeatYearlyDate,
       firstAction: draftFirstAction,
       minimumVersion: draftMinimumVersion,
+      energyRequired: draftEnergyRequired,
+      focusRequired: draftFocusRequired,
+      taskContext: draftTaskContext,
+      estimatedMinutes: draftEstimatedMinutes,
       subtasksToSave,
     } = draft;
 
@@ -5633,11 +6005,15 @@ export default function Home() {
                 repeatMonthlyType = ?,
                 repeatCustomDate = ?,
                 repeatYearlyDate = ?,
-                repeatGroupId = ?,
-                firstAction = ?,
-                minimumVersion = ?,
-                moodType = ?
-            WHERE id = ?`,
+                 repeatGroupId = ?,
+                 firstAction = ?,
+                 minimumVersion = ?,
+                 energyRequired = ?,
+                 focusRequired = ?,
+                 taskContext = ?,
+                 estimatedMinutes = ?,
+                 moodType = ?
+             WHERE id = ?`,
           [
             taskName,
             selectedSection,
@@ -5655,6 +6031,10 @@ export default function Home() {
             nextGroupId,
             draftFirstAction,
             draftMinimumVersion,
+            draftEnergyRequired,
+            draftFocusRequired,
+            draftTaskContext,
+            draftEstimatedMinutes,
             targetTask.moodType || "",
             targetTask.id,
           ]
@@ -5678,6 +6058,10 @@ export default function Home() {
           repeatGroupId: nextGroupId,
           firstAction: draftFirstAction,
           minimumVersion: draftMinimumVersion,
+          energyRequired: draftEnergyRequired,
+          focusRequired: draftFocusRequired,
+          taskContext: draftTaskContext,
+          estimatedMinutes: draftEstimatedMinutes,
           moodType: targetTask.moodType || "",
         });
       }
@@ -5723,12 +6107,16 @@ export default function Home() {
         moodType,
         firstAction,
         minimumVersion,
+        energyRequired,
+        focusRequired,
+        taskContext,
+        estimatedMinutes,
         startAssistUsedCount,
         lastStartAssistAt,
         stuckCount,
         lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         taskName,
         selectedSection,
@@ -5750,6 +6138,10 @@ export default function Home() {
         "",
         draftFirstAction,
         draftMinimumVersion,
+        draftEnergyRequired,
+        draftFocusRequired,
+        draftTaskContext,
+        draftEstimatedMinutes,
         0,
         null,
         0,
@@ -5793,6 +6185,10 @@ export default function Home() {
       moodType: "",
       firstAction: draftFirstAction,
       minimumVersion: draftMinimumVersion,
+      energyRequired: draftEnergyRequired,
+      focusRequired: draftFocusRequired,
+      taskContext: draftTaskContext,
+      estimatedMinutes: draftEstimatedMinutes,
       startAssistUsedCount: 0,
       lastStartAssistAt: "",
       stuckCount: 0,
@@ -5962,6 +6358,10 @@ export default function Home() {
         moodType,
         firstAction,
         minimumVersion,
+        energyRequired,
+        focusRequired,
+        taskContext,
+        estimatedMinutes,
         startAssistUsedCount,
         lastStartAssistAt,
         stuckCount,
@@ -5978,7 +6378,7 @@ export default function Home() {
         lastSnoozedAt,
         rescheduleCount,
         lastRescheduledAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
@@ -6001,6 +6401,10 @@ export default function Home() {
         lastDeletedTask.moodType || "",
         lastDeletedTask.firstAction || "",
         lastDeletedTask.minimumVersion || "",
+        normalizeEnergyRequiredValue(lastDeletedTask.energyRequired),
+        normalizeFocusRequiredValue(lastDeletedTask.focusRequired),
+        normalizeTaskContextValue(lastDeletedTask.taskContext),
+        normalizeEstimatedMinutesValue(lastDeletedTask.estimatedMinutes),
         Number(lastDeletedTask.startAssistUsedCount || 0),
         lastDeletedTask.lastStartAssistAt || null,
         Number(lastDeletedTask.stuckCount || 0),
@@ -7826,8 +8230,8 @@ export default function Home() {
   const renderSection = (title, section) => {
     const isPinnedVirtualSection = section === "Pinned";
     const sectionTasks = isPinnedVirtualSection
-      ? pinnedTasks
-      : sectionTasksMap[section] || [];
+      ? visiblePinnedTasks
+      : visibleSectionTasksMap[section] || [];
     const isSectionExpanded = isPinnedVirtualSection
       ? isPinnedSectionExpanded
       : expandedSection === section;
@@ -7846,9 +8250,26 @@ export default function Home() {
       SECTION_SURFACE_CLASSES[section] || SECTION_SURFACE_CLASSES.Work;
     const sectionHeaderClass =
       SECTION_HEADER_CLASSES[section] || SECTION_HEADER_CLASSES.Work;
+    const filteredStatsForSection = isPinnedVirtualSection
+      ? energyFilteredPinnedHeaderStats
+      : energyFilteredSectionHeaderStats?.[section];
     const sectionStats = isPinnedVirtualSection
-      ? pinnedHeaderStats
-      : sectionHeaderStats[section] || {
+      ? activeEnergyFilter
+        ? filteredStatsForSection || {
+            pendingCount: 0,
+            todayPendingCount: 0,
+            todayCompletedCount: 0,
+            nearestUpcomingTaskTitle: null,
+          }
+        : pinnedHeaderStats
+      : activeEnergyFilter
+        ? filteredStatsForSection || {
+            pendingCount: 0,
+            todayPendingCount: 0,
+            todayCompletedCount: 0,
+            nearestUpcomingTaskTitle: null,
+          }
+        : sectionHeaderStats[section] || {
           pendingCount: 0,
           todayPendingCount: 0,
           todayCompletedCount: 0,
@@ -7913,6 +8334,14 @@ export default function Home() {
 
           {isSectionExpanded && (
             <View className="px-3 pb-3">
+              {activeEnergyFilter && sectionTasks.length === 0 ? (
+                <View className="rounded-2xl border border-[#337a7a]/25 bg-[#061414]/55 px-3 py-2.5 mt-1">
+                  <Text className="text-[#9FB5B5] text-[11px] leading-4">
+                    {activeEnergyFilterEmptyMessage}
+                  </Text>
+                </View>
+              ) : null}
+
               {sectionTasks.map((task) => {
             const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
             const taskDate = parseStoredDateTime(task.scheduledTime);
@@ -7932,6 +8361,7 @@ export default function Home() {
             const repeatLabel = repeatLabelByTaskId[task.id] || "";
             const hasRepeatLabel = Boolean(repeatLabel);
             const showTaskHeaderMeta = task.isPinned || hasRepeatLabel;
+            const energyMetadataPills = getTaskEnergyMetadataPills(task);
             const taskSupportSignal =
               taskSupportSignalById[task.id] || EMPTY_TASK_SUPPORT_SIGNAL;
             const supportReasonText = getAvoidanceReasonText(taskSupportSignal);
@@ -8285,6 +8715,21 @@ export default function Home() {
                                 </TouchableOpacity>
                               ) : null}
                             </View>
+                          </View>
+                        ) : null}
+
+                        {energyMetadataPills.length > 0 ? (
+                          <View className="mt-2 flex-row flex-wrap">
+                            {energyMetadataPills.map((pillLabel) => (
+                              <View
+                                key={`${task.id}-energy-pill-${pillLabel}`}
+                                className="mr-2 mb-2 px-2.5 py-1 rounded-full border border-[#66b9b9]/28 bg-[#061414]/65"
+                              >
+                                <Text className="text-[#9FB5B5] text-[10px] font-bold">
+                                  {pillLabel}
+                                </Text>
+                              </View>
+                            ))}
                           </View>
                         ) : null}
 
@@ -8987,6 +9432,46 @@ export default function Home() {
           </Text>
         </View>
 
+        <View className="mx-4 mb-4">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingRight: 8 }}
+          >
+            {ENERGY_TASK_FILTERS.map((filterOption) => {
+              const isActive = activeEnergyFilter === filterOption.key;
+              return (
+                <TouchableOpacity
+                  key={filterOption.key}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isActive }}
+                  accessibilityLabel={`${filterOption.label} filter`}
+                  activeOpacity={0.86}
+                  onPress={() => handleEnergyFilterPress(filterOption.key)}
+                  className={`mr-2 px-3 py-1.5 rounded-full border ${
+                    isActive
+                      ? "bg-[#D9A441]/18 border-[#D9A441]/55"
+                      : "bg-[#123131]/72 border-[#337a7a]/35"
+                  }`}
+                >
+                  <Text
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      isActive ? "text-[#D9A441]" : "text-[#9FB5B5]"
+                    }`}
+                  >
+                    {filterOption.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+          {energyFilterMoodSuggestion ? (
+            <Text className="text-[#9FB5B5] text-[11px] mt-2 ml-1">
+              {energyFilterMoodSuggestion}
+            </Text>
+          ) : null}
+        </View>
+
         {renderSection("📌 Pinned Tasks", "Pinned")}
 
         {activeTaskId && (
@@ -9569,7 +10054,7 @@ export default function Home() {
               keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
               contentContainerStyle={{
                 padding: 24,
-                paddingBottom: Math.max(insets.bottom, 20) + 24,
+                paddingBottom: Math.max(insets.bottom, 20) + 148,
               }}
             >
             <Text className="text-[#E8F4F4] text-2xl font-black mb-6 uppercase tracking-tight">
@@ -9788,31 +10273,155 @@ export default function Home() {
                 </TouchableOpacity>
               )}
             </View>
-            <TouchableOpacity
-              onPress={handleSaveTask}
-              className="bg-[#66b9b9] p-4 rounded-2xl shadow-lg shadow-[#66b9b9]/30 border border-[#99bdbd]/60 mt-2"
-            >
-              <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-base">
-                {isEditMode ? "Update Task" : "Save Task"}
-              </Text>
-            </TouchableOpacity>
 
-            <TouchableOpacity onPress={closeTaskModal} className="mt-4 p-2">
-              <Text className="text-[#9FB5B5] text-center font-bold text-xs uppercase tracking-widest">
-                Cancel
-              </Text>
-            </TouchableOpacity>
+            <View className="bg-[#061414]/40 border border-[#337a7a]/30 rounded-2xl p-3 mb-3">
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={() => setIsEnergyEffortExpanded((prev) => !prev)}
+                className="flex-row items-center justify-between"
+              >
+                <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                  Energy & effort
+                </Text>
+                <Feather
+                  name={isEnergyEffortExpanded ? "chevron-up" : "chevron-down"}
+                  size={14}
+                  color={COLORS.accent}
+                />
+              </TouchableOpacity>
 
-            {timeError && (
-              <Text className="text-[#FF7B7B] font-bold text-xs mb-3 text-center mt-2">
-                ⚠️ Task time must be within section time
-              </Text>
-            )}
+              {isEnergyEffortExpanded ? (
+                <View className="mt-2">
+                  <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
+                    Energy required
+                  </Text>
+                  <View className="flex-row flex-wrap mb-2">
+                    {ENERGY_REQUIRED_OPTIONS.map((option) => (
+                      <TouchableOpacity
+                        key={`energy-required-${option.value}`}
+                        onPress={() =>
+                          setTaskEnergyRequired((prev) =>
+                            prev === option.value ? "" : option.value
+                          )
+                        }
+                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+                          taskEnergyRequired === option.value
+                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                            : "bg-[#123131]/70 border-[#337a7a]/35"
+                        }`}
+                      >
+                        <Text
+                          className={`text-[10px] font-black uppercase tracking-wider ${
+                            taskEnergyRequired === option.value
+                              ? "text-[#66b9b9]"
+                              : "text-[#9FB5B5]"
+                          }`}
+                        >
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
 
-            {/* Inside Task Modal ScrollView */}
+                  <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
+                    Focus needed
+                  </Text>
+                  <View className="flex-row flex-wrap mb-2">
+                    {FOCUS_REQUIRED_OPTIONS.map((option) => (
+                      <TouchableOpacity
+                        key={`focus-required-${option.value}`}
+                        onPress={() =>
+                          setTaskFocusRequired((prev) =>
+                            prev === option.value ? "" : option.value
+                          )
+                        }
+                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+                          taskFocusRequired === option.value
+                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                            : "bg-[#123131]/70 border-[#337a7a]/35"
+                        }`}
+                      >
+                        <Text
+                          className={`text-[10px] font-black uppercase tracking-wider ${
+                            taskFocusRequired === option.value
+                              ? "text-[#66b9b9]"
+                              : "text-[#9FB5B5]"
+                          }`}
+                        >
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
+                    Can be done at
+                  </Text>
+                  <View className="flex-row flex-wrap mb-2">
+                    {TASK_CONTEXT_OPTIONS.map((option) => (
+                      <TouchableOpacity
+                        key={`task-context-${option.value}`}
+                        onPress={() =>
+                          setTaskContext((prev) =>
+                            prev === option.value ? "" : option.value
+                          )
+                        }
+                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+                          taskContext === option.value
+                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                            : "bg-[#123131]/70 border-[#337a7a]/35"
+                        }`}
+                      >
+                        <Text
+                          className={`text-[10px] font-black uppercase tracking-wider ${
+                            taskContext === option.value
+                              ? "text-[#66b9b9]"
+                              : "text-[#9FB5B5]"
+                          }`}
+                        >
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
+                    Estimated time
+                  </Text>
+                  <View className="flex-row flex-wrap">
+                    {ESTIMATED_MINUTES_OPTIONS.map((minutes) => (
+                      <TouchableOpacity
+                        key={`estimated-minutes-${minutes}`}
+                        onPress={() =>
+                          setTaskEstimatedMinutes((prev) =>
+                            prev === minutes ? null : minutes
+                          )
+                        }
+                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+                          taskEstimatedMinutes === minutes
+                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                            : "bg-[#123131]/70 border-[#337a7a]/35"
+                        }`}
+                      >
+                        <Text
+                          className={`text-[10px] font-black uppercase tracking-wider ${
+                            taskEstimatedMinutes === minutes
+                              ? "text-[#66b9b9]"
+                              : "text-[#9FB5B5]"
+                          }`}
+                        >
+                          {minutes} min
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+            </View>
+
             <TouchableOpacity
               onPress={pickDocument}
-              className={`mt-4 p-4 rounded-2xl border flex-row items-center ${attachmentUri ? "bg-[#123131]/80 border-[#7DFFB3]/70" : "bg-[#061414]/45 border-[#66b9b9]/25"}`}
+              className={`mt-2 p-4 rounded-2xl border flex-row items-center ${attachmentUri ? "bg-[#123131]/80 border-[#7DFFB3]/70" : "bg-[#061414]/45 border-[#66b9b9]/25"}`}
             >
               <Text className="text-[#E8F4F4] flex-1 font-semibold text-sm">
                 {attachmentUri
@@ -9826,6 +10435,27 @@ export default function Home() {
               )}
             </TouchableOpacity>
           </ScrollView>
+          <View className="bg-[#0B1F1F] px-6 pt-3 pb-2 border-t border-[#66b9b9]/20">
+            {timeError ? (
+              <Text className="text-[#FF7B7B] font-bold text-xs mb-2 text-center">
+                ⚠️ Task time must be within section time
+              </Text>
+            ) : null}
+            <TouchableOpacity
+              onPress={handleSaveTask}
+              className="bg-[#66b9b9] p-4 rounded-2xl shadow-lg shadow-[#66b9b9]/30 border border-[#99bdbd]/60"
+            >
+              <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-base">
+                {isEditMode ? "Update Task" : "Save Task"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={closeTaskModal} className="mt-3 p-2">
+              <Text className="text-[#9FB5B5] text-center font-bold text-xs uppercase tracking-widest">
+                Cancel
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
         </KeyboardAvoidingView>
       </Modal>
