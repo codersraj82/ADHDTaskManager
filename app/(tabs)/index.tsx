@@ -579,19 +579,6 @@ const getPastPendingTasks = (tasks = [], now = new Date()) => {
     });
 };
 
-const TASK_MENU_STATUS_OPTIONS = Object.freeze([
-  {
-    key: "pending",
-    label: "Pending",
-    accessibilityLabel: "Pending tasks",
-  },
-  {
-    key: "completed",
-    label: "Completed",
-    accessibilityLabel: "Completed tasks",
-  },
-]);
-
 const TASK_MENU_PERIOD_OPTIONS = Object.freeze([
   {
     key: "today",
@@ -962,7 +949,6 @@ export default function Home() {
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [activePage, setActivePage] = useState(null);
-  const [tasksMenuStatus, setTasksMenuStatus] = useState("pending");
   const [tasksMenuPeriod, setTasksMenuPeriod] = useState("today");
   const [tasksMenuSelectedDateKey, setTasksMenuSelectedDateKey] = useState("");
   const [tasksMenuSelectedMonthKey, setTasksMenuSelectedMonthKey] = useState("");
@@ -7512,14 +7498,6 @@ export default function Home() {
     };
   }, [tasks]);
 
-  const tasksMenuDayTaskMap = useMemo(
-    () =>
-      tasksMenuStatus === "completed"
-        ? tasksCalendarIndex.completedDayTaskMap
-        : tasksCalendarIndex.pendingDayTaskMap,
-    [tasksCalendarIndex, tasksMenuStatus]
-  );
-
   const tasksMenuDayCountMap = useMemo(() => {
     const countMap = new Map();
 
@@ -7600,10 +7578,10 @@ export default function Home() {
           date,
           pendingCount,
           completedCount,
-          count: tasksMenuStatus === "completed" ? completedCount : pendingCount,
+          count: pendingCount + completedCount,
         };
       }),
-    [tasksMenuDayCountMap, tasksMenuStatus, tasksMenuWeekDays]
+    [tasksMenuDayCountMap, tasksMenuWeekDays]
   );
 
   const tasksMenuYearSummary = useMemo(
@@ -7621,10 +7599,10 @@ export default function Home() {
           date,
           pendingCount,
           completedCount,
-          count: tasksMenuStatus === "completed" ? completedCount : pendingCount,
+          count: pendingCount + completedCount,
         };
       }),
-    [tasksMenuMonthCountMap, tasksMenuStatus, tasksMenuYearMonths]
+    [tasksMenuMonthCountMap, tasksMenuYearMonths]
   );
 
   const tasksMenuVisibleMonthDate = useMemo(() => {
@@ -7647,7 +7625,7 @@ export default function Home() {
           ...entry,
           pendingCount,
           completedCount,
-          count: tasksMenuStatus === "completed" ? completedCount : pendingCount,
+          count: pendingCount + completedCount,
           isToday: isSameLocalDay(entry.date, tasksMenuTodayDate),
           isSelected: entry.key === tasksMenuSelectedDateKey,
         };
@@ -7655,7 +7633,6 @@ export default function Home() {
     [
       tasksMenuDayCountMap,
       tasksMenuSelectedDateKey,
-      tasksMenuStatus,
       tasksMenuTodayDate,
       tasksMenuVisibleMonthDate,
     ]
@@ -7665,64 +7642,6 @@ export default function Home() {
     () => (Dimensions.get("window").width >= 430 ? "31.8%" : "48.5%"),
     []
   );
-
-  const tasksMenuScopeCounts = useMemo(() => {
-    const total = { pending: 0, completed: 0 };
-    const addCounts = (pending, completed) => {
-      total.pending += Number(pending || 0);
-      total.completed += Number(completed || 0);
-    };
-
-    if (tasksMenuPeriod === "today") {
-      const countEntry = tasksMenuDayCountMap.get(tasksMenuTodayKey) || {
-        pending: 0,
-        completed: 0,
-      };
-      addCounts(countEntry.pending, countEntry.completed);
-      return total;
-    }
-
-    if (tasksMenuSelectedDateKey) {
-      const countEntry = tasksMenuDayCountMap.get(tasksMenuSelectedDateKey) || {
-        pending: 0,
-        completed: 0,
-      };
-      addCounts(countEntry.pending, countEntry.completed);
-      return total;
-    }
-
-    if (tasksMenuPeriod === "week") {
-      tasksMenuWeekSummary.forEach((entry) => {
-        addCounts(entry.pendingCount, entry.completedCount);
-      });
-      return total;
-    }
-
-    if (
-      tasksMenuPeriod === "month" ||
-      (tasksMenuPeriod === "year" && tasksMenuSelectedMonthKey)
-    ) {
-      tasksMenuMonthCalendarSummary.forEach((entry) => {
-        if (!entry.isCurrentMonth) return;
-        addCounts(entry.pendingCount, entry.completedCount);
-      });
-      return total;
-    }
-
-    tasksMenuYearSummary.forEach((entry) => {
-      addCounts(entry.pendingCount, entry.completedCount);
-    });
-    return total;
-  }, [
-    tasksMenuDayCountMap,
-    tasksMenuMonthCalendarSummary,
-    tasksMenuPeriod,
-    tasksMenuSelectedMonthKey,
-    tasksMenuSelectedDateKey,
-    tasksMenuTodayKey,
-    tasksMenuWeekSummary,
-    tasksMenuYearSummary,
-  ]);
 
   const tasksMenuVisibleDateKey = useMemo(() => {
     if (tasksMenuPeriod === "today") return tasksMenuTodayKey;
@@ -7735,11 +7654,19 @@ export default function Home() {
     return tasksMenuSelectedDate;
   }, [tasksMenuPeriod, tasksMenuSelectedDate, tasksMenuTodayDate]);
 
-  const tasksMenuVisibleDayTasks = useMemo(() => {
+  const tasksMenuVisiblePendingDayTasks = useMemo(() => {
     if (!tasksMenuVisibleDateKey) return [];
-    const taskRows = tasksMenuDayTaskMap.get(tasksMenuVisibleDateKey) || [];
-    return sortTasksForCalendarStatus(taskRows, tasksMenuStatus);
-  }, [tasksMenuDayTaskMap, tasksMenuStatus, tasksMenuVisibleDateKey]);
+    const taskRows =
+      tasksCalendarIndex.pendingDayTaskMap.get(tasksMenuVisibleDateKey) || [];
+    return sortTasksForCalendarStatus(taskRows, "pending");
+  }, [tasksCalendarIndex, tasksMenuVisibleDateKey]);
+
+  const tasksMenuVisibleCompletedDayTasks = useMemo(() => {
+    if (!tasksMenuVisibleDateKey) return [];
+    const taskRows =
+      tasksCalendarIndex.completedDayTaskMap.get(tasksMenuVisibleDateKey) || [];
+    return sortTasksForCalendarStatus(taskRows, "completed");
+  }, [tasksCalendarIndex, tasksMenuVisibleDateKey]);
 
   const tasksMenuSelectedTask = useMemo(
     () =>
@@ -7768,7 +7695,6 @@ export default function Home() {
   const openMenuPage = (pageKey) => {
     closeDrawer();
     if (pageKey === "tasks") {
-      setTasksMenuStatus("pending");
       setTasksMenuPeriod("today");
       resetTasksMenuNavigation();
     } else {
@@ -7785,18 +7711,6 @@ export default function Home() {
       }, 90);
     },
     [closePageModal]
-  );
-
-  const handleTasksMenuStatusChange = useCallback(
-    (status) => {
-      if (status !== "pending" && status !== "completed") return;
-      if (status === tasksMenuStatus) return;
-      setTasksMenuStatus(status);
-      setTasksMenuSelectedDateKey("");
-      setTasksMenuSelectedMonthKey("");
-      setTasksMenuSelectedTaskId(null);
-    },
-    [tasksMenuStatus]
   );
 
   const handleTasksMenuPeriodChange = useCallback((period) => {
@@ -7901,7 +7815,6 @@ export default function Home() {
 
     if (!duplicatedTask) return;
 
-    setTasksMenuStatus("pending");
     setTasksMenuSelectedTaskId(null);
     showCelebration("Duplicated gently. A fresh copy is ready.");
   };
@@ -7923,7 +7836,6 @@ export default function Home() {
 
     if (!duplicatedTask) return;
 
-    setTasksMenuStatus("pending");
     setTasksMenuSelectedTaskId(null);
     showCelebration("Scheduled again. The original win stays saved.");
     launchFromTasksMenu(() => {
@@ -8901,7 +8813,7 @@ export default function Home() {
 
   const renderTasksMenuTaskRow = (task) => {
     if (!task) return null;
-    const isCompletedView = tasksMenuStatus === "completed";
+    const isCompletedView = Boolean(task.completed);
     const statusLabel = isCompletedView ? "Completed" : "Pending";
     const primaryDateValue = isCompletedView
       ? task.completedAt || task.completedDate || task.scheduledTime || task.createdAt
@@ -8914,7 +8826,9 @@ export default function Home() {
         key={`tasks-menu-row-${task.id}`}
         onPress={() => handleTasksMenuTaskSelect(task)}
         accessibilityRole="button"
-        accessibilityLabel={`Open task, ${task?.title || "Task"}`}
+        accessibilityLabel={`Open ${isCompletedView ? "completed" : "pending"} task, ${
+          task?.title || "Task"
+        }`}
         activeOpacity={0.84}
         className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-2xl px-3.5 py-3 mb-2.5"
       >
@@ -8970,11 +8884,6 @@ export default function Home() {
   }) => {
     const hasDualCounts =
       typeof pendingCount === "number" && typeof completedCount === "number";
-    const activeCount = hasDualCounts
-      ? tasksMenuStatus === "completed"
-        ? Number(completedCount || 0)
-        : Number(pendingCount || 0)
-      : Number(count || 0);
 
     return (
       <TouchableOpacity
@@ -9015,11 +8924,6 @@ export default function Home() {
         <Text className="text-[#9FB5B5] text-[11px] mt-1">
           {subtitle || "Choose a day to see the tasks."}
         </Text>
-        {hasDualCounts ? (
-          <Text className="text-[#66b9b9] text-[10px] font-bold mt-1">
-            Active: {formatTaskCountLabel(activeCount)}
-          </Text>
-        ) : null}
       </TouchableOpacity>
     );
   };
@@ -9040,6 +8944,7 @@ export default function Home() {
           accessibilityLabel={`${dayLabel}, ${entry.pendingCount || 0} pending, ${
             entry.completedCount || 0
           } completed`}
+          accessibilityHint="Open tasks for this date"
           className={`rounded-xl border px-1.5 py-1.5 min-h-[68px] ${
             entry.isSelected
               ? "bg-[#2A2218]/78 border-[#D9A441]/45"
@@ -9105,6 +9010,7 @@ export default function Home() {
           accessibilityLabel={`${monthFullLabel}, ${entry.pendingCount || 0} pending, ${
             entry.completedCount || 0
           } completed`}
+          accessibilityHint="Open calendar for this month"
           className={`rounded-2xl border px-3.5 py-3 ${
             isCurrentMonth
               ? "bg-[#2A2218]/70 border-[#D9A441]/35"
@@ -9143,7 +9049,6 @@ export default function Home() {
     const groupedTasks = groupTasksByDate();
 
     if (activePage === "tasks") {
-      const isCompletedView = tasksMenuStatus === "completed";
       const selectedTaskRepeatLabel = tasksMenuSelectedTask
         ? repeatLabelByTaskId[tasksMenuSelectedTask.id] || ""
         : "";
@@ -9165,14 +9070,14 @@ export default function Home() {
         tasksMenuPeriod === "today"
           ? formatTodayHeadingLabel(tasksMenuTodayDate)
           : dayListDateTitle;
-      const dayListStatusLabel = isCompletedView ? "Completed tasks" : "Pending tasks";
-      const dayListEmptyMessage = isCompletedView
-        ? tasksMenuPeriod === "today"
-          ? "No completed tasks for today yet."
-          : "No completed tasks for this date yet."
-        : tasksMenuPeriod === "today"
+      const dayListPendingEmptyMessage =
+        tasksMenuPeriod === "today"
           ? "No pending tasks for today."
           : "No pending tasks for this date.";
+      const dayListCompletedEmptyMessage =
+        tasksMenuPeriod === "today"
+          ? "No completed tasks today yet."
+          : "No completed tasks for this date yet.";
       const backToPeriodLabel =
         tasksMenuPeriod === "week"
           ? "Back to week"
@@ -9186,6 +9091,9 @@ export default function Home() {
             : total,
         0
       );
+      const integratedDayTaskTotal =
+        tasksMenuVisiblePendingDayTasks.length +
+        tasksMenuVisibleCompletedDayTasks.length;
 
       return (
         <>
@@ -9197,41 +9105,6 @@ export default function Home() {
           </View>
 
           <View className="bg-[#123131]/55 rounded-2xl p-3 border border-[#337a7a]/25 mb-3">
-            <View className="flex-row mb-2">
-              {TASK_MENU_STATUS_OPTIONS.map((statusOption) => {
-                const statusCount =
-                  statusOption.key === "completed"
-                    ? Number(tasksMenuScopeCounts.completed || 0)
-                    : Number(tasksMenuScopeCounts.pending || 0);
-                return (
-                  <TouchableOpacity
-                    key={`tasks-status-${statusOption.key}`}
-                    activeOpacity={0.82}
-                    onPress={() => handleTasksMenuStatusChange(statusOption.key)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: tasksMenuStatus === statusOption.key }}
-                    accessibilityLabel={`${statusOption.accessibilityLabel}, ${formatTaskCountLabel(
-                      statusCount
-                    )}`}
-                    className={`px-3 py-2 rounded-full border mr-2 ${
-                      tasksMenuStatus === statusOption.key
-                        ? "bg-[#66b9b9] border-[#66b9b9]"
-                        : "bg-[#123131]/75 border-[#337a7a]/35"
-                    }`}
-                  >
-                    <Text
-                      className={`text-[10px] font-black uppercase tracking-widest ${
-                        tasksMenuStatus === statusOption.key
-                          ? "text-[#061414]"
-                          : "text-[#9FB5B5]"
-                      }`}
-                    >
-                      {statusOption.label} {statusCount}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
             <View className="flex-row flex-wrap">
               {TASK_MENU_PERIOD_OPTIONS.map((periodOption) => (
                 <TouchableOpacity
@@ -9380,17 +9253,19 @@ export default function Home() {
                   </Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  activeOpacity={0.86}
-                  onPress={() => handleTasksMenuOpenInMainList(tasksMenuSelectedTask)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Open task in main list"
-                  className="bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2 mr-2 mb-2"
-                >
-                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-                    Open In List
-                  </Text>
-                </TouchableOpacity>
+                {!tasksMenuSelectedTask.completed ? (
+                  <TouchableOpacity
+                    activeOpacity={0.86}
+                    onPress={() => handleTasksMenuOpenInMainList(tasksMenuSelectedTask)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open task in main list"
+                    className="bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                  >
+                    <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                      Open In List
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
 
                 {tasksMenuSelectedTask.completed ? (
                   <>
@@ -9491,7 +9366,7 @@ export default function Home() {
                     {dayListTitle || "Tasks"}
                   </Text>
                   <Text className="text-[#9FB5B5] text-xs mt-1">
-                    {dayListStatusLabel}
+                    Pending and completed tasks for this day.
                   </Text>
                 </View>
                 {tasksMenuPeriod !== "today" ? (
@@ -9509,10 +9384,34 @@ export default function Home() {
                 ) : null}
               </View>
 
-              {tasksMenuVisibleDayTasks.length ? (
-                <View>{tasksMenuVisibleDayTasks.map((task) => renderTasksMenuTaskRow(task))}</View>
+              <View className="bg-[#061414]/55 border border-[#337a7a]/25 rounded-xl px-3 py-2 mb-2">
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  Pending {tasksMenuVisiblePendingDayTasks.length}
+                </Text>
+              </View>
+              {tasksMenuVisiblePendingDayTasks.length ? (
+                <View>{tasksMenuVisiblePendingDayTasks.map((task) => renderTasksMenuTaskRow(task))}</View>
               ) : (
-                renderTasksMenuEmptyState(dayListEmptyMessage)
+                <View className="mb-3">
+                  {renderTasksMenuEmptyState(dayListPendingEmptyMessage)}
+                </View>
+              )}
+
+              <View className="bg-[#061414]/55 border border-[#337a7a]/25 rounded-xl px-3 py-2 mb-2 mt-1">
+                <Text className="text-[#7DFFB3] text-[10px] font-black uppercase tracking-widest">
+                  Completed {tasksMenuVisibleCompletedDayTasks.length}
+                </Text>
+              </View>
+              {tasksMenuVisibleCompletedDayTasks.length ? (
+                <View>
+                  {tasksMenuVisibleCompletedDayTasks.map((task) =>
+                    renderTasksMenuTaskRow(task)
+                  )}
+                </View>
+              ) : integratedDayTaskTotal === 0 ? (
+                <View>{renderTasksMenuEmptyState("No tasks on this date.")}</View>
+              ) : (
+                <View>{renderTasksMenuEmptyState(dayListCompletedEmptyMessage)}</View>
               )}
             </View>
           ) : tasksMenuPeriod === "week" ? (
