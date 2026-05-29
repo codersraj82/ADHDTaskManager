@@ -712,6 +712,9 @@ export default function Home() {
   const [recoverySavingTaskId, setRecoverySavingTaskId] = useState(null);
   const [recoverySuccessMessage, setRecoverySuccessMessage] = useState("");
   const [recoveryFabPromptVisible, setRecoveryFabPromptVisible] = useState(false);
+  const [recoveryTargetTaskId, setRecoveryTargetTaskId] = useState(null);
+  const [recoveryTargetSource, setRecoveryTargetSource] = useState(null);
+  const [recoveryHighlightedTaskId, setRecoveryHighlightedTaskId] = useState(null);
   const [tasksHydrated, setTasksHydrated] = useState(false);
   const [todayPlanSheetVisible, setTodayPlanSheetVisible] = useState(false);
   const [todayPlanNotificationSection, setTodayPlanNotificationSection] =
@@ -1885,6 +1888,9 @@ export default function Home() {
   const scrollRef = useRef(null);
   const recoveryListRef = useRef(null);
   const recoveryScrollOffsetRef = useRef(0);
+  const recoveryTargetScrollTimeoutRef = useRef(null);
+  const recoveryTargetScrollRetryTimeoutRef = useRef(null);
+  const recoveryHighlightTimeoutRef = useRef(null);
   const activeFocusY = useRef(0);
   const fabScale = useRef(new Animated.Value(1)).current;
   const taskPositions = useRef({});
@@ -2519,70 +2525,121 @@ export default function Home() {
 
   const pastPendingTaskCount = todayPlanPastPendingTasks.length;
 
-  const loadRecoveryPendingTasks = useCallback((preserveScroll = false) => {
-    try {
-      const { start } = getDayBounds(new Date());
-      const rows =
-        db.getAllSync(
-          `SELECT * FROM tasks
-           WHERE completed = 0
-             AND scheduledTime IS NOT NULL
-             AND TRIM(scheduledTime) <> ''
-           ORDER BY scheduledTime DESC`
-        ) || [];
+  const loadRecoveryPendingTasks = useCallback(
+    (
+      preserveScroll = false,
+      options: {
+        targetTaskId?: number | string | null;
+      } = {}
+    ) => {
+      const normalizeRecoveryTask = (task) => {
+        if (!task) return null;
 
-      const parsedRows = rows
-        .map((row) => {
-          let parsedSubtasks = [];
-          let parsedNotificationIds = [];
-
+        let parsedSubtasks = task.subtasks;
+        if (!Array.isArray(parsedSubtasks)) {
           try {
-            parsedSubtasks = JSON.parse(row.subtasks || "[]");
+            parsedSubtasks = JSON.parse(task.subtasks || "[]");
           } catch {
             parsedSubtasks = [];
           }
+        }
 
+        let parsedNotificationIds = task.notificationId;
+        if (!Array.isArray(parsedNotificationIds)) {
           try {
-            parsedNotificationIds = JSON.parse(row.notificationId || "[]");
+            parsedNotificationIds = JSON.parse(task.notificationId || "[]");
           } catch {
             parsedNotificationIds = [];
           }
+        }
 
-          return {
-            ...row,
-            completed: row.completed === 1,
-            isPinned: row.isPinned === 1,
-            subtasks: Array.isArray(parsedSubtasks) ? parsedSubtasks : [],
-            notificationId: Array.isArray(parsedNotificationIds)
-              ? parsedNotificationIds
-              : [],
-          };
-        })
-        .filter((task) => {
-          const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
-          return scheduledTimestamp !== null && scheduledTimestamp < start;
-        })
-        .sort((a, b) => {
-          const aTime = toTaskTimestamp(a.scheduledTime) || 0;
-          const bTime = toTaskTimestamp(b.scheduledTime) || 0;
-          return bTime - aTime;
-        });
+        return {
+          ...task,
+          completed: task.completed === 1 || task.completed === true,
+          isPinned: task.isPinned === 1 || task.isPinned === true,
+          subtasks: Array.isArray(parsedSubtasks) ? parsedSubtasks : [],
+          notificationId: Array.isArray(parsedNotificationIds)
+            ? parsedNotificationIds
+            : [],
+        };
+      };
 
-      setRecoveryPendingTasks(parsedRows);
+      try {
+        const { start } = getDayBounds(new Date());
+        const rows =
+          db.getAllSync(
+            `SELECT * FROM tasks
+             WHERE completed = 0
+               AND scheduledTime IS NOT NULL
+               AND TRIM(scheduledTime) <> ''
+             ORDER BY scheduledTime DESC`
+          ) || [];
 
-      if (preserveScroll) {
-        requestAnimationFrame(() => {
-          recoveryListRef.current?.scrollToOffset?.({
-            offset: recoveryScrollOffsetRef.current,
-            animated: false,
+        const overduePendingRows = rows
+          .map((row) => normalizeRecoveryTask(row))
+          .filter((task) => {
+            if (!task) return false;
+            const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
+            return scheduledTimestamp !== null && scheduledTimestamp < start;
+          })
+          .sort((a, b) => {
+            const aTime = toTaskTimestamp(a.scheduledTime) || 0;
+            const bTime = toTaskTimestamp(b.scheduledTime) || 0;
+            return bTime - aTime;
           });
-        });
+
+        const targetTaskIdRaw =
+          options?.targetTaskId !== undefined && options?.targetTaskId !== null
+            ? options.targetTaskId
+            : recoveryTargetTaskId;
+        const targetTaskId = Number(targetTaskIdRaw);
+
+        let nextRows = [...overduePendingRows];
+
+        if (Number.isFinite(targetTaskId)) {
+          const targetTask = tasks.find(
+            (task) => Number(task?.id) === targetTaskId
+          );
+          const normalizedTargetTask = normalizeRecoveryTask(targetTask);
+          const isTargetTaskValid =
+            normalizedTargetTask &&
+            !normalizedTargetTask.completed &&
+            !isTaskDeletedOrArchived(normalizedTargetTask);
+
+          if (isTargetTaskValid) {
+            const existingIndex = nextRows.findIndex(
+              (task) => Number(task?.id) === targetTaskId
+            );
+            if (existingIndex >= 0) {
+              const [existingTask] = nextRows.splice(existingIndex, 1);
+              nextRows = [existingTask, ...nextRows];
+            } else {
+              nextRows = [normalizedTargetTask, ...nextRows];
+            }
+          } else {
+            setRecoveryTargetTaskId(null);
+            setRecoveryTargetSource(null);
+            setRecoveryHighlightedTaskId(null);
+          }
+        }
+
+        setRecoveryPendingTasks(nextRows);
+
+        if (preserveScroll && !Number.isFinite(targetTaskId)) {
+          requestAnimationFrame(() => {
+            recoveryListRef.current?.scrollToOffset?.({
+              offset: recoveryScrollOffsetRef.current,
+              animated: false,
+            });
+          });
+        }
+      } catch (error) {
+        console.log("Recovery pending query error:", error);
+        setRecoveryPendingTasks([]);
       }
-    } catch (error) {
-      console.log("Recovery pending query error:", error);
-      setRecoveryPendingTasks([]);
-    }
-  }, []);
+    },
+    [recoveryTargetTaskId, tasks]
+  );
 
   const clearTodayPlanCelebrationTimer = useCallback(() => {
     if (todayPlanCelebrationTimeoutRef.current) {
@@ -2659,13 +2716,15 @@ export default function Home() {
     (task) => {
       if (!task) return;
       todayPlanRescheduleTaskIdRef.current = task.id;
+      setRecoveryTargetTaskId(task.id);
+      setRecoveryTargetSource("todayPlan");
       setRecoveryEditingTaskId(task.id);
       setRecoveryDraftSection(task.section || "Morning");
       setRecoveryDraftDateTime(formatSqliteDateTime(new Date()));
       setRecoverySuccessMessage("");
       setRecoveryFabPromptVisible(false);
       recoveryScrollOffsetRef.current = 0;
-      loadRecoveryPendingTasks(false);
+      loadRecoveryPendingTasks(false, { targetTaskId: task.id });
       setRecoveryModalVisible(true);
     },
     [loadRecoveryPendingTasks]
@@ -2747,13 +2806,16 @@ export default function Home() {
 
   const openRecoveryModal = useCallback(() => {
     todayPlanRescheduleTaskIdRef.current = null;
+    setRecoveryTargetTaskId(null);
+    setRecoveryTargetSource(null);
+    setRecoveryHighlightedTaskId(null);
     setRecoveryEditingTaskId(null);
     setRecoveryDraftDateTime("");
     setRecoveryDraftSection("Morning");
     setRecoverySuccessMessage("");
     setRecoveryFabPromptVisible(false);
     recoveryScrollOffsetRef.current = 0;
-    loadRecoveryPendingTasks(false);
+    loadRecoveryPendingTasks(false, { targetTaskId: null });
     setRecoveryModalVisible(true);
   }, [loadRecoveryPendingTasks]);
 
@@ -2767,6 +2829,21 @@ export default function Home() {
 
   const closeRecoveryModal = useCallback(() => {
     todayPlanRescheduleTaskIdRef.current = null;
+    if (recoveryTargetScrollTimeoutRef.current) {
+      clearTimeout(recoveryTargetScrollTimeoutRef.current);
+      recoveryTargetScrollTimeoutRef.current = null;
+    }
+    if (recoveryTargetScrollRetryTimeoutRef.current) {
+      clearTimeout(recoveryTargetScrollRetryTimeoutRef.current);
+      recoveryTargetScrollRetryTimeoutRef.current = null;
+    }
+    if (recoveryHighlightTimeoutRef.current) {
+      clearTimeout(recoveryHighlightTimeoutRef.current);
+      recoveryHighlightTimeoutRef.current = null;
+    }
+    setRecoveryTargetTaskId(null);
+    setRecoveryTargetSource(null);
+    setRecoveryHighlightedTaskId(null);
     recoverySheetProgress.value = withTiming(
       0,
       {
@@ -2795,6 +2872,9 @@ export default function Home() {
   const cancelRecoveryEdit = useCallback(() => {
     setRecoveryEditingTaskId(null);
     setRecoveryDraftDateTime("");
+    setRecoveryTargetTaskId(null);
+    setRecoveryTargetSource(null);
+    setRecoveryHighlightedTaskId(null);
   }, []);
 
   const saveRecoveryEdit = async () => {
@@ -2857,7 +2937,7 @@ export default function Home() {
         )
       );
 
-      setRecoverySuccessMessage("Task rescheduled gently ✨");
+      setRecoverySuccessMessage("Moved gently. No reset needed.");
       recoverySuccessPulse.value = 0;
       recoverySuccessPulse.value = withTiming(
         1,
@@ -2876,7 +2956,10 @@ export default function Home() {
 
       setRecoveryEditingTaskId(null);
       setRecoveryDraftDateTime("");
-      loadRecoveryPendingTasks(true);
+      setRecoveryTargetTaskId(null);
+      setRecoveryTargetSource(null);
+      setRecoveryHighlightedTaskId(null);
+      loadRecoveryPendingTasks(true, { targetTaskId: null });
 
       const launchedFromTodayPlan =
         todayPlanRescheduleTaskIdRef.current === targetTask.id;
@@ -4081,8 +4164,64 @@ export default function Home() {
 
   useEffect(() => {
     if (!recoveryModalVisible) return;
-    loadRecoveryPendingTasks(true);
-  }, [loadRecoveryPendingTasks, recoveryModalVisible, tasks]);
+    loadRecoveryPendingTasks(true, { targetTaskId: recoveryTargetTaskId });
+  }, [loadRecoveryPendingTasks, recoveryModalVisible, recoveryTargetTaskId, tasks]);
+
+  useEffect(() => {
+    if (!recoveryModalVisible || !recoveryTargetTaskId) return;
+    const targetIndex = recoveryPendingTasks.findIndex(
+      (task) => Number(task?.id) === Number(recoveryTargetTaskId)
+    );
+    if (targetIndex < 0) return;
+
+    if (recoveryTargetScrollTimeoutRef.current) {
+      clearTimeout(recoveryTargetScrollTimeoutRef.current);
+      recoveryTargetScrollTimeoutRef.current = null;
+    }
+
+    recoveryTargetScrollTimeoutRef.current = setTimeout(() => {
+      recoveryListRef.current?.scrollToIndex?.({
+        index: targetIndex,
+        animated: true,
+        viewPosition: 0.35,
+      });
+    }, 240);
+
+    return () => {
+      if (recoveryTargetScrollTimeoutRef.current) {
+        clearTimeout(recoveryTargetScrollTimeoutRef.current);
+        recoveryTargetScrollTimeoutRef.current = null;
+      }
+      if (recoveryTargetScrollRetryTimeoutRef.current) {
+        clearTimeout(recoveryTargetScrollRetryTimeoutRef.current);
+        recoveryTargetScrollRetryTimeoutRef.current = null;
+      }
+    };
+  }, [recoveryModalVisible, recoveryPendingTasks, recoveryTargetTaskId]);
+
+  useEffect(() => {
+    if (!recoveryModalVisible || !recoveryTargetTaskId) return;
+
+    setRecoveryHighlightedTaskId(recoveryTargetTaskId);
+    if (recoveryHighlightTimeoutRef.current) {
+      clearTimeout(recoveryHighlightTimeoutRef.current);
+      recoveryHighlightTimeoutRef.current = null;
+    }
+
+    recoveryHighlightTimeoutRef.current = setTimeout(() => {
+      setRecoveryHighlightedTaskId((current) =>
+        Number(current) === Number(recoveryTargetTaskId) ? null : current
+      );
+      recoveryHighlightTimeoutRef.current = null;
+    }, 4800);
+
+    return () => {
+      if (recoveryHighlightTimeoutRef.current) {
+        clearTimeout(recoveryHighlightTimeoutRef.current);
+        recoveryHighlightTimeoutRef.current = null;
+      }
+    };
+  }, [recoveryModalVisible, recoveryTargetTaskId]);
 
   useEffect(() => {
     if (!todayPlanSheetVisible) return;
@@ -4094,6 +4233,20 @@ export default function Home() {
       });
     });
   }, [todayPlanSheetProgress, todayPlanSheetVisible]);
+
+  useEffect(() => {
+    return () => {
+      if (recoveryTargetScrollTimeoutRef.current) {
+        clearTimeout(recoveryTargetScrollTimeoutRef.current);
+      }
+      if (recoveryTargetScrollRetryTimeoutRef.current) {
+        clearTimeout(recoveryTargetScrollRetryTimeoutRef.current);
+      }
+      if (recoveryHighlightTimeoutRef.current) {
+        clearTimeout(recoveryHighlightTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!tasksHydrated || !pendingTodayPlanSheet.open) return;
@@ -5255,6 +5408,60 @@ export default function Home() {
     [closeProgressTaskSheet, scrollToTask]
   );
 
+  const openMoveGentlyForTask = useCallback(
+    (
+      taskId,
+      options: {
+        source?: string | null;
+        preferredDate?: Date | string | null;
+        message?: string;
+      } = {}
+    ) => {
+      const numericTaskId = Number(taskId);
+      if (!Number.isFinite(numericTaskId)) return false;
+
+      const targetTask =
+        tasks.find((task) => Number(task?.id) === numericTaskId) || null;
+      if (!targetTask || targetTask.completed || isTaskDeletedOrArchived(targetTask)) {
+        return false;
+      }
+
+      const preferredDateRaw = options?.preferredDate;
+      let preferredDateTime = targetTask.scheduledTime || formatSqliteDateTime(new Date());
+      if (preferredDateRaw instanceof Date) {
+        preferredDateTime = formatSqliteDateTime(preferredDateRaw);
+      } else if (typeof preferredDateRaw === "string" && preferredDateRaw.trim()) {
+        const parsedPreferred = parseStoredDateTime(preferredDateRaw);
+        if (parsedPreferred) {
+          preferredDateTime = formatSqliteDateTime(parsedPreferred);
+        }
+      }
+
+      const source =
+        typeof options?.source === "string" && options.source.trim()
+          ? options.source.trim()
+          : null;
+      const successMessage =
+        typeof options?.message === "string" ? options.message : "";
+
+      todayPlanRescheduleTaskIdRef.current =
+        source === "todayPlan" ? numericTaskId : null;
+      setRecoveryTargetTaskId(numericTaskId);
+      setRecoveryTargetSource(source);
+      setRecoveryHighlightedTaskId(numericTaskId);
+      setRecoveryEditingTaskId(numericTaskId);
+      setRecoveryDraftSection(targetTask.section || "Morning");
+      setRecoveryDraftDateTime(preferredDateTime);
+      setRecoverySuccessMessage(successMessage);
+      setRecoveryFabPromptVisible(false);
+      recoveryScrollOffsetRef.current = 0;
+      loadRecoveryPendingTasks(false, { targetTaskId: numericTaskId });
+      setRecoveryModalVisible(true);
+      return true;
+    },
+    [loadRecoveryPendingTasks, tasks]
+  );
+
   const openTaskInMakeSmallerSupport = useCallback(
     (task) => {
       if (!task || task.completed) return;
@@ -5322,16 +5529,12 @@ export default function Home() {
     (task) => {
       if (!task || task.completed) return;
       setFirstStepOnlyTaskId(null);
-      scrollToTask(task.id, {
-        highlight: true,
-        onComplete: () => {
-          startRecoveryEdit(task);
-          setRecoveryModalVisible(true);
-          setRecoverySuccessMessage("");
-        },
+      openMoveGentlyForTask(task.id, {
+        source: "taskSupport",
+        message: "No guilt. Let's find a better time.",
       });
     },
-    [scrollToTask, startRecoveryEdit]
+    [openMoveGentlyForTask]
   );
 
   const openOverwhelmMode = useCallback(() => {
@@ -5432,16 +5635,12 @@ export default function Home() {
       if (!task || task.completed) return;
       closeOverwhelmMode();
       setFirstStepOnlyTaskId(null);
-      scrollToTask(task.id, {
-        highlight: true,
-        onComplete: () => {
-          startRecoveryEdit(task);
-          setRecoveryModalVisible(true);
-          setRecoverySuccessMessage("No guilt. Let's find a better time.");
-        },
+      openMoveGentlyForTask(task.id, {
+        source: "overwhelmMode",
+        message: "No guilt. Let's find a better time.",
       });
     },
-    [closeOverwhelmMode, scrollToTask, startRecoveryEdit]
+    [closeOverwhelmMode, openMoveGentlyForTask]
   );
 
   useEffect(() => {
@@ -5496,9 +5695,10 @@ export default function Home() {
 
         if (pendingAction === REMINDER_ACTIONS.MOVE_GENTLY) {
           setFirstStepOnlyTaskId(null);
-          startRecoveryEdit(task);
-          setRecoveryModalVisible(true);
-          setRecoverySuccessMessage("Moved gently. No reset needed.");
+          openMoveGentlyForTask(task.id, {
+            source: "notification",
+            message: "Moved gently. No reset needed.",
+          });
         }
 
         if (pendingAction === REMINDER_ACTIONS.MAKE_SMALLER) {
@@ -5521,10 +5721,10 @@ export default function Home() {
       setPendingNotificationTaskTarget(null);
     }
   }, [
+    openMoveGentlyForTask,
     pendingNotificationTaskTarget,
     scrollToTask,
     showSnoozeAffirmation,
-    startRecoveryEdit,
     tasks,
   ]);
 
@@ -5834,10 +6034,17 @@ export default function Home() {
     markStartAssistUsage(startAssistTask.id);
     closeStartAssist();
     setFirstStepOnlyTaskId(null);
-    startRecoveryEdit(startAssistTask);
-    setRecoveryModalVisible(true);
-    setRecoverySuccessMessage("");
-  }, [closeStartAssist, markStartAssistUsage, startRecoveryEdit, startAssistTask]);
+    openMoveGentlyForTask(startAssistTask.id, {
+      source: "startAssistStuck",
+      preferredDate: new Date(),
+      message: "No guilt. Let's find a better time.",
+    });
+  }, [
+    closeStartAssist,
+    markStartAssistUsage,
+    openMoveGentlyForTask,
+    startAssistTask,
+  ]);
 
   const handleStartAssistReadMain = useCallback(() => {
     if (!startAssistTask) return;
@@ -7460,13 +7667,28 @@ export default function Home() {
       formatDateTimeForDisplay(item.scheduledTime) || "No schedule";
     const draftScheduleLabel =
       formatDateTimeForDisplay(recoveryDraftDateTime) || "Pick date & time";
+    const isTargetTask = Number(recoveryTargetTaskId) === Number(item.id);
+    const isHighlightedTargetTask =
+      Number(recoveryHighlightedTaskId) === Number(item.id);
+    const recoveryCardAccentClass = isHighlightedTargetTask
+      ? "bg-[#2A2218]/75 border-[#D9A441]/40"
+      : isTargetTask
+        ? "bg-[#123131]/72 border-[#66b9b9]/45"
+        : "bg-[#123131]/62 border-[#337a7a]/30";
 
     return (
       <Reanimated.View
         entering={FadeInDown.duration(220).delay(Math.min(index, 6) * 45)}
-        className="bg-[#123131]/62 border border-[#337a7a]/30 rounded-[24px] p-5 mb-3"
+        className={`border rounded-[24px] p-5 mb-3 ${recoveryCardAccentClass}`}
       >
         <View>
+          {isTargetTask ? (
+            <View className="self-start mb-2 bg-[#D9A441]/14 border border-[#D9A441]/32 rounded-full px-2.5 py-1">
+              <Text className="text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
+                Selected task
+              </Text>
+            </View>
+          ) : null}
           <Text className="text-[#E8F4F4] text-2xl leading-8 font-black" numberOfLines={3}>
             {item.title}
           </Text>
@@ -7593,6 +7815,27 @@ export default function Home() {
       </Reanimated.View>
     );
   };
+  const handleRecoveryScrollToIndexFailed = useCallback(
+    (info) => {
+      if (!recoveryModalVisible || !recoveryTargetTaskId) return;
+      if (!Number.isFinite(info?.index)) return;
+
+      if (recoveryTargetScrollRetryTimeoutRef.current) {
+        clearTimeout(recoveryTargetScrollRetryTimeoutRef.current);
+        recoveryTargetScrollRetryTimeoutRef.current = null;
+      }
+
+      recoveryTargetScrollRetryTimeoutRef.current = setTimeout(() => {
+        recoveryListRef.current?.scrollToIndex?.({
+          index: info.index,
+          animated: true,
+          viewPosition: 0.35,
+        });
+        recoveryTargetScrollRetryTimeoutRef.current = null;
+      }, 220);
+    },
+    [recoveryModalVisible, recoveryTargetTaskId]
+  );
   const renderRecoveryModal = () => (
     <Modal
       visible={recoveryModalVisible}
@@ -7664,6 +7907,14 @@ export default function Home() {
               data={recoveryPendingTasks}
               keyExtractor={(item) => String(item.id)}
               renderItem={renderRecoveryPendingTaskCard}
+              extraData={{
+                recoveryEditingTaskId,
+                recoverySavingTaskId,
+                recoveryTargetTaskId,
+                recoveryTargetSource,
+                recoveryHighlightedTaskId,
+              }}
+              onScrollToIndexFailed={handleRecoveryScrollToIndexFailed}
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={{
                 paddingHorizontal: 16,
