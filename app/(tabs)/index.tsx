@@ -174,8 +174,7 @@ const affirmations = SECTION_HEADER_AFFIRMATIONS;
 const MENU_ITEMS = [
   { key: "profile", label: "Profile Details", icon: "👤" },
   { key: "special", label: "Special Tasks", icon: "⭐" },
-  { key: "pending", label: "Pending Tasks", icon: "⏳" },
-  { key: "completed", label: "Completed Tasks", icon: "✅" },
+  { key: "tasks", label: "Tasks", icon: "🗓️" },
   { key: "calendar", label: "Calendar View", icon: "📅" },
   { key: "mood-tracker", label: "Mood Tracker", icon: "🧠" },
   { key: "settings", label: "Settings", icon: "⚙️" },
@@ -580,6 +579,220 @@ const getPastPendingTasks = (tasks = [], now = new Date()) => {
     });
 };
 
+const TASK_MENU_STATUS_OPTIONS = Object.freeze([
+  {
+    key: "pending",
+    label: "Pending",
+    accessibilityLabel: "Pending tasks",
+  },
+  {
+    key: "completed",
+    label: "Completed",
+    accessibilityLabel: "Completed tasks",
+  },
+]);
+
+const TASK_MENU_PERIOD_OPTIONS = Object.freeze([
+  {
+    key: "today",
+    label: "Today",
+    accessibilityLabel: "Today view",
+  },
+  {
+    key: "week",
+    label: "Weekly",
+    accessibilityLabel: "Weekly view",
+  },
+  {
+    key: "month",
+    label: "Monthly",
+    accessibilityLabel: "Monthly view",
+  },
+  {
+    key: "year",
+    label: "Yearly",
+    accessibilityLabel: "Yearly view",
+  },
+]);
+
+const toLocalDayStartDate = (date = new Date()) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+const buildMonthKey = (date = new Date()) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+
+const parseDayKeyToDate = (value = "") => {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const parsed = new Date(year, monthIndex, day, 0, 0, 0, 0);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== monthIndex ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  return parsed;
+};
+
+const parseMonthKeyToDate = (value = "") => {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const parsed = new Date(year, monthIndex, 1, 0, 0, 0, 0);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== monthIndex
+  ) {
+    return null;
+  }
+  return parsed;
+};
+
+const getWeekStartMonday = (value = new Date()) => {
+  const start = toLocalDayStartDate(value);
+  const dayOfWeek = start.getDay();
+  const offset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  start.setDate(start.getDate() + offset);
+  return start;
+};
+
+const getWeekDays = (value = new Date()) => {
+  const weekStart = getWeekStartMonday(value);
+  return Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(weekStart);
+    day.setDate(weekStart.getDate() + index);
+    return day;
+  });
+};
+
+const getMonthDays = (value = new Date()) => {
+  const year = value.getFullYear();
+  const month = value.getMonth();
+  const totalDays = new Date(year, month + 1, 0).getDate();
+  return Array.from({ length: totalDays }, (_, index) => {
+    return new Date(year, month, index + 1, 0, 0, 0, 0);
+  });
+};
+
+const getYearMonths = (value = new Date()) => {
+  const year = value.getFullYear();
+  return Array.from({ length: 12 }, (_, index) => {
+    return new Date(year, index, 1, 0, 0, 0, 0);
+  });
+};
+
+const formatTaskCountLabel = (count = 0) => `${count} task${count === 1 ? "" : "s"}`;
+
+const formatDaySummaryLabel = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+  });
+};
+
+const formatDayHeadingLabel = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+};
+
+const formatMonthHeadingLabel = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+};
+
+const formatTodayHeadingLabel = (now = new Date()) =>
+  `Today | ${now.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+
+const getPendingTaskAnchorDate = (task) => {
+  if (!task || task.completed || isTaskDeletedOrArchived(task)) return null;
+  return (
+    parseStoredDateTime(task.scheduledTime) ||
+    parseStoredDateTime(task.scheduledDate) ||
+    parseStoredDateTime(task.date) ||
+    parseStoredDateTime(task.dueDate) ||
+    parseStoredDateTime(task.reminderDate) ||
+    parseStoredDateTime(task.createdAt)
+  );
+};
+
+const getCompletedTaskAnchorDate = (task) => {
+  if (!task || !task.completed) return null;
+  return (
+    parseStoredDateTime(task.completedAt) ||
+    parseStoredDateTime(task.completedDate) ||
+    parseStoredDateTime(task.scheduledTime) ||
+    parseStoredDateTime(task.createdAt)
+  );
+};
+
+const sortTasksForCalendarStatus = (taskList = [], status = "pending") => {
+  const safe = Array.isArray(taskList) ? [...taskList] : [];
+  safe.sort((a, b) => {
+    const aTime =
+      status === "completed"
+        ? toTaskTimestamp(a?.completedAt) ??
+          toTaskTimestamp(a?.completedDate) ??
+          toTaskTimestamp(a?.scheduledTime) ??
+          toTaskTimestamp(a?.createdAt) ??
+          0
+        : toTaskTimestamp(a?.scheduledTime) ??
+          toTaskTimestamp(a?.dueDate) ??
+          toTaskTimestamp(a?.createdAt) ??
+          0;
+    const bTime =
+      status === "completed"
+        ? toTaskTimestamp(b?.completedAt) ??
+          toTaskTimestamp(b?.completedDate) ??
+          toTaskTimestamp(b?.scheduledTime) ??
+          toTaskTimestamp(b?.createdAt) ??
+          0
+        : toTaskTimestamp(b?.scheduledTime) ??
+          toTaskTimestamp(b?.dueDate) ??
+          toTaskTimestamp(b?.createdAt) ??
+          0;
+    if (aTime !== bTime) return aTime - bTime;
+
+    const aId = Number(a?.id) || 0;
+    const bId = Number(b?.id) || 0;
+    return aId - bId;
+  });
+  return safe;
+};
+
+const buildScheduledDateTimeForDay = (dayDate, sourceValue = null) => {
+  const safeDay =
+    dayDate instanceof Date && !Number.isNaN(dayDate.getTime())
+      ? dayDate
+      : new Date();
+  const sourceDate = parseStoredDateTime(sourceValue) || new Date();
+  const merged = new Date(
+    safeDay.getFullYear(),
+    safeDay.getMonth(),
+    safeDay.getDate(),
+    sourceDate.getHours(),
+    sourceDate.getMinutes(),
+    0,
+    0
+  );
+  return formatSqliteDateTime(merged);
+};
+
 //*************main component function********* */
 export default function Home() {
   const insets = useSafeAreaInsets();
@@ -690,6 +903,12 @@ export default function Home() {
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [activePage, setActivePage] = useState(null);
+  const [tasksMenuStatus, setTasksMenuStatus] = useState("pending");
+  const [tasksMenuPeriod, setTasksMenuPeriod] = useState("today");
+  const [tasksMenuSelectedDateKey, setTasksMenuSelectedDateKey] = useState("");
+  const [tasksMenuSelectedMonthKey, setTasksMenuSelectedMonthKey] = useState("");
+  const [tasksMenuSelectedTaskId, setTasksMenuSelectedTaskId] = useState(null);
+  const [tasksMenuActionTaskId, setTasksMenuActionTaskId] = useState(null);
   const [progressTaskSheet, setProgressTaskSheet] = useState({
     visible: false,
     type: null,
@@ -4792,11 +5011,14 @@ export default function Home() {
     );
   }, []);
 
-  const recreateCompletedTask = async (task) => {
-    if (!task || !task.completed) return;
+  const recreateCompletedTask = async (task, options = {}) => {
+    if (!task || !task.completed) return null;
 
     try {
-      const newScheduledTime = formatSqliteDateTime(new Date());
+      const preferredScheduleRaw = options?.scheduledTime;
+      const preferredScheduleDate =
+        parseStoredDateTime(preferredScheduleRaw) || new Date();
+      const newScheduledTime = formatSqliteDateTime(preferredScheduleDate);
       const createdAt = formatSqliteDateTime(new Date());
       const normalizedRepeat = normalizeTaskRepeatSettings(task);
       const repeatGroupId =
@@ -4888,49 +5110,48 @@ export default function Home() {
         newTaskId,
       ]);
 
-      setTasks((prev) => [
-        ...prev,
-        {
-          ...task,
-          id: newTaskId,
-          completed: false,
-          completedAt: null,
-          repeatType: normalizedRepeat.repeatType,
-          repeatDays: normalizedRepeat.repeatDays,
-          repeatMonthlyType: normalizedRepeat.repeatMonthlyType,
-          repeatCustomDate: normalizedRepeat.repeatCustomDate,
-          repeatYearlyDate: normalizedRepeat.repeatYearlyDate,
-          repeatGroupId,
-          createdAt,
-          scheduledTime: newScheduledTime,
-          subtasks: recreatedSubtasks,
-          notificationId: recreatedNotificationIds,
-          isPinned: false,
-          moodType: "",
-          firstAction: task.firstAction || "",
-          minimumVersion: task.minimumVersion || "",
-          energyRequired: normalizeEnergyRequiredValue(task.energyRequired),
-          focusRequired: normalizeFocusRequiredValue(task.focusRequired),
-          taskContext: normalizeTaskContextValue(task.taskContext),
-          estimatedMinutes: normalizeEstimatedMinutesValue(task.estimatedMinutes),
-          startAssistUsedCount: Number(task.startAssistUsedCount || 0),
-          lastStartAssistAt: task.lastStartAssistAt || "",
-          stuckCount: Number(task.stuckCount || 0),
-          lastStuckAt: task.lastStuckAt || "",
-          reminderOpenCount: 0,
-          reminderStartNowCount: 0,
-          reminderSnoozeCount: 0,
-          reminderMoveGentlyCount: 0,
-          reminderMakeSmallerCount: 0,
-          lastReminderActionAt: "",
-          lastReminderAction: "",
-          reminderActionHistory: [],
-          snoozeCount: 0,
-          lastSnoozedAt: "",
-          rescheduleCount: 0,
-          lastRescheduledAt: "",
-        },
-      ]);
+      const recreatedTask = {
+        ...task,
+        id: newTaskId,
+        completed: false,
+        completedAt: null,
+        repeatType: normalizedRepeat.repeatType,
+        repeatDays: normalizedRepeat.repeatDays,
+        repeatMonthlyType: normalizedRepeat.repeatMonthlyType,
+        repeatCustomDate: normalizedRepeat.repeatCustomDate,
+        repeatYearlyDate: normalizedRepeat.repeatYearlyDate,
+        repeatGroupId,
+        createdAt,
+        scheduledTime: newScheduledTime,
+        subtasks: recreatedSubtasks,
+        notificationId: recreatedNotificationIds,
+        isPinned: false,
+        moodType: "",
+        firstAction: task.firstAction || "",
+        minimumVersion: task.minimumVersion || "",
+        energyRequired: normalizeEnergyRequiredValue(task.energyRequired),
+        focusRequired: normalizeFocusRequiredValue(task.focusRequired),
+        taskContext: normalizeTaskContextValue(task.taskContext),
+        estimatedMinutes: normalizeEstimatedMinutesValue(task.estimatedMinutes),
+        startAssistUsedCount: Number(task.startAssistUsedCount || 0),
+        lastStartAssistAt: task.lastStartAssistAt || "",
+        stuckCount: Number(task.stuckCount || 0),
+        lastStuckAt: task.lastStuckAt || "",
+        reminderOpenCount: 0,
+        reminderStartNowCount: 0,
+        reminderSnoozeCount: 0,
+        reminderMoveGentlyCount: 0,
+        reminderMakeSmallerCount: 0,
+        lastReminderActionAt: "",
+        lastReminderAction: "",
+        reminderActionHistory: [],
+        snoozeCount: 0,
+        lastSnoozedAt: "",
+        rescheduleCount: 0,
+        lastRescheduledAt: "",
+      };
+
+      setTasks((prev) => [...prev, recreatedTask]);
 
       if (taskDurations[task.id]) {
         setTaskDurations((prev) => ({
@@ -4938,8 +5159,10 @@ export default function Home() {
           [newTaskId]: taskDurations[task.id],
         }));
       }
+      return recreatedTask;
     } catch (error) {
       console.log("Repeat task error:", error);
+      return null;
     }
   };
 
@@ -7172,6 +7395,362 @@ export default function Home() {
       return acc;
     }, {});
   };
+  const tasksMenuTodayDate = useMemo(() => {
+    const parsed = parseDayKeyToDate(todayDateKey);
+    return parsed || toLocalDayStartDate(new Date());
+  }, [todayDateKey]);
+
+  const tasksMenuTodayKey = useMemo(
+    () => getLocalDateKey(tasksMenuTodayDate),
+    [tasksMenuTodayDate]
+  );
+
+  const tasksCalendarIndex = useMemo(() => {
+    const pendingDayTaskMap = new Map();
+    const completedDayTaskMap = new Map();
+    const pendingMonthCountMap = new Map();
+    const completedMonthCountMap = new Map();
+
+    const pushTask = (map, key, task) => {
+      const existing = map.get(key);
+      if (existing) {
+        existing.push(task);
+      } else {
+        map.set(key, [task]);
+      }
+    };
+
+    const incrementMonthCount = (map, key) => {
+      map.set(key, Number(map.get(key) || 0) + 1);
+    };
+
+    tasks.forEach((task) => {
+      if (!task) return;
+
+      const pendingDate = getPendingTaskAnchorDate(task);
+      if (pendingDate && !Number.isNaN(pendingDate.getTime())) {
+        const dayKey = getLocalDateKey(pendingDate);
+        pushTask(pendingDayTaskMap, dayKey, task);
+        incrementMonthCount(pendingMonthCountMap, buildMonthKey(pendingDate));
+      }
+
+      const completedDate = getCompletedTaskAnchorDate(task);
+      if (completedDate && !Number.isNaN(completedDate.getTime())) {
+        const dayKey = getLocalDateKey(completedDate);
+        pushTask(completedDayTaskMap, dayKey, task);
+        incrementMonthCount(
+          completedMonthCountMap,
+          buildMonthKey(completedDate)
+        );
+      }
+    });
+
+    return {
+      pendingDayTaskMap,
+      completedDayTaskMap,
+      pendingMonthCountMap,
+      completedMonthCountMap,
+    };
+  }, [tasks]);
+
+  const tasksMenuDayTaskMap = useMemo(
+    () =>
+      tasksMenuStatus === "completed"
+        ? tasksCalendarIndex.completedDayTaskMap
+        : tasksCalendarIndex.pendingDayTaskMap,
+    [tasksCalendarIndex, tasksMenuStatus]
+  );
+
+  const tasksMenuMonthCountMap = useMemo(
+    () =>
+      tasksMenuStatus === "completed"
+        ? tasksCalendarIndex.completedMonthCountMap
+        : tasksCalendarIndex.pendingMonthCountMap,
+    [tasksCalendarIndex, tasksMenuStatus]
+  );
+
+  const tasksMenuWeekDays = useMemo(
+    () => getWeekDays(tasksMenuTodayDate),
+    [tasksMenuTodayDate]
+  );
+
+  const tasksMenuMonthDays = useMemo(
+    () => getMonthDays(tasksMenuTodayDate),
+    [tasksMenuTodayDate]
+  );
+
+  const tasksMenuYearMonths = useMemo(
+    () => getYearMonths(tasksMenuTodayDate),
+    [tasksMenuTodayDate]
+  );
+
+  const tasksMenuSelectedDate = useMemo(
+    () => parseDayKeyToDate(tasksMenuSelectedDateKey),
+    [tasksMenuSelectedDateKey]
+  );
+
+  const tasksMenuSelectedMonthDate = useMemo(
+    () => parseMonthKeyToDate(tasksMenuSelectedMonthKey),
+    [tasksMenuSelectedMonthKey]
+  );
+
+  const tasksMenuWeekSummary = useMemo(
+    () =>
+      tasksMenuWeekDays.map((date) => {
+        const key = getLocalDateKey(date);
+        return {
+          key,
+          date,
+          count: (tasksMenuDayTaskMap.get(key) || []).length,
+        };
+      }),
+    [tasksMenuDayTaskMap, tasksMenuWeekDays]
+  );
+
+  const tasksMenuMonthSummary = useMemo(
+    () =>
+      tasksMenuMonthDays.map((date) => {
+        const key = getLocalDateKey(date);
+        return {
+          key,
+          date,
+          count: (tasksMenuDayTaskMap.get(key) || []).length,
+        };
+      }),
+    [tasksMenuDayTaskMap, tasksMenuMonthDays]
+  );
+
+  const tasksMenuYearSummary = useMemo(
+    () =>
+      tasksMenuYearMonths.map((date) => {
+        const monthKey = buildMonthKey(date);
+        return {
+          monthKey,
+          date,
+          count: Number(tasksMenuMonthCountMap.get(monthKey) || 0),
+        };
+      }),
+    [tasksMenuMonthCountMap, tasksMenuYearMonths]
+  );
+
+  const tasksMenuSelectedMonthDates = useMemo(() => {
+    if (!tasksMenuSelectedMonthDate) return [];
+    return getMonthDays(tasksMenuSelectedMonthDate).map((date) => {
+      const key = getLocalDateKey(date);
+      return {
+        key,
+        date,
+        count: (tasksMenuDayTaskMap.get(key) || []).length,
+      };
+    });
+  }, [tasksMenuDayTaskMap, tasksMenuSelectedMonthDate]);
+
+  const tasksMenuVisibleDateKey = useMemo(() => {
+    if (tasksMenuPeriod === "today") return tasksMenuTodayKey;
+    if (!tasksMenuSelectedDateKey) return "";
+    return tasksMenuSelectedDateKey;
+  }, [tasksMenuPeriod, tasksMenuSelectedDateKey, tasksMenuTodayKey]);
+
+  const tasksMenuVisibleDate = useMemo(() => {
+    if (tasksMenuPeriod === "today") return tasksMenuTodayDate;
+    return tasksMenuSelectedDate;
+  }, [tasksMenuPeriod, tasksMenuSelectedDate, tasksMenuTodayDate]);
+
+  const tasksMenuVisibleDayTasks = useMemo(() => {
+    if (!tasksMenuVisibleDateKey) return [];
+    const taskRows = tasksMenuDayTaskMap.get(tasksMenuVisibleDateKey) || [];
+    return sortTasksForCalendarStatus(taskRows, tasksMenuStatus);
+  }, [tasksMenuDayTaskMap, tasksMenuStatus, tasksMenuVisibleDateKey]);
+
+  const tasksMenuSelectedTask = useMemo(
+    () =>
+      tasks.find((task) => Number(task?.id) === Number(tasksMenuSelectedTaskId)) ||
+      null,
+    [tasks, tasksMenuSelectedTaskId]
+  );
+
+  const isTasksMenuDayListMode = useMemo(() => {
+    if (tasksMenuPeriod === "today") return true;
+    return Boolean(tasksMenuSelectedDateKey);
+  }, [tasksMenuPeriod, tasksMenuSelectedDateKey]);
+
+  const resetTasksMenuNavigation = useCallback(() => {
+    setTasksMenuSelectedDateKey("");
+    setTasksMenuSelectedMonthKey("");
+    setTasksMenuSelectedTaskId(null);
+    setTasksMenuActionTaskId(null);
+  }, []);
+
+  const closePageModal = useCallback(() => {
+    setActivePage(null);
+    resetTasksMenuNavigation();
+  }, [resetTasksMenuNavigation]);
+
+  const openMenuPage = (pageKey) => {
+    closeDrawer();
+    if (pageKey === "tasks") {
+      setTasksMenuStatus("pending");
+      setTasksMenuPeriod("today");
+      resetTasksMenuNavigation();
+    } else {
+      resetTasksMenuNavigation();
+    }
+    setActivePage(pageKey);
+  };
+
+  const launchFromTasksMenu = useCallback(
+    (action) => {
+      closePageModal();
+      setTimeout(() => {
+        action?.();
+      }, 90);
+    },
+    [closePageModal]
+  );
+
+  const handleTasksMenuStatusChange = useCallback(
+    (status) => {
+      if (status !== "pending" && status !== "completed") return;
+      if (status === tasksMenuStatus) return;
+      setTasksMenuStatus(status);
+      setTasksMenuSelectedDateKey("");
+      setTasksMenuSelectedMonthKey("");
+      setTasksMenuSelectedTaskId(null);
+    },
+    [tasksMenuStatus]
+  );
+
+  const handleTasksMenuPeriodChange = useCallback((period) => {
+    if (
+      period !== "today" &&
+      period !== "week" &&
+      period !== "month" &&
+      period !== "year"
+    ) {
+      return;
+    }
+    setTasksMenuPeriod(period);
+    setTasksMenuSelectedDateKey("");
+    if (period !== "year") {
+      setTasksMenuSelectedMonthKey("");
+    }
+    setTasksMenuSelectedTaskId(null);
+  }, []);
+
+  const handleTasksMenuDateSelect = useCallback((date) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return;
+    setTasksMenuSelectedDateKey(getLocalDateKey(date));
+    setTasksMenuSelectedTaskId(null);
+  }, []);
+
+  const handleTasksMenuMonthSelect = useCallback((date) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return;
+    setTasksMenuSelectedMonthKey(buildMonthKey(date));
+    setTasksMenuSelectedDateKey("");
+    setTasksMenuSelectedTaskId(null);
+  }, []);
+
+  const handleTasksMenuTaskSelect = useCallback((task) => {
+    if (!task?.id) return;
+    setTasksMenuSelectedTaskId(task.id);
+  }, []);
+
+  const handleTasksMenuBack = useCallback(() => {
+    if (tasksMenuSelectedTaskId) {
+      setTasksMenuSelectedTaskId(null);
+      return;
+    }
+    if (tasksMenuSelectedDateKey) {
+      setTasksMenuSelectedDateKey("");
+      return;
+    }
+    if (tasksMenuPeriod === "year" && tasksMenuSelectedMonthKey) {
+      setTasksMenuSelectedMonthKey("");
+    }
+  }, [tasksMenuPeriod, tasksMenuSelectedDateKey, tasksMenuSelectedMonthKey, tasksMenuSelectedTaskId]);
+
+  const handleTasksMenuOpenInMainList = useCallback(
+    (task) => {
+      if (!task?.id) return;
+      launchFromTasksMenu(() => {
+        scrollToTask(task.id, {
+          highlight: true,
+          allowCompleted: true,
+        });
+      });
+    },
+    [launchFromTasksMenu, scrollToTask]
+  );
+
+  const handleTasksMenuEditPendingTask = useCallback(
+    (task) => {
+      if (!task?.id) return;
+      launchFromTasksMenu(() => {
+        openTaskEditor(task);
+      });
+    },
+    [launchFromTasksMenu, openTaskEditor]
+  );
+
+  const handleTasksMenuReschedulePendingTask = useCallback(
+    (task) => {
+      if (!task?.id || task.completed) return;
+      launchFromTasksMenu(() => {
+        openMoveGentlyForTask(task.id, {
+          source: "tasksMenu",
+          preferredDate: tasksMenuVisibleDate || tasksMenuTodayDate,
+          message: "No pressure. We can move this gently.",
+        });
+      });
+    },
+    [launchFromTasksMenu, openMoveGentlyForTask, tasksMenuTodayDate, tasksMenuVisibleDate]
+  );
+
+  const handleTasksMenuDuplicateCompletedTask = async (task) => {
+    if (!task?.id || !task.completed) return;
+    if (Number(tasksMenuActionTaskId) === Number(task.id)) return;
+    setTasksMenuActionTaskId(task.id);
+    const targetDate = tasksMenuVisibleDate || tasksMenuTodayDate;
+    const nextSchedule = buildScheduledDateTimeForDay(
+      targetDate,
+      task.scheduledTime || task.completedAt
+    );
+    const duplicatedTask = await recreateCompletedTask(task, {
+      scheduledTime: nextSchedule,
+    });
+    setTasksMenuActionTaskId(null);
+
+    if (!duplicatedTask) return;
+
+    setTasksMenuStatus("pending");
+    setTasksMenuSelectedTaskId(null);
+    showCelebration("Duplicated gently. A fresh copy is ready.");
+  };
+
+  const handleTasksMenuScheduleCompletedTask = async (task) => {
+    if (!task?.id || !task.completed) return;
+    if (Number(tasksMenuActionTaskId) === Number(task.id)) return;
+    setTasksMenuActionTaskId(task.id);
+
+    const targetDate = tasksMenuVisibleDate || tasksMenuTodayDate;
+    const nextSchedule = buildScheduledDateTimeForDay(
+      targetDate,
+      task.scheduledTime || task.completedAt
+    );
+    const duplicatedTask = await recreateCompletedTask(task, {
+      scheduledTime: nextSchedule,
+    });
+    setTasksMenuActionTaskId(null);
+
+    if (!duplicatedTask) return;
+
+    setTasksMenuStatus("pending");
+    setTasksMenuSelectedTaskId(null);
+    showCelebration("Scheduled again. The original win stays saved.");
+    launchFromTasksMenu(() => {
+      openTaskEditor(duplicatedTask, "Adjust date or time gently if needed.");
+    });
+  };
 
   // --- Inside export default function Home() ---
 
@@ -8093,10 +8672,14 @@ export default function Home() {
               <TouchableOpacity
                 key={item.key}
                 activeOpacity={0.82}
-                onPress={() => {
-                  closeDrawer();
-                  setActivePage(item.key);
-                }}
+                onPress={() => openMenuPage(item.key)}
+                accessibilityRole="button"
+                accessibilityLabel={item.key === "tasks" ? "Tasks" : item.label}
+                accessibilityHint={
+                  item.key === "tasks"
+                    ? "Open pending and completed tasks by calendar period"
+                    : undefined
+                }
                 className="flex-row items-center bg-[#123131]/55 border border-[#337a7a]/25 rounded-2xl px-4 py-3 mb-2"
               >
                 <Text className="text-lg mr-3">{item.icon}</Text>
@@ -8137,16 +8720,557 @@ export default function Home() {
     </View>
   );
 
+  const renderTasksMenuTaskRow = (task) => {
+    if (!task) return null;
+    const isCompletedView = tasksMenuStatus === "completed";
+    const statusLabel = isCompletedView ? "Completed" : "Pending";
+    const primaryDateValue = isCompletedView
+      ? task.completedAt || task.completedDate || task.scheduledTime || task.createdAt
+      : task.scheduledTime || task.dueDate || task.createdAt;
+    const primaryDateLabel = formatDateTimeForDisplay(primaryDateValue);
+    const energyPills = getTaskEnergyMetadataPills(task).slice(0, 2);
+
+    return (
+      <TouchableOpacity
+        key={`tasks-menu-row-${task.id}`}
+        onPress={() => handleTasksMenuTaskSelect(task)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open task, ${task?.title || "Task"}`}
+        activeOpacity={0.84}
+        className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-2xl px-3.5 py-3 mb-2.5"
+      >
+        <View className="flex-row items-start justify-between">
+          <Text
+            numberOfLines={2}
+            className="text-[#E8F4F4] text-sm font-black flex-1 pr-2"
+          >
+            {task?.title || "Task"}
+          </Text>
+          <Text
+            className={`text-[10px] font-black uppercase tracking-widest ${
+              isCompletedView ? "text-[#7DFFB3]" : "text-[#66b9b9]"
+            }`}
+          >
+            {statusLabel}
+          </Text>
+        </View>
+        <Text numberOfLines={1} className="text-[#9FB5B5] text-[11px] mt-1">
+          {(task?.section || "Task")} | {primaryDateLabel || "No schedule yet"}
+        </Text>
+        {task?.details ? (
+          <Text numberOfLines={2} className="text-[#9FB5B5] text-[11px] mt-1.5">
+            {task.details}
+          </Text>
+        ) : null}
+        {energyPills.length ? (
+          <View className="flex-row flex-wrap mt-1.5">
+            {energyPills.map((pill) => (
+              <View
+                key={`${task.id}-${pill}`}
+                className="bg-[#061414]/65 border border-[#337a7a]/30 rounded-full px-2 py-0.5 mr-1.5 mt-1"
+              >
+                <Text className="text-[#9FB5B5] text-[9px] font-bold">{pill}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderTasksMenuCountCard = ({
+    itemKey = "",
+    title = "",
+    subtitle = "",
+    count = 0,
+    onPress,
+    selected = false,
+    accessibilityLabel = "",
+  }) => (
+    <TouchableOpacity
+      key={`tasks-menu-count-${itemKey}`}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || `${title}, ${count} tasks`}
+      activeOpacity={0.85}
+      className={`rounded-2xl px-3.5 py-3 mb-2 border ${
+        selected
+          ? "bg-[#2A2218]/75 border-[#D9A441]/40"
+          : "bg-[#123131]/60 border-[#337a7a]/30"
+      }`}
+    >
+      <View className="flex-row items-center justify-between">
+        <Text className="text-[#E8F4F4] text-sm font-black">{title}</Text>
+        <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+          {formatTaskCountLabel(count)}
+        </Text>
+      </View>
+      <Text className="text-[#9FB5B5] text-[11px] mt-1">
+        {subtitle || "Choose a day to see the tasks."}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const renderTasksMenuEmptyState = (message, hint = "Nothing here needs pressure.") => (
+    <View className="rounded-2xl border border-[#337a7a]/30 bg-[#123131]/50 px-4 py-4">
+      <Text className="text-[#9FB5B5] text-sm font-semibold text-center">
+        {message}
+      </Text>
+      <Text className="text-[#66b9b9] text-xs font-semibold text-center mt-1.5">
+        {hint}
+      </Text>
+    </View>
+  );
+
   const renderPageContent = () => {
-    const pendingTasks = [...tasks]
-      .filter((task) => !task.completed)
-      .sort(
-        (a, b) =>
-          (parseStoredDateTime(a.scheduledTime)?.getTime() || 0) -
-          (parseStoredDateTime(b.scheduledTime)?.getTime() || 0)
-      );
-    const completedTaskList = tasks.filter((task) => task.completed);
     const groupedTasks = groupTasksByDate();
+
+    if (activePage === "tasks") {
+      const isCompletedView = tasksMenuStatus === "completed";
+      const selectedTaskRepeatLabel = tasksMenuSelectedTask
+        ? repeatLabelByTaskId[tasksMenuSelectedTask.id] || ""
+        : "";
+      const taskActionBusy =
+        tasksMenuSelectedTask &&
+        Number(tasksMenuActionTaskId) === Number(tasksMenuSelectedTask.id);
+      const showYearMonthDates =
+        tasksMenuPeriod === "year" &&
+        Boolean(tasksMenuSelectedMonthKey) &&
+        !tasksMenuSelectedDateKey;
+      const dayListTitle =
+        tasksMenuPeriod === "today"
+          ? formatTodayHeadingLabel(tasksMenuTodayDate)
+          : formatDayHeadingLabel(tasksMenuVisibleDate);
+      const dayListEmptyMessage = isCompletedView
+        ? tasksMenuPeriod === "today"
+          ? "No tasks completed today yet."
+          : tasksMenuPeriod === "week"
+            ? "No completed tasks for this day."
+            : "No completed tasks for this date."
+        : tasksMenuPeriod === "today"
+          ? "No pending tasks for today."
+          : tasksMenuPeriod === "week"
+            ? "No pending tasks for this day."
+            : "No pending tasks for this date.";
+
+      return (
+        <>
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            <Text className="text-[#E8F4F4] font-black text-lg">Tasks</Text>
+            <Text className="text-[#9FB5B5] text-xs mt-1">
+              Review pending and completed tasks by time.
+            </Text>
+          </View>
+
+          <View className="bg-[#123131]/55 rounded-2xl p-3 border border-[#337a7a]/25 mb-3">
+            <View className="flex-row mb-2">
+              {TASK_MENU_STATUS_OPTIONS.map((statusOption) => (
+                <TouchableOpacity
+                  key={`tasks-status-${statusOption.key}`}
+                  activeOpacity={0.82}
+                  onPress={() => handleTasksMenuStatusChange(statusOption.key)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: tasksMenuStatus === statusOption.key }}
+                  accessibilityLabel={statusOption.accessibilityLabel}
+                  className={`px-3 py-2 rounded-full border mr-2 ${
+                    tasksMenuStatus === statusOption.key
+                      ? "bg-[#66b9b9] border-[#66b9b9]"
+                      : "bg-[#123131]/75 border-[#337a7a]/35"
+                  }`}
+                >
+                  <Text
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      tasksMenuStatus === statusOption.key
+                        ? "text-[#061414]"
+                        : "text-[#9FB5B5]"
+                    }`}
+                  >
+                    {statusOption.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View className="flex-row flex-wrap">
+              {TASK_MENU_PERIOD_OPTIONS.map((periodOption) => (
+                <TouchableOpacity
+                  key={`tasks-period-${periodOption.key}`}
+                  activeOpacity={0.82}
+                  onPress={() => handleTasksMenuPeriodChange(periodOption.key)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: tasksMenuPeriod === periodOption.key }}
+                  accessibilityLabel={periodOption.accessibilityLabel}
+                  className={`px-3 py-2 rounded-full border mr-2 mb-2 ${
+                    tasksMenuPeriod === periodOption.key
+                      ? "bg-[#66b9b9] border-[#66b9b9]"
+                      : "bg-[#123131]/75 border-[#337a7a]/35"
+                  }`}
+                >
+                  <Text
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      tasksMenuPeriod === periodOption.key
+                        ? "text-[#061414]"
+                        : "text-[#9FB5B5]"
+                    }`}
+                  >
+                    {periodOption.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {tasksMenuSelectedTask ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <View className="flex-row items-start justify-between mb-2">
+                <Text className="text-[#E8F4F4] text-lg font-black flex-1 pr-3">
+                  {tasksMenuSelectedTask.title || "Task"}
+                </Text>
+                <Text
+                  className={`text-[10px] font-black uppercase tracking-widest ${
+                    tasksMenuSelectedTask.completed
+                      ? "text-[#7DFFB3]"
+                      : "text-[#66b9b9]"
+                  }`}
+                >
+                  {tasksMenuSelectedTask.completed ? "Completed" : "Pending"}
+                </Text>
+              </View>
+
+              <Text className="text-[#9FB5B5] text-[11px] mb-1">
+                Section: {tasksMenuSelectedTask.section || "Task"}
+              </Text>
+              <Text className="text-[#9FB5B5] text-[11px] mb-1">
+                Scheduled:{" "}
+                {formatDateTimeForDisplay(
+                  tasksMenuSelectedTask.scheduledTime || tasksMenuSelectedTask.createdAt
+                ) || "No schedule yet"}
+              </Text>
+              {tasksMenuSelectedTask.completedAt ? (
+                <Text className="text-[#9FB5B5] text-[11px] mb-1">
+                  Completed: {formatDateTimeForDisplay(tasksMenuSelectedTask.completedAt)}
+                </Text>
+              ) : null}
+              {selectedTaskRepeatLabel ? (
+                <Text className="text-[#9FB5B5] text-[11px] mb-1">
+                  Repeat: {selectedTaskRepeatLabel}
+                </Text>
+              ) : null}
+
+              {tasksMenuSelectedTask.details ? (
+                <View className="mt-2 bg-[#061414]/60 border border-[#337a7a]/25 rounded-xl p-3">
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                    Notes
+                  </Text>
+                  <Text className="text-[#E8F4F4] text-sm mt-1 leading-5">
+                    {tasksMenuSelectedTask.details}
+                  </Text>
+                </View>
+              ) : null}
+
+              {Array.isArray(tasksMenuSelectedTask.subtasks) &&
+              tasksMenuSelectedTask.subtasks.length > 0 ? (
+                <View className="mt-2 bg-[#061414]/60 border border-[#337a7a]/25 rounded-xl p-3">
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-1">
+                    Subtasks
+                  </Text>
+                  {tasksMenuSelectedTask.subtasks.map((subtask) => (
+                    <Text
+                      key={`tasks-menu-subtask-${tasksMenuSelectedTask.id}-${subtask.id}`}
+                      className={`text-xs mt-1 ${
+                        subtask?.completed ? "text-[#9FB5B5]" : "text-[#E8F4F4]"
+                      }`}
+                    >
+                      {subtask?.completed ? "[Done]" : "-"} {subtask?.title || "Step"}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+
+              {tasksMenuSelectedTask.firstAction ? (
+                <Text className="text-[#9FB5B5] text-[11px] mt-2">
+                  First action: {tasksMenuSelectedTask.firstAction}
+                </Text>
+              ) : null}
+              {tasksMenuSelectedTask.minimumVersion ? (
+                <Text className="text-[#9FB5B5] text-[11px] mt-1">
+                  Minimum version: {tasksMenuSelectedTask.minimumVersion}
+                </Text>
+              ) : null}
+
+              <View className="flex-row flex-wrap mt-4">
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={handleTasksMenuBack}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back"
+                  className="bg-[#123131]/80 border border-[#337a7a]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                >
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                    Back
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  onPress={() => handleTasksMenuOpenInMainList(tasksMenuSelectedTask)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open task in main list"
+                  className="bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                >
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                    Open In List
+                  </Text>
+                </TouchableOpacity>
+
+                {tasksMenuSelectedTask.completed ? (
+                  <>
+                    <TouchableOpacity
+                      activeOpacity={0.86}
+                      disabled={taskActionBusy}
+                      onPress={() =>
+                        handleTasksMenuDuplicateCompletedTask(tasksMenuSelectedTask)
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel="Duplicate completed task"
+                      className={`rounded-full px-3 py-2 mr-2 mb-2 border ${
+                        taskActionBusy
+                          ? "bg-[#123131]/50 border-[#337a7a]/20"
+                          : "bg-[#123131]/80 border-[#66b9b9]/35"
+                      }`}
+                    >
+                      <Text
+                        className={`text-[10px] font-black uppercase tracking-widest ${
+                          taskActionBusy ? "text-[#9FB5B5]" : "text-[#66b9b9]"
+                        }`}
+                      >
+                        {taskActionBusy ? "Working..." : "Duplicate"}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      activeOpacity={0.86}
+                      disabled={taskActionBusy}
+                      onPress={() =>
+                        handleTasksMenuScheduleCompletedTask(tasksMenuSelectedTask)
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel="Schedule completed task again"
+                      className={`rounded-full px-3 py-2 mr-2 mb-2 border ${
+                        taskActionBusy
+                          ? "bg-[#123131]/50 border-[#337a7a]/20"
+                          : "bg-[#123131]/80 border-[#D9A441]/35"
+                      }`}
+                    >
+                      <Text
+                        className={`text-[10px] font-black uppercase tracking-widest ${
+                          taskActionBusy ? "text-[#9FB5B5]" : "text-[#D9A441]"
+                        }`}
+                      >
+                        Schedule Again
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      activeOpacity={0.86}
+                      onPress={() => handleTasksMenuEditPendingTask(tasksMenuSelectedTask)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Edit completed task"
+                      className="bg-[#123131]/80 border border-[#337a7a]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                    >
+                      <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                        Edit
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <TouchableOpacity
+                      activeOpacity={0.86}
+                      onPress={() => handleTasksMenuEditPendingTask(tasksMenuSelectedTask)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Edit pending task"
+                      className="bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                    >
+                      <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                        Edit
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      activeOpacity={0.86}
+                      onPress={() =>
+                        handleTasksMenuReschedulePendingTask(tasksMenuSelectedTask)
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel="Reschedule pending task"
+                      className="bg-[#123131]/80 border border-[#D9A441]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                    >
+                      <Text className="text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
+                        Reschedule
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            </View>
+          ) : isTasksMenuDayListMode ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <View className="flex-row items-center justify-between mb-3">
+                <View className="flex-1 pr-3">
+                  <Text className="text-[#E8F4F4] text-base font-black">
+                    {dayListTitle || "Tasks"}
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-xs mt-1">
+                    Small wins count.
+                  </Text>
+                </View>
+                {tasksMenuPeriod !== "today" ? (
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    onPress={handleTasksMenuBack}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      tasksMenuPeriod === "week"
+                        ? "Back to week"
+                        : tasksMenuPeriod === "month"
+                          ? "Back to month"
+                          : "Back to month"
+                    }
+                    className="bg-[#123131]/80 border border-[#337a7a]/35 rounded-full px-3 py-2"
+                  >
+                    <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                      {tasksMenuPeriod === "week"
+                        ? "Back to week"
+                        : tasksMenuPeriod === "month"
+                          ? "Back to month"
+                          : "Back to month"}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              {tasksMenuVisibleDayTasks.length ? (
+                <View>{tasksMenuVisibleDayTasks.map((task) => renderTasksMenuTaskRow(task))}</View>
+              ) : (
+                renderTasksMenuEmptyState(dayListEmptyMessage)
+              )}
+            </View>
+          ) : tasksMenuPeriod === "week" ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#E8F4F4] text-base font-black">This week</Text>
+              <Text className="text-[#9FB5B5] text-xs mt-1 mb-3">
+                Choose a day to see the tasks.
+              </Text>
+              {tasksMenuWeekSummary.map((entry) =>
+                renderTasksMenuCountCard({
+                  itemKey: entry.key,
+                  title: formatDaySummaryLabel(entry.date),
+                  subtitle: formatDayHeadingLabel(entry.date),
+                  count: entry.count,
+                  onPress: () => handleTasksMenuDateSelect(entry.date),
+                  accessibilityLabel: `${formatDayHeadingLabel(entry.date)}, ${formatTaskCountLabel(entry.count)}`,
+                  selected: tasksMenuSelectedDateKey === entry.key,
+                })
+              )}
+            </View>
+          ) : tasksMenuPeriod === "month" ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#E8F4F4] text-base font-black">
+                {formatMonthHeadingLabel(tasksMenuTodayDate)}
+              </Text>
+              <Text className="text-[#9FB5B5] text-xs mt-1 mb-3">
+                Choose a date to see the tasks.
+              </Text>
+              {tasksMenuMonthSummary.map((entry) =>
+                renderTasksMenuCountCard({
+                  itemKey: entry.key,
+                  title: formatDaySummaryLabel(entry.date),
+                  subtitle: entry.date.toLocaleDateString(undefined, {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                  }),
+                  count: entry.count,
+                  onPress: () => handleTasksMenuDateSelect(entry.date),
+                  accessibilityLabel: `${entry.date.toLocaleDateString(undefined, {
+                    day: "numeric",
+                    month: "long",
+                    year: "numeric",
+                  })}, ${formatTaskCountLabel(entry.count)}`,
+                  selected: tasksMenuSelectedDateKey === entry.key,
+                })
+              )}
+            </View>
+          ) : showYearMonthDates ? (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <View className="flex-row items-center justify-between mb-3">
+                <View className="flex-1 pr-3">
+                  <Text className="text-[#E8F4F4] text-base font-black">
+                    {formatMonthHeadingLabel(tasksMenuSelectedMonthDate)}
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-xs mt-1">
+                    Choose a date to see the tasks.
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={handleTasksMenuBack}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back to year"
+                  className="bg-[#123131]/80 border border-[#337a7a]/35 rounded-full px-3 py-2"
+                >
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                    Back to year
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {tasksMenuSelectedMonthDates.map((entry) =>
+                renderTasksMenuCountCard({
+                  itemKey: entry.key,
+                  title: formatDaySummaryLabel(entry.date),
+                  subtitle: entry.date.toLocaleDateString(undefined, {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                  }),
+                  count: entry.count,
+                  onPress: () => handleTasksMenuDateSelect(entry.date),
+                  accessibilityLabel: `${entry.date.toLocaleDateString(undefined, {
+                    day: "numeric",
+                    month: "long",
+                    year: "numeric",
+                  })}, ${formatTaskCountLabel(entry.count)}`,
+                  selected: tasksMenuSelectedDateKey === entry.key,
+                })
+              )}
+            </View>
+          ) : (
+            <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#E8F4F4] text-base font-black">
+                {tasksMenuTodayDate.getFullYear()}
+              </Text>
+              <Text className="text-[#9FB5B5] text-xs mt-1 mb-3">
+                Choose a month to see date counts first.
+              </Text>
+              {tasksMenuYearSummary.map((entry) =>
+                renderTasksMenuCountCard({
+                  itemKey: entry.monthKey,
+                  title: entry.date.toLocaleDateString(undefined, { month: "long" }),
+                  subtitle: formatMonthHeadingLabel(entry.date),
+                  count: entry.count,
+                  onPress: () => handleTasksMenuMonthSelect(entry.date),
+                  accessibilityLabel: `${entry.date.toLocaleDateString(undefined, {
+                    month: "long",
+                    year: "numeric",
+                  })}, ${formatTaskCountLabel(entry.count)}`,
+                  selected: tasksMenuSelectedMonthKey === entry.monthKey,
+                })
+              )}
+            </View>
+          )}
+        </>
+      );
+    }
 
     if (activePage === "profile") {
       return (
@@ -8245,22 +9369,6 @@ export default function Home() {
             </View>
           ))}
         </>
-      );
-    }
-
-    if (activePage === "pending") {
-      return pendingTasks.length ? (
-        pendingTasks.map((task) => renderTaskMiniCard(task))
-      ) : (
-        <Text className="text-[#7DFFB3] font-bold">No pending tasks. Breathe that in. 🌿</Text>
-      );
-    }
-
-    if (activePage === "completed") {
-      return completedTaskList.length ? (
-        completedTaskList.map((task) => renderTaskMiniCard(task, "success", true))
-      ) : (
-        <Text className="text-[#9FB5B5] font-bold">Completed wins will appear here.</Text>
       );
     }
 
@@ -8644,6 +9752,10 @@ export default function Home() {
 
   const renderPageModal = () => {
     const activeItem = MENU_ITEMS.find((item) => item.key === activePage);
+    const pageSubtitle =
+      activePage === "tasks"
+        ? "Review pending and completed tasks by time."
+        : "Calm details, no pressure.";
     return (
       <Modal visible={!!activePage} transparent animationType="slide">
         <View className="flex-1 bg-[#061414]/95 pt-12">
@@ -8653,10 +9765,15 @@ export default function Home() {
                 {activeItem?.icon} {activeItem?.label || "About"}
               </Text>
               <Text className="text-[#9FB5B5] text-xs font-bold mt-1">
-                Calm details, no pressure.
+                {pageSubtitle}
               </Text>
             </View>
-            <TouchableOpacity onPress={() => setActivePage(null)} className="bg-[#123131]/80 px-4 py-2 rounded-full border border-[#66b9b9]/30">
+            <TouchableOpacity
+              onPress={closePageModal}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              className="bg-[#123131]/80 px-4 py-2 rounded-full border border-[#66b9b9]/30"
+            >
               <Text className="text-[#66b9b9] font-black">Close</Text>
             </TouchableOpacity>
           </View>
@@ -11488,5 +12605,12 @@ export default function Home() {
     </>
   );
 }
+
+
+
+
+
+
+
 
 
