@@ -615,6 +615,16 @@ const TASK_MENU_PERIOD_OPTIONS = Object.freeze([
   },
 ]);
 
+const TASK_MENU_WEEKDAY_LABELS = Object.freeze([
+  "Mon",
+  "Tue",
+  "Wed",
+  "Thu",
+  "Fri",
+  "Sat",
+  "Sun",
+]);
+
 const toLocalDayStartDate = (date = new Date()) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate());
 
@@ -681,12 +691,61 @@ const getMonthDays = (value = new Date()) => {
   });
 };
 
+const getMonthCalendarDays = (value = new Date()) => {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return [];
+
+  const monthDays = getMonthDays(value);
+  if (!monthDays.length) return [];
+
+  const monthStart = monthDays[0];
+  const monthEnd = monthDays[monthDays.length - 1];
+  const gridStart = getWeekStartMonday(monthStart);
+  const monthEndWeekStart = getWeekStartMonday(monthEnd);
+  const gridEnd = new Date(monthEndWeekStart);
+  gridEnd.setDate(monthEndWeekStart.getDate() + 6);
+
+  const items = [];
+  const cursor = new Date(gridStart);
+
+  while (cursor <= gridEnd) {
+    const date = new Date(cursor);
+    items.push({
+      key: getLocalDateKey(date),
+      date,
+      isCurrentMonth:
+        date.getFullYear() === monthStart.getFullYear() &&
+        date.getMonth() === monthStart.getMonth(),
+    });
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return items;
+};
+
 const getYearMonths = (value = new Date()) => {
   const year = value.getFullYear();
   return Array.from({ length: 12 }, (_, index) => {
     return new Date(year, index, 1, 0, 0, 0, 0);
   });
 };
+
+const isSameLocalDay = (left, right) => {
+  if (!(left instanceof Date) || Number.isNaN(left.getTime())) return false;
+  if (!(right instanceof Date) || Number.isNaN(right.getTime())) return false;
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+};
+
+const isSameLocalMonth = (left, right) => {
+  if (!(left instanceof Date) || Number.isNaN(left.getTime())) return false;
+  if (!(right instanceof Date) || Number.isNaN(right.getTime())) return false;
+  return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth();
+};
+
+const formatShortTaskCount = (count = 0) => `${Number(count) || 0}`;
 
 const formatTaskCountLabel = (count = 0) => `${count} task${count === 1 ? "" : "s"}`;
 
@@ -7461,21 +7520,53 @@ export default function Home() {
     [tasksCalendarIndex, tasksMenuStatus]
   );
 
+  const tasksMenuDayCountMap = useMemo(() => {
+    const countMap = new Map();
+
+    tasksCalendarIndex.pendingDayTaskMap.forEach((taskList, key) => {
+      countMap.set(key, {
+        pending: Array.isArray(taskList) ? taskList.length : 0,
+        completed: 0,
+      });
+    });
+
+    tasksCalendarIndex.completedDayTaskMap.forEach((taskList, key) => {
+      const existing = countMap.get(key) || { pending: 0, completed: 0 };
+      countMap.set(key, {
+        pending: Number(existing.pending || 0),
+        completed: Array.isArray(taskList) ? taskList.length : 0,
+      });
+    });
+
+    return countMap;
+  }, [tasksCalendarIndex]);
+
   const tasksMenuMonthCountMap = useMemo(
-    () =>
-      tasksMenuStatus === "completed"
-        ? tasksCalendarIndex.completedMonthCountMap
-        : tasksCalendarIndex.pendingMonthCountMap,
-    [tasksCalendarIndex, tasksMenuStatus]
+    () => {
+      const countMap = new Map();
+
+      tasksCalendarIndex.pendingMonthCountMap.forEach((count, key) => {
+        countMap.set(key, {
+          pending: Number(count || 0),
+          completed: 0,
+        });
+      });
+
+      tasksCalendarIndex.completedMonthCountMap.forEach((count, key) => {
+        const existing = countMap.get(key) || { pending: 0, completed: 0 };
+        countMap.set(key, {
+          pending: Number(existing.pending || 0),
+          completed: Number(count || 0),
+        });
+      });
+
+      return countMap;
+    },
+    [tasksCalendarIndex]
   );
 
   const tasksMenuWeekDays = useMemo(
     () => getWeekDays(tasksMenuTodayDate),
-    [tasksMenuTodayDate]
-  );
-
-  const tasksMenuMonthDays = useMemo(
-    () => getMonthDays(tasksMenuTodayDate),
     [tasksMenuTodayDate]
   );
 
@@ -7498,52 +7589,140 @@ export default function Home() {
     () =>
       tasksMenuWeekDays.map((date) => {
         const key = getLocalDateKey(date);
+        const countEntry = tasksMenuDayCountMap.get(key) || {
+          pending: 0,
+          completed: 0,
+        };
+        const pendingCount = Number(countEntry.pending || 0);
+        const completedCount = Number(countEntry.completed || 0);
         return {
           key,
           date,
-          count: (tasksMenuDayTaskMap.get(key) || []).length,
+          pendingCount,
+          completedCount,
+          count: tasksMenuStatus === "completed" ? completedCount : pendingCount,
         };
       }),
-    [tasksMenuDayTaskMap, tasksMenuWeekDays]
-  );
-
-  const tasksMenuMonthSummary = useMemo(
-    () =>
-      tasksMenuMonthDays.map((date) => {
-        const key = getLocalDateKey(date);
-        return {
-          key,
-          date,
-          count: (tasksMenuDayTaskMap.get(key) || []).length,
-        };
-      }),
-    [tasksMenuDayTaskMap, tasksMenuMonthDays]
+    [tasksMenuDayCountMap, tasksMenuStatus, tasksMenuWeekDays]
   );
 
   const tasksMenuYearSummary = useMemo(
     () =>
       tasksMenuYearMonths.map((date) => {
         const monthKey = buildMonthKey(date);
+        const countEntry = tasksMenuMonthCountMap.get(monthKey) || {
+          pending: 0,
+          completed: 0,
+        };
+        const pendingCount = Number(countEntry.pending || 0);
+        const completedCount = Number(countEntry.completed || 0);
         return {
           monthKey,
           date,
-          count: Number(tasksMenuMonthCountMap.get(monthKey) || 0),
+          pendingCount,
+          completedCount,
+          count: tasksMenuStatus === "completed" ? completedCount : pendingCount,
         };
       }),
-    [tasksMenuMonthCountMap, tasksMenuYearMonths]
+    [tasksMenuMonthCountMap, tasksMenuStatus, tasksMenuYearMonths]
   );
 
-  const tasksMenuSelectedMonthDates = useMemo(() => {
-    if (!tasksMenuSelectedMonthDate) return [];
-    return getMonthDays(tasksMenuSelectedMonthDate).map((date) => {
-      const key = getLocalDateKey(date);
-      return {
-        key,
-        date,
-        count: (tasksMenuDayTaskMap.get(key) || []).length,
+  const tasksMenuVisibleMonthDate = useMemo(() => {
+    if (tasksMenuPeriod === "year" && tasksMenuSelectedMonthDate) {
+      return tasksMenuSelectedMonthDate;
+    }
+    return tasksMenuTodayDate;
+  }, [tasksMenuPeriod, tasksMenuSelectedMonthDate, tasksMenuTodayDate]);
+
+  const tasksMenuMonthCalendarSummary = useMemo(
+    () =>
+      getMonthCalendarDays(tasksMenuVisibleMonthDate).map((entry) => {
+        const countEntry = tasksMenuDayCountMap.get(entry.key) || {
+          pending: 0,
+          completed: 0,
+        };
+        const pendingCount = Number(countEntry.pending || 0);
+        const completedCount = Number(countEntry.completed || 0);
+        return {
+          ...entry,
+          pendingCount,
+          completedCount,
+          count: tasksMenuStatus === "completed" ? completedCount : pendingCount,
+          isToday: isSameLocalDay(entry.date, tasksMenuTodayDate),
+          isSelected: entry.key === tasksMenuSelectedDateKey,
+        };
+      }),
+    [
+      tasksMenuDayCountMap,
+      tasksMenuSelectedDateKey,
+      tasksMenuStatus,
+      tasksMenuTodayDate,
+      tasksMenuVisibleMonthDate,
+    ]
+  );
+
+  const tasksMenuMonthCardWidth = useMemo(
+    () => (Dimensions.get("window").width >= 430 ? "31.8%" : "48.5%"),
+    []
+  );
+
+  const tasksMenuScopeCounts = useMemo(() => {
+    const total = { pending: 0, completed: 0 };
+    const addCounts = (pending, completed) => {
+      total.pending += Number(pending || 0);
+      total.completed += Number(completed || 0);
+    };
+
+    if (tasksMenuPeriod === "today") {
+      const countEntry = tasksMenuDayCountMap.get(tasksMenuTodayKey) || {
+        pending: 0,
+        completed: 0,
       };
+      addCounts(countEntry.pending, countEntry.completed);
+      return total;
+    }
+
+    if (tasksMenuSelectedDateKey) {
+      const countEntry = tasksMenuDayCountMap.get(tasksMenuSelectedDateKey) || {
+        pending: 0,
+        completed: 0,
+      };
+      addCounts(countEntry.pending, countEntry.completed);
+      return total;
+    }
+
+    if (tasksMenuPeriod === "week") {
+      tasksMenuWeekSummary.forEach((entry) => {
+        addCounts(entry.pendingCount, entry.completedCount);
+      });
+      return total;
+    }
+
+    if (
+      tasksMenuPeriod === "month" ||
+      (tasksMenuPeriod === "year" && tasksMenuSelectedMonthKey)
+    ) {
+      tasksMenuMonthCalendarSummary.forEach((entry) => {
+        if (!entry.isCurrentMonth) return;
+        addCounts(entry.pendingCount, entry.completedCount);
+      });
+      return total;
+    }
+
+    tasksMenuYearSummary.forEach((entry) => {
+      addCounts(entry.pendingCount, entry.completedCount);
     });
-  }, [tasksMenuDayTaskMap, tasksMenuSelectedMonthDate]);
+    return total;
+  }, [
+    tasksMenuDayCountMap,
+    tasksMenuMonthCalendarSummary,
+    tasksMenuPeriod,
+    tasksMenuSelectedMonthKey,
+    tasksMenuSelectedDateKey,
+    tasksMenuTodayKey,
+    tasksMenuWeekSummary,
+    tasksMenuYearSummary,
+  ]);
 
   const tasksMenuVisibleDateKey = useMemo(() => {
     if (tasksMenuPeriod === "today") return tasksMenuTodayKey;
@@ -8783,33 +8962,171 @@ export default function Home() {
     title = "",
     subtitle = "",
     count = 0,
+    pendingCount = null,
+    completedCount = null,
     onPress,
     selected = false,
     accessibilityLabel = "",
-  }) => (
-    <TouchableOpacity
-      key={`tasks-menu-count-${itemKey}`}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel || `${title}, ${count} tasks`}
-      activeOpacity={0.85}
-      className={`rounded-2xl px-3.5 py-3 mb-2 border ${
-        selected
-          ? "bg-[#2A2218]/75 border-[#D9A441]/40"
-          : "bg-[#123131]/60 border-[#337a7a]/30"
-      }`}
-    >
-      <View className="flex-row items-center justify-between">
-        <Text className="text-[#E8F4F4] text-sm font-black">{title}</Text>
-        <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-          {formatTaskCountLabel(count)}
+  }) => {
+    const hasDualCounts =
+      typeof pendingCount === "number" && typeof completedCount === "number";
+    const activeCount = hasDualCounts
+      ? tasksMenuStatus === "completed"
+        ? Number(completedCount || 0)
+        : Number(pendingCount || 0)
+      : Number(count || 0);
+
+    return (
+      <TouchableOpacity
+        key={`tasks-menu-count-${itemKey}`}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={
+          accessibilityLabel ||
+          (hasDualCounts
+            ? `${title}, ${pendingCount} pending, ${completedCount} completed`
+            : `${title}, ${count} tasks`)
+        }
+        activeOpacity={0.85}
+        className={`rounded-2xl px-3.5 py-3 mb-2 border ${
+          selected
+            ? "bg-[#2A2218]/75 border-[#D9A441]/40"
+            : "bg-[#123131]/60 border-[#337a7a]/30"
+        }`}
+      >
+        <View className="flex-row items-center justify-between">
+          <Text className="text-[#E8F4F4] text-sm font-black">{title}</Text>
+          {hasDualCounts ? (
+            <View className="flex-row items-center">
+              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                P {formatShortTaskCount(pendingCount)}
+              </Text>
+              <Text className="text-[#9FB5B5] text-[9px] font-black mx-1">•</Text>
+              <Text className="text-[#7DFFB3] text-[10px] font-black uppercase tracking-widest">
+                D {formatShortTaskCount(completedCount)}
+              </Text>
+            </View>
+          ) : (
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+              {formatTaskCountLabel(count)}
+            </Text>
+          )}
+        </View>
+        <Text className="text-[#9FB5B5] text-[11px] mt-1">
+          {subtitle || "Choose a day to see the tasks."}
         </Text>
+        {hasDualCounts ? (
+          <Text className="text-[#66b9b9] text-[10px] font-bold mt-1">
+            Active: {formatTaskCountLabel(activeCount)}
+          </Text>
+        ) : null}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderTasksMenuCalendarDayCell = (entry) => {
+    if (!entry?.date) return null;
+    const dayLabel = formatDayHeadingLabel(entry.date);
+    const shouldDimDay = !entry.isCurrentMonth;
+    const hasTasks = Number(entry.pendingCount || 0) + Number(entry.completedCount || 0) > 0;
+
+    return (
+      <View key={`tasks-menu-day-cell-${entry.key}`} className="w-[14.28%] px-0.5 mb-1.5">
+        <TouchableOpacity
+          activeOpacity={entry.isCurrentMonth ? 0.86 : 1}
+          disabled={!entry.isCurrentMonth}
+          onPress={() => handleTasksMenuDateSelect(entry.date)}
+          accessibilityRole="button"
+          accessibilityLabel={`${dayLabel}, ${entry.pendingCount || 0} pending, ${
+            entry.completedCount || 0
+          } completed`}
+          className={`rounded-xl border px-1.5 py-1.5 min-h-[68px] ${
+            entry.isSelected
+              ? "bg-[#2A2218]/78 border-[#D9A441]/45"
+              : entry.isToday
+                ? "bg-[#123131]/78 border-[#66b9b9]/45"
+                : shouldDimDay
+                  ? "bg-[#061414]/35 border-[#337a7a]/15"
+                  : "bg-[#123131]/60 border-[#337a7a]/28"
+          }`}
+        >
+          <Text
+            className={`text-[11px] font-black ${
+              shouldDimDay ? "text-[#6D8787]" : "text-[#E8F4F4]"
+            }`}
+          >
+            {entry.date.getDate()}
+          </Text>
+          <View className="mt-1">
+            <Text
+              className={`text-[9px] font-bold ${
+                entry.pendingCount ? "text-[#66b9b9]" : "text-[#6D8787]"
+              }`}
+            >
+              P {formatShortTaskCount(entry.pendingCount)}
+            </Text>
+            <Text
+              className={`text-[9px] font-bold mt-0.5 ${
+                entry.completedCount ? "text-[#7DFFB3]" : "text-[#6D8787]"
+              }`}
+            >
+              D {formatShortTaskCount(entry.completedCount)}
+            </Text>
+          </View>
+          {hasTasks && entry.isCurrentMonth ? (
+            <View className="mt-1.5 h-[2px] rounded-full bg-[#66b9b9]/50" />
+          ) : null}
+        </TouchableOpacity>
       </View>
-      <Text className="text-[#9FB5B5] text-[11px] mt-1">
-        {subtitle || "Choose a day to see the tasks."}
-      </Text>
-    </TouchableOpacity>
-  );
+    );
+  };
+
+  const renderTasksMenuMonthCard = (entry) => {
+    if (!entry?.date) return null;
+    const monthLabel = entry.date.toLocaleDateString(undefined, { month: "long" });
+    const monthFullLabel = entry.date.toLocaleDateString(undefined, {
+      month: "long",
+      year: "numeric",
+    });
+    const monthTotal = Number(entry.pendingCount || 0) + Number(entry.completedCount || 0);
+    const monthDensity = Math.min(100, Math.max(monthTotal > 0 ? 10 : 0, monthTotal * 4));
+    const isCurrentMonth = isSameLocalMonth(entry.date, tasksMenuTodayDate);
+
+    return (
+      <View
+        key={`tasks-menu-month-card-${entry.monthKey}`}
+        style={{ width: tasksMenuMonthCardWidth }}
+        className="mb-2.5"
+      >
+        <TouchableOpacity
+          activeOpacity={0.86}
+          onPress={() => handleTasksMenuMonthSelect(entry.date)}
+          accessibilityRole="button"
+          accessibilityLabel={`${monthFullLabel}, ${entry.pendingCount || 0} pending, ${
+            entry.completedCount || 0
+          } completed`}
+          className={`rounded-2xl border px-3.5 py-3 ${
+            isCurrentMonth
+              ? "bg-[#2A2218]/70 border-[#D9A441]/35"
+              : "bg-[#123131]/60 border-[#337a7a]/30"
+          }`}
+        >
+          <Text className="text-[#E8F4F4] text-sm font-black">{monthLabel}</Text>
+          <View className="mt-1.5">
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+              Pending {formatShortTaskCount(entry.pendingCount)}
+            </Text>
+            <Text className="text-[#7DFFB3] text-[10px] font-black uppercase tracking-widest mt-1">
+              Done {formatShortTaskCount(entry.completedCount)}
+            </Text>
+          </View>
+          <View className="mt-2 h-1.5 rounded-full border border-[#337a7a]/30 bg-[#061414]/60 overflow-hidden">
+            <View className="h-full bg-[#66b9b9]/75 rounded-full" style={{ width: `${monthDensity}%` }} />
+          </View>
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
   const renderTasksMenuEmptyState = (message, hint = "Nothing here needs pressure.") => (
     <View className="rounded-2xl border border-[#337a7a]/30 bg-[#123131]/50 px-4 py-4">
@@ -8837,21 +9154,38 @@ export default function Home() {
         tasksMenuPeriod === "year" &&
         Boolean(tasksMenuSelectedMonthKey) &&
         !tasksMenuSelectedDateKey;
+      const dayListDateTitle = tasksMenuVisibleDate
+        ? tasksMenuVisibleDate.toLocaleDateString(undefined, {
+            day: "numeric",
+            month: "long",
+            year: "numeric",
+          })
+        : "Tasks";
       const dayListTitle =
         tasksMenuPeriod === "today"
           ? formatTodayHeadingLabel(tasksMenuTodayDate)
-          : formatDayHeadingLabel(tasksMenuVisibleDate);
+          : dayListDateTitle;
+      const dayListStatusLabel = isCompletedView ? "Completed tasks" : "Pending tasks";
       const dayListEmptyMessage = isCompletedView
         ? tasksMenuPeriod === "today"
-          ? "No tasks completed today yet."
-          : tasksMenuPeriod === "week"
-            ? "No completed tasks for this day."
-            : "No completed tasks for this date."
+          ? "No completed tasks for today yet."
+          : "No completed tasks for this date yet."
         : tasksMenuPeriod === "today"
           ? "No pending tasks for today."
-          : tasksMenuPeriod === "week"
-            ? "No pending tasks for this day."
-            : "No pending tasks for this date.";
+          : "No pending tasks for this date.";
+      const backToPeriodLabel =
+        tasksMenuPeriod === "week"
+          ? "Back to week"
+          : tasksMenuPeriod === "month"
+            ? "Back to month"
+            : "Back to month";
+      const activeMonthTaskTotal = tasksMenuMonthCalendarSummary.reduce(
+        (total, entry) =>
+          entry.isCurrentMonth
+            ? total + Number(entry.pendingCount || 0) + Number(entry.completedCount || 0)
+            : total,
+        0
+      );
 
       return (
         <>
@@ -8864,31 +9198,39 @@ export default function Home() {
 
           <View className="bg-[#123131]/55 rounded-2xl p-3 border border-[#337a7a]/25 mb-3">
             <View className="flex-row mb-2">
-              {TASK_MENU_STATUS_OPTIONS.map((statusOption) => (
-                <TouchableOpacity
-                  key={`tasks-status-${statusOption.key}`}
-                  activeOpacity={0.82}
-                  onPress={() => handleTasksMenuStatusChange(statusOption.key)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: tasksMenuStatus === statusOption.key }}
-                  accessibilityLabel={statusOption.accessibilityLabel}
-                  className={`px-3 py-2 rounded-full border mr-2 ${
-                    tasksMenuStatus === statusOption.key
-                      ? "bg-[#66b9b9] border-[#66b9b9]"
-                      : "bg-[#123131]/75 border-[#337a7a]/35"
-                  }`}
-                >
-                  <Text
-                    className={`text-[10px] font-black uppercase tracking-widest ${
+              {TASK_MENU_STATUS_OPTIONS.map((statusOption) => {
+                const statusCount =
+                  statusOption.key === "completed"
+                    ? Number(tasksMenuScopeCounts.completed || 0)
+                    : Number(tasksMenuScopeCounts.pending || 0);
+                return (
+                  <TouchableOpacity
+                    key={`tasks-status-${statusOption.key}`}
+                    activeOpacity={0.82}
+                    onPress={() => handleTasksMenuStatusChange(statusOption.key)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: tasksMenuStatus === statusOption.key }}
+                    accessibilityLabel={`${statusOption.accessibilityLabel}, ${formatTaskCountLabel(
+                      statusCount
+                    )}`}
+                    className={`px-3 py-2 rounded-full border mr-2 ${
                       tasksMenuStatus === statusOption.key
-                        ? "text-[#061414]"
-                        : "text-[#9FB5B5]"
+                        ? "bg-[#66b9b9] border-[#66b9b9]"
+                        : "bg-[#123131]/75 border-[#337a7a]/35"
                     }`}
                   >
-                    {statusOption.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+                    <Text
+                      className={`text-[10px] font-black uppercase tracking-widest ${
+                        tasksMenuStatus === statusOption.key
+                          ? "text-[#061414]"
+                          : "text-[#9FB5B5]"
+                      }`}
+                    >
+                      {statusOption.label} {statusCount}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
             <View className="flex-row flex-wrap">
               {TASK_MENU_PERIOD_OPTIONS.map((periodOption) => (
@@ -9030,7 +9372,7 @@ export default function Home() {
                   activeOpacity={0.86}
                   onPress={handleTasksMenuBack}
                   accessibilityRole="button"
-                  accessibilityLabel="Back"
+                  accessibilityLabel="Go back"
                   className="bg-[#123131]/80 border border-[#337a7a]/35 rounded-full px-3 py-2 mr-2 mb-2"
                 >
                   <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
@@ -9149,7 +9491,7 @@ export default function Home() {
                     {dayListTitle || "Tasks"}
                   </Text>
                   <Text className="text-[#9FB5B5] text-xs mt-1">
-                    Small wins count.
+                    {dayListStatusLabel}
                   </Text>
                 </View>
                 {tasksMenuPeriod !== "today" ? (
@@ -9157,21 +9499,11 @@ export default function Home() {
                     activeOpacity={0.82}
                     onPress={handleTasksMenuBack}
                     accessibilityRole="button"
-                    accessibilityLabel={
-                      tasksMenuPeriod === "week"
-                        ? "Back to week"
-                        : tasksMenuPeriod === "month"
-                          ? "Back to month"
-                          : "Back to month"
-                    }
+                    accessibilityLabel="Go back"
                     className="bg-[#123131]/80 border border-[#337a7a]/35 rounded-full px-3 py-2"
                   >
                     <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
-                      {tasksMenuPeriod === "week"
-                        ? "Back to week"
-                        : tasksMenuPeriod === "month"
-                          ? "Back to month"
-                          : "Back to month"}
+                      {backToPeriodLabel}
                     </Text>
                   </TouchableOpacity>
                 ) : null}
@@ -9195,8 +9527,12 @@ export default function Home() {
                   title: formatDaySummaryLabel(entry.date),
                   subtitle: formatDayHeadingLabel(entry.date),
                   count: entry.count,
+                  pendingCount: entry.pendingCount,
+                  completedCount: entry.completedCount,
                   onPress: () => handleTasksMenuDateSelect(entry.date),
-                  accessibilityLabel: `${formatDayHeadingLabel(entry.date)}, ${formatTaskCountLabel(entry.count)}`,
+                  accessibilityLabel: `${formatDayHeadingLabel(entry.date)}, ${
+                    entry.pendingCount
+                  } pending, ${entry.completedCount} completed`,
                   selected: tasksMenuSelectedDateKey === entry.key,
                 })
               )}
@@ -9204,30 +9540,30 @@ export default function Home() {
           ) : tasksMenuPeriod === "month" ? (
             <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
               <Text className="text-[#E8F4F4] text-base font-black">
-                {formatMonthHeadingLabel(tasksMenuTodayDate)}
+                {formatMonthHeadingLabel(tasksMenuVisibleMonthDate)}
               </Text>
               <Text className="text-[#9FB5B5] text-xs mt-1 mb-3">
                 Choose a date to see the tasks.
               </Text>
-              {tasksMenuMonthSummary.map((entry) =>
-                renderTasksMenuCountCard({
-                  itemKey: entry.key,
-                  title: formatDaySummaryLabel(entry.date),
-                  subtitle: entry.date.toLocaleDateString(undefined, {
-                    day: "numeric",
-                    month: "short",
-                    year: "numeric",
-                  }),
-                  count: entry.count,
-                  onPress: () => handleTasksMenuDateSelect(entry.date),
-                  accessibilityLabel: `${entry.date.toLocaleDateString(undefined, {
-                    day: "numeric",
-                    month: "long",
-                    year: "numeric",
-                  })}, ${formatTaskCountLabel(entry.count)}`,
-                  selected: tasksMenuSelectedDateKey === entry.key,
-                })
-              )}
+              <View className="flex-row mb-2">
+                {TASK_MENU_WEEKDAY_LABELS.map((label) => (
+                  <View key={`tasks-menu-month-weekday-${label}`} className="w-[14.28%] items-center">
+                    <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-wider">
+                      {label}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+              <View className="flex-row flex-wrap">
+                {tasksMenuMonthCalendarSummary.map((entry) =>
+                  renderTasksMenuCalendarDayCell(entry)
+                )}
+              </View>
+              {activeMonthTaskTotal === 0 ? (
+                <View className="mt-2">
+                  {renderTasksMenuEmptyState("No tasks counted this month.")}
+                </View>
+              ) : null}
             </View>
           ) : showYearMonthDates ? (
             <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
@@ -9244,7 +9580,7 @@ export default function Home() {
                   activeOpacity={0.82}
                   onPress={handleTasksMenuBack}
                   accessibilityRole="button"
-                  accessibilityLabel="Back to year"
+                  accessibilityLabel="Go back"
                   className="bg-[#123131]/80 border border-[#337a7a]/35 rounded-full px-3 py-2"
                 >
                   <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
@@ -9252,25 +9588,25 @@ export default function Home() {
                   </Text>
                 </TouchableOpacity>
               </View>
-              {tasksMenuSelectedMonthDates.map((entry) =>
-                renderTasksMenuCountCard({
-                  itemKey: entry.key,
-                  title: formatDaySummaryLabel(entry.date),
-                  subtitle: entry.date.toLocaleDateString(undefined, {
-                    day: "numeric",
-                    month: "short",
-                    year: "numeric",
-                  }),
-                  count: entry.count,
-                  onPress: () => handleTasksMenuDateSelect(entry.date),
-                  accessibilityLabel: `${entry.date.toLocaleDateString(undefined, {
-                    day: "numeric",
-                    month: "long",
-                    year: "numeric",
-                  })}, ${formatTaskCountLabel(entry.count)}`,
-                  selected: tasksMenuSelectedDateKey === entry.key,
-                })
-              )}
+              <View className="flex-row mb-2">
+                {TASK_MENU_WEEKDAY_LABELS.map((label) => (
+                  <View key={`tasks-menu-year-month-weekday-${label}`} className="w-[14.28%] items-center">
+                    <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-wider">
+                      {label}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+              <View className="flex-row flex-wrap">
+                {tasksMenuMonthCalendarSummary.map((entry) =>
+                  renderTasksMenuCalendarDayCell(entry)
+                )}
+              </View>
+              {activeMonthTaskTotal === 0 ? (
+                <View className="mt-2">
+                  {renderTasksMenuEmptyState("No tasks counted this month.")}
+                </View>
+              ) : null}
             </View>
           ) : (
             <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
@@ -9280,20 +9616,9 @@ export default function Home() {
               <Text className="text-[#9FB5B5] text-xs mt-1 mb-3">
                 Choose a month to see date counts first.
               </Text>
-              {tasksMenuYearSummary.map((entry) =>
-                renderTasksMenuCountCard({
-                  itemKey: entry.monthKey,
-                  title: entry.date.toLocaleDateString(undefined, { month: "long" }),
-                  subtitle: formatMonthHeadingLabel(entry.date),
-                  count: entry.count,
-                  onPress: () => handleTasksMenuMonthSelect(entry.date),
-                  accessibilityLabel: `${entry.date.toLocaleDateString(undefined, {
-                    month: "long",
-                    year: "numeric",
-                  })}, ${formatTaskCountLabel(entry.count)}`,
-                  selected: tasksMenuSelectedMonthKey === entry.monthKey,
-                })
-              )}
+              <View className="flex-row flex-wrap justify-between">
+                {tasksMenuYearSummary.map((entry) => renderTasksMenuMonthCard(entry))}
+              </View>
             </View>
           )}
         </>
@@ -9799,7 +10124,7 @@ export default function Home() {
             <TouchableOpacity
               onPress={closePageModal}
               accessibilityRole="button"
-              accessibilityLabel="Close"
+              accessibilityLabel={activePage === "tasks" ? "Close Tasks" : "Close"}
               className="bg-[#123131]/80 px-4 py-2 rounded-full border border-[#66b9b9]/30"
             >
               <Text className="text-[#66b9b9] font-black">Close</Text>
@@ -12633,11 +12958,3 @@ export default function Home() {
     </>
   );
 }
-
-
-
-
-
-
-
-
