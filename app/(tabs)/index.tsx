@@ -8967,6 +8967,34 @@ export default function Home() {
                 </View>
               ) : null}
 
+              {tasksMenuSelectedTask.attachment ? (
+                <View className="mt-2 bg-[#061414]/60 border border-[#337a7a]/25 rounded-xl p-3">
+                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-1">
+                    Attachment
+                  </Text>
+                  <TouchableOpacity
+                    activeOpacity={0.84}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open task attachment"
+                    onPress={() => {
+                      const attachmentUri = String(tasksMenuSelectedTask.attachment || "").trim();
+                      if (!attachmentUri) return;
+                      const isPdf = attachmentUri.toLowerCase().endsWith(".pdf");
+                      setCurrentFile({
+                        uri: attachmentUri,
+                        type: isPdf ? "pdf" : "image",
+                      });
+                      setViewerVisible(true);
+                    }}
+                    className="self-start bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2"
+                  >
+                    <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                      Open Attachment
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+
               {Array.isArray(tasksMenuSelectedTask.subtasks) &&
               tasksMenuSelectedTask.subtasks.length > 0 ? (
                 <View className="mt-2 bg-[#061414]/60 border border-[#337a7a]/25 rounded-xl p-3">
@@ -12605,7 +12633,6 @@ export default function Home() {
     </>
   );
 }
-
 
 
 
