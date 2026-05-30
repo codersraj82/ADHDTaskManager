@@ -25,6 +25,7 @@
         "POST_NOTIFICATIONS",
         "VIBRATE",
         "WAKE_LOCK",
+        "com.android.alarm.permission.SET_ALARM",
         "SCHEDULE_EXACT_ALARM"
       ]
     },

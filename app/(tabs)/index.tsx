@@ -7,6 +7,7 @@ import {
   Modal,
   TextInput,
   Animated,
+  Alert,
   Pressable,
   Dimensions,
   Image,
@@ -17,6 +18,7 @@ import {
   UIManager,
   AppState,
   KeyboardAvoidingView,
+  Switch,
 } from "react-native";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { db, initDB } from "../../database/db";
@@ -85,6 +87,11 @@ import {
   TASK_REMINDER_ACTIONS_CATEGORY_ID,
   TASK_REMINDER_ACTION_IDS,
 } from "../../services/notificationService";
+import {
+  canUseClockAlarm,
+  openAlarmClockFallback,
+  setClockAlarmForTask,
+} from "../../services/androidClockAlarm";
 import {
   speakEncouragement,
   stopEncouragement,
@@ -843,9 +850,9 @@ const buildScheduledDateTimeForDay = (dayDate, sourceValue = null) => {
 export default function Home() {
   const insets = useSafeAreaInsets();
   const [tasks, setTasks] = useState([
-    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [], isPinned: false, moodType: "" },
-    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [], isPinned: false, moodType: "" },
-    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [], isPinned: false, moodType: "" },
+    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [], usePhoneAlarm: false, isPinned: false, moodType: "" },
+    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [], usePhoneAlarm: false, isPinned: false, moodType: "" },
+    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [], usePhoneAlarm: false, isPinned: false, moodType: "" },
   ]);
   const [totalFocusTime, setTotalFocusTime] = useState(0); // seconds
 
@@ -3201,6 +3208,20 @@ export default function Home() {
         )
       );
 
+      await launchOptionalPhoneAlarmForTasks({
+        tasksToCheck: [
+          {
+            ...targetTask,
+            section: recoveryDraftSection,
+            scheduledTime,
+            notificationId: reminderIds,
+          },
+        ],
+        source: "reschedule",
+        scope: "single",
+        primaryTaskId: targetTask.id,
+      });
+
       setRecoverySuccessMessage("Moved gently. No reset needed.");
       recoverySuccessPulse.value = 0;
       recoverySuccessPulse.value = withTiming(
@@ -3265,6 +3286,7 @@ export default function Home() {
           repeatGroupId TEXT DEFAULT '',
           scheduledTime TEXT, details TEXT, attachment TEXT,
           subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
+          usePhoneAlarm INTEGER DEFAULT 0,
           isPinned INTEGER DEFAULT 0,
           moodType TEXT DEFAULT '',
           firstAction TEXT DEFAULT '',
@@ -3337,6 +3359,9 @@ export default function Home() {
           db.execSync(
             "ALTER TABLE tasks ADD COLUMN notificationId TEXT DEFAULT '[]';"
           );
+        }
+        if (!columnNames.includes("usePhoneAlarm")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN usePhoneAlarm INTEGER DEFAULT 0;");
         }
         if (!columnNames.includes("isPinned")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN isPinned INTEGER DEFAULT 0;");
@@ -3497,6 +3522,7 @@ export default function Home() {
           repeatGroupId: t.repeatGroupId || "",
           subtasks: JSON.parse(t.subtasks || "[]"),
           notificationId: JSON.parse(t.notificationId || "[]"),
+          usePhoneAlarm: Number(t.usePhoneAlarm || 0) === 1,
           isPinned: t.isPinned === 1,
         }));
         setTasks(loadedTasks);
@@ -4695,9 +4721,47 @@ export default function Home() {
   );
   const [repeatCustomDate, setRepeatCustomDate] = useState("");
   const [repeatYearlyDate, setRepeatYearlyDate] = useState("");
+  const [usePhoneAlarm, setUsePhoneAlarm] = useState(false);
+  const [isPhoneAlarmAvailable, setIsPhoneAlarmAvailable] = useState(false);
+  const [phoneAlarmCapabilityChecked, setPhoneAlarmCapabilityChecked] = useState(
+    Platform.OS !== "android"
+  );
   const [editRepeatScopeModalVisible, setEditRepeatScopeModalVisible] =
     useState(false);
   const [pendingEditPayload, setPendingEditPayload] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    if (Platform.OS !== "android") {
+      setIsPhoneAlarmAvailable(false);
+      setPhoneAlarmCapabilityChecked(true);
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    const checkPhoneAlarmCapability = async () => {
+      try {
+        const available = await canUseClockAlarm();
+        if (!isMounted) return;
+        setIsPhoneAlarmAvailable(available);
+      } catch {
+        if (!isMounted) return;
+        setIsPhoneAlarmAvailable(false);
+      } finally {
+        if (isMounted) {
+          setPhoneAlarmCapabilityChecked(true);
+        }
+      }
+    };
+
+    checkPhoneAlarmCapability();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const runLayoutAnimation = useCallback(() => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -4848,6 +4912,7 @@ export default function Home() {
           subtasks,
           notificationId,
           isPinned,
+          usePhoneAlarm,
           moodType,
           firstAction,
           minimumVersion,
@@ -4860,7 +4925,7 @@ export default function Home() {
           stuckCount,
           lastStuckAt
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nextTask.title || "Task",
           nextTask.section || "Morning",
@@ -4878,6 +4943,7 @@ export default function Home() {
           nextTask.attachment || "",
           JSON.stringify(nextTask.subtasks || []),
           JSON.stringify([]),
+          0,
           0,
           nextTask.moodType || "",
           nextTask.firstAction || "",
@@ -4920,6 +4986,7 @@ export default function Home() {
           completedAt: null,
           createdAt,
           isPinned: false,
+          usePhoneAlarm: false,
           moodType: nextTask.moodType || "",
           firstAction: nextTask.firstAction || "",
           minimumVersion: nextTask.minimumVersion || "",
@@ -5097,6 +5164,7 @@ export default function Home() {
         subtasks,
         notificationId,
         isPinned,
+        usePhoneAlarm,
         moodType,
         firstAction,
         minimumVersion,
@@ -5109,7 +5177,7 @@ export default function Home() {
         stuckCount,
         lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
           task.title || "Task",
           task.section || "Morning",
@@ -5128,6 +5196,7 @@ export default function Home() {
           JSON.stringify(recreatedSubtasks),
           JSON.stringify([]),
           0,
+          task.usePhoneAlarm ? 1 : 0,
           "",
           task.firstAction || "",
           task.minimumVersion || "",
@@ -5171,6 +5240,7 @@ export default function Home() {
         subtasks: recreatedSubtasks,
         notificationId: recreatedNotificationIds,
         isPinned: false,
+        usePhoneAlarm: Boolean(task.usePhoneAlarm),
         moodType: "",
         firstAction: task.firstAction || "",
         minimumVersion: task.minimumVersion || "",
@@ -5229,6 +5299,7 @@ export default function Home() {
     setRepeatMonthlyType(MONTHLY_REPEAT_TYPES.FIRST);
     setRepeatCustomDate("");
     setRepeatYearlyDate("");
+    setUsePhoneAlarm(false);
     setAttachmentUri(null);
     setAttachmentName("");
     setTimeAdjusted(false);
@@ -5266,6 +5337,7 @@ export default function Home() {
     setRepeatMonthlyType(MONTHLY_REPEAT_TYPES.FIRST);
     setRepeatCustomDate("");
     setRepeatYearlyDate("");
+    setUsePhoneAlarm(false);
     setAttachmentUri(null);
     setAttachmentName("");
     setTimeAdjusted(false);
@@ -6037,6 +6109,7 @@ export default function Home() {
       setRepeatMonthlyType(repeatSettings.repeatMonthlyType);
       setRepeatCustomDate(repeatSettings.repeatCustomDate);
       setRepeatYearlyDate(repeatSettings.repeatYearlyDate);
+      setUsePhoneAlarm(Boolean(task.usePhoneAlarm));
       setStartAssistEditHint(assistHint || "");
       setModalVisible(true);
     },
@@ -6444,14 +6517,85 @@ export default function Home() {
     ]).start();
   };
 
-  const showCelebration = (message, emoji = "🎉") => {
+  const showCelebration = useCallback((message, emoji = "🎉") => {
     setCelebration({ visible: true, message, emoji });
 
     // auto close after 2.5 sec
     setTimeout(() => {
       setCelebration((prev) => ({ ...prev, visible: false }));
     }, 5500);
-  };
+  }, []);
+
+  const showPhoneAlarmFallbackMessage = useCallback(() => {
+    Alert.alert(
+      "Phone alarm",
+      "Task reminder is still saved. Phone alarm could not be opened on this device.",
+      [
+        {
+          text: "Open Clock app",
+          onPress: () => {
+            void openAlarmClockFallback();
+          },
+        },
+        { text: "OK", style: "cancel" },
+      ]
+    );
+  }, []);
+
+  const launchOptionalPhoneAlarmForTasks = useCallback(
+    async ({
+      tasksToCheck = [],
+      source = "taskReminder",
+      scope = "single",
+      primaryTaskId = null,
+    }: {
+      tasksToCheck?: any[];
+      source?: "taskReminder" | "editTask" | "reschedule" | "manual";
+      scope?: "single" | "future" | "all";
+      primaryTaskId?: number | null;
+    } = {}) => {
+      if (Platform.OS !== "android") return;
+      if (!Array.isArray(tasksToCheck) || tasksToCheck.length === 0) return;
+
+      const eligibleTasks = tasksToCheck.filter((task) => Boolean(task?.usePhoneAlarm));
+      if (!eligibleTasks.length) return;
+
+      const targetTask =
+        (primaryTaskId
+          ? eligibleTasks.find((task) => Number(task?.id) === Number(primaryTaskId))
+          : null) || eligibleTasks[0];
+
+      if (!targetTask?.scheduledTime) return;
+
+      const available = await canUseClockAlarm();
+      setIsPhoneAlarmAvailable(available);
+      setPhoneAlarmCapabilityChecked(true);
+
+      if (!available) {
+        showPhoneAlarmFallbackMessage();
+        return;
+      }
+
+      const result = await setClockAlarmForTask(targetTask, {
+        source,
+        skipUi: false,
+      });
+
+      if (result.success) {
+        showCelebration("Stronger reminder set gently.");
+        if (scope !== "single" && eligibleTasks.length > 1) {
+          Alert.alert(
+            "Reminder note",
+            "Android Clock alarms may need to be adjusted in the Clock app."
+          );
+        }
+        return;
+      }
+
+      showPhoneAlarmFallbackMessage();
+    },
+    [showCelebration, showPhoneAlarmFallbackMessage]
+  );
 
   const toggleWeeklyRepeatDay = useCallback((weekday) => {
     setRepeatDays((prev) => {
@@ -6523,6 +6667,7 @@ export default function Home() {
       repeatMonthlyType: normalizedMonthlyType,
       repeatCustomDate: normalizedCustomDate,
       repeatYearlyDate: normalizedYearlyDate,
+      usePhoneAlarm: Boolean(usePhoneAlarm),
       firstAction: normalizedFirstAction,
       minimumVersion: normalizedMinimumVersion,
       energyRequired: normalizedEnergyRequired,
@@ -6543,6 +6688,7 @@ export default function Home() {
       repeatMonthlyType: draftRepeatMonthlyType,
       repeatCustomDate: draftRepeatCustomDate,
       repeatYearlyDate: draftRepeatYearlyDate,
+      usePhoneAlarm: draftUsePhoneAlarm,
       firstAction: draftFirstAction,
       minimumVersion: draftMinimumVersion,
       energyRequired: draftEnergyRequired,
@@ -6612,11 +6758,12 @@ export default function Home() {
                scheduledTime = ?,
                details = ?,
                attachment = ?,
-               subtasks = ?,
-               notificationId = ?,
-               isPinned = ?,
-               repeatType = ?,
-                repeatDays = ?,
+                subtasks = ?,
+                notificationId = ?,
+                isPinned = ?,
+                usePhoneAlarm = ?,
+                repeatType = ?,
+                 repeatDays = ?,
                 repeatMonthlyType = ?,
                 repeatCustomDate = ?,
                 repeatYearlyDate = ?,
@@ -6638,6 +6785,7 @@ export default function Home() {
             JSON.stringify(subtasksToSave),
             JSON.stringify(reminderIds),
             targetTask.isPinned ? 1 : 0,
+            draftUsePhoneAlarm ? 1 : 0,
             draftRepeatType,
             serializeRepeatDays(draftRepeatDays),
             draftRepeatMonthlyType || "",
@@ -6665,6 +6813,7 @@ export default function Home() {
           subtasks: subtasksToSave,
           notificationId: reminderIds,
           isPinned: !!targetTask.isPinned,
+          usePhoneAlarm: Boolean(draftUsePhoneAlarm),
           repeatType: draftRepeatType,
           repeatDays: draftRepeatDays,
           repeatMonthlyType: draftRepeatMonthlyType,
@@ -6719,6 +6868,7 @@ export default function Home() {
         subtasks,
         notificationId,
         isPinned,
+        usePhoneAlarm,
         moodType,
         firstAction,
         minimumVersion,
@@ -6731,7 +6881,7 @@ export default function Home() {
         stuckCount,
         lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         taskName,
         selectedSection,
@@ -6750,6 +6900,7 @@ export default function Home() {
         JSON.stringify(subtasksToSave),
         JSON.stringify([]),
         0,
+        draftUsePhoneAlarm ? 1 : 0,
         "",
         draftFirstAction,
         draftMinimumVersion,
@@ -6797,6 +6948,7 @@ export default function Home() {
       subtasks: subtasksToSave,
       notificationId: reminderIds,
       isPinned: false,
+      usePhoneAlarm: Boolean(draftUsePhoneAlarm),
       moodType: "",
       firstAction: draftFirstAction,
       minimumVersion: draftMinimumVersion,
@@ -6837,7 +6989,14 @@ export default function Home() {
   const applyEditScopeAndSave = async (scope) => {
     if (!pendingEditPayload) return;
     try {
-      await executeTaskSave(scope, pendingEditPayload);
+      const saveResult = await executeTaskSave(scope, pendingEditPayload);
+      const savedTasks = Array.isArray(saveResult?.tasks) ? saveResult.tasks : [];
+      await launchOptionalPhoneAlarmForTasks({
+        tasksToCheck: savedTasks,
+        source: "editTask",
+        scope,
+        primaryTaskId: editingTask?.id ?? null,
+      });
     } catch (error) {
       console.log("Task Save Error:", error);
       alert("Task Save Error:\n" + error.message);
@@ -6863,11 +7022,17 @@ export default function Home() {
       return;
     }
 
-    try {
+  try {
       const saveResult = await executeTaskSave("single", draft);
+      const savedTasks = Array.isArray(saveResult?.tasks) ? saveResult.tasks : [];
+      await launchOptionalPhoneAlarmForTasks({
+        tasksToCheck: savedTasks,
+        source: isEditMode ? "editTask" : "taskReminder",
+        scope: "single",
+        primaryTaskId: editingTask?.id ?? null,
+      });
       if (todayPlanCreateContextActive) {
         const { start, end } = getDayBounds(new Date());
-        const savedTasks = Array.isArray(saveResult?.tasks) ? saveResult.tasks : [];
         const hasTodayTask = savedTasks.some((task) => {
           const scheduledTimestamp = toTaskTimestamp(task?.scheduledTime);
           const createdTimestamp = toTaskTimestamp(task?.createdAt);
@@ -6970,6 +7135,7 @@ export default function Home() {
         subtasks,
         notificationId,
         isPinned,
+        usePhoneAlarm,
         moodType,
         firstAction,
         minimumVersion,
@@ -6993,7 +7159,7 @@ export default function Home() {
         lastSnoozedAt,
         rescheduleCount,
         lastRescheduledAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
@@ -7013,6 +7179,7 @@ export default function Home() {
         JSON.stringify(lastDeletedTask.subtasks || []),
         JSON.stringify(lastDeletedTask.notificationId || []),
         lastDeletedTask.isPinned ? 1 : 0,
+        lastDeletedTask.usePhoneAlarm ? 1 : 0,
         lastDeletedTask.moodType || "",
         lastDeletedTask.firstAction || "",
         lastDeletedTask.minimumVersion || "",
@@ -12095,6 +12262,43 @@ export default function Home() {
                   : "Select Date & Time"}
               </Text>
             </TouchableOpacity>
+
+            {Platform.OS === "android" ? (
+              <View className="bg-[#061414]/40 border border-[#337a7a]/30 rounded-2xl p-3 mb-3">
+                <View className="flex-row items-center justify-between">
+                  <View className="flex-1 pr-3">
+                    <Text className="text-[#E8F4F4] text-sm font-semibold">
+                      Use phone alarm for this task
+                    </Text>
+                    <Text className="text-[#9FB5B5] text-xs mt-1">
+                      For important tasks that need a stronger nudge.
+                    </Text>
+                    {!scheduledDateTime ? (
+                      <Text className="text-[#FFD166] text-[11px] mt-1 font-semibold">
+                        Add a task time first to use phone alarm.
+                      </Text>
+                    ) : null}
+                    {!phoneAlarmCapabilityChecked ? (
+                      <Text className="text-[#9FB5B5] text-[11px] mt-1">
+                        Checking phone alarm availability...
+                      </Text>
+                    ) : null}
+                    {phoneAlarmCapabilityChecked && !isPhoneAlarmAvailable ? (
+                      <Text className="text-[#FFD166] text-[11px] mt-1 font-semibold">
+                        Phone alarm could not be opened on this device.
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Switch
+                    value={usePhoneAlarm}
+                    onValueChange={setUsePhoneAlarm}
+                    disabled={!isPhoneAlarmAvailable}
+                    trackColor={{ false: "#337a7a", true: "#66b9b9" }}
+                    thumbColor={usePhoneAlarm ? "#061414" : "#E8F4F4"}
+                  />
+                </View>
+              </View>
+            ) : null}
 
             {timeAdjusted && (
               <Text className="text-[#FFD166] text-xs font-bold mb-3">

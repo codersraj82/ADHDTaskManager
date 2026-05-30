@@ -71,6 +71,7 @@ export const initDB = () => {
     // Adding default empty arrays for JSON columns
     { name: "subtasks", type: "TEXT DEFAULT '[]'" },
     { name: "notificationId", type: "TEXT DEFAULT '[]'" },
+    { name: "usePhoneAlarm", type: "INTEGER DEFAULT 0" },
     { name: "moodType", type: "TEXT DEFAULT ''" },
     { name: "firstAction", type: "TEXT DEFAULT ''" },
     { name: "minimumVersion", type: "TEXT DEFAULT ''" },
