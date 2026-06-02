@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+  <uses-permission android:name="android.permission.VIBRATE" />
+
+  <application>
+    <receiver
+      android:name=".TaskAlarmReceiver"
+      android:enabled="true"
+      android:exported="false" />
+    <receiver
+      android:name=".TaskAlarmActionReceiver"
+      android:enabled="true"
+      android:exported="false" />
+  </application>
+</manifest>

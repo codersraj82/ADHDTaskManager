@@ -30,6 +30,7 @@ import { Feather } from "@expo/vector-icons";
 
 import { WebView } from "react-native-webview"; // For PDF viewing
 import * as Notifications from "expo-notifications";
+import * as ExpoLinking from "expo-linking";
 import DatePickerModal from "../../components/DatePickerModal";
 import {
   formatDateTimeForDisplay,
@@ -88,9 +89,11 @@ import {
   TASK_REMINDER_ACTION_IDS,
 } from "../../services/notificationService";
 import {
-  canUseClockAlarm,
-  openAlarmClockFallback,
-  setClockAlarmForTask,
+  canScheduleExactAlarms as canScheduleExactAlarmsNative,
+  canUseStrongAlarm,
+  cancelStrongAlarmForTask,
+  openExactAlarmSettings,
+  scheduleStrongAlarmForTask,
 } from "../../services/androidClockAlarm";
 import {
   speakEncouragement,
@@ -275,6 +278,11 @@ const REMINDER_ACTIONS = Object.freeze({
   MOVE_GENTLY: "move_gently",
   MAKE_SMALLER: "make_smaller",
 });
+const STRONG_ALARM_ACTIONS = Object.freeze({
+  OPEN_TASK: "open_task",
+  START_2_MIN: "start_2_min",
+});
+const STRONG_ALARM_DEFAULT_SNOOZE_MINUTES = 5;
 const SNOOZE_AFFIRMATION_AUTO_CLOSE_DELAY_MS = 10000;
 const SNOOZE_AFFIRMATION_MESSAGE =
   "No guilt. Your reminder will return gently. When you come back, one tiny step is enough.";
@@ -427,9 +435,49 @@ const parseReminderActionHistory = (value) => {
   }
 };
 
+const parseLastStrongAlarmResult = (value) => {
+  if (!value) return null;
+  if (typeof value === "object") {
+    return {
+      success: Boolean(value.success),
+      errorCode: value.errorCode || undefined,
+      message: value.message || undefined,
+      at: value.at || "",
+    };
+  }
+  if (typeof value !== "string" || !value.trim()) return null;
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      success: Boolean(parsed.success),
+      errorCode: parsed.errorCode || undefined,
+      message: parsed.message || undefined,
+      at: parsed.at || "",
+    };
+  } catch {
+    return null;
+  }
+};
+
 const toIsoStringOrEmpty = (value) => {
   if (!value || typeof value !== "string") return "";
   return value;
+};
+
+const buildStrongAlarmId = (taskId, triggerAtMillis) => {
+  if (!taskId || !Number.isFinite(Number(triggerAtMillis))) return "";
+  return `task-${taskId}-${Math.round(Number(triggerAtMillis))}`;
+};
+
+const toStrongAlarmResultString = (value) => {
+  if (!value || typeof value !== "object") return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
 };
 
 const isTaskDeletedOrArchived = (task) =>
@@ -850,9 +898,51 @@ const buildScheduledDateTimeForDay = (dayDate, sourceValue = null) => {
 export default function Home() {
   const insets = useSafeAreaInsets();
   const [tasks, setTasks] = useState([
-    { id: 1, title: "Drink water 💧", section: "Morning", completed: false, notificationId: [], usePhoneAlarm: false, isPinned: false, moodType: "" },
-    { id: 2, title: "Goto office 💼", section: "Work", completed: false, notificationId: [], usePhoneAlarm: false, isPinned: false, moodType: "" },
-    { id: 3, title: "Walk 10 minutes 🚶", section: "Evening", completed: false, notificationId: [], usePhoneAlarm: false, isPinned: false, moodType: "" },
+    {
+      id: 1,
+      title: "Drink water 💧",
+      section: "Morning",
+      completed: false,
+      notificationId: [],
+      usePhoneAlarm: false,
+      useStrongAlarm: false,
+      strongAlarmId: "",
+      strongAlarmScheduledAt: "",
+      strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+      lastStrongAlarmResult: null,
+      isPinned: false,
+      moodType: "",
+    },
+    {
+      id: 2,
+      title: "Goto office 💼",
+      section: "Work",
+      completed: false,
+      notificationId: [],
+      usePhoneAlarm: false,
+      useStrongAlarm: false,
+      strongAlarmId: "",
+      strongAlarmScheduledAt: "",
+      strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+      lastStrongAlarmResult: null,
+      isPinned: false,
+      moodType: "",
+    },
+    {
+      id: 3,
+      title: "Walk 10 minutes 🚶",
+      section: "Evening",
+      completed: false,
+      notificationId: [],
+      usePhoneAlarm: false,
+      useStrongAlarm: false,
+      strongAlarmId: "",
+      strongAlarmScheduledAt: "",
+      strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+      lastStrongAlarmResult: null,
+      isPinned: false,
+      moodType: "",
+    },
   ]);
   const [totalFocusTime, setTotalFocusTime] = useState(0); // seconds
 
@@ -3167,6 +3257,9 @@ export default function Home() {
     setRecoverySavingTaskId(targetTask.id);
     try {
       await cancelTaskReminders(targetTask.notificationId);
+      if (targetTask?.strongAlarmId) {
+        await cancelStrongAlarmForTask(targetTask.strongAlarmId);
+      }
       const reminderIds = await scheduleProReminders({
         ...targetTask,
         section: recoveryDraftSection,
@@ -3287,6 +3380,10 @@ export default function Home() {
           scheduledTime TEXT, details TEXT, attachment TEXT,
           subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
           usePhoneAlarm INTEGER DEFAULT 0,
+          strongAlarmId TEXT DEFAULT '',
+          strongAlarmScheduledAt TEXT,
+          lastStrongAlarmResult TEXT DEFAULT '',
+          strongAlarmSnoozeMinutes INTEGER DEFAULT 5,
           isPinned INTEGER DEFAULT 0,
           moodType TEXT DEFAULT '',
           firstAction TEXT DEFAULT '',
@@ -3362,6 +3459,18 @@ export default function Home() {
         }
         if (!columnNames.includes("usePhoneAlarm")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN usePhoneAlarm INTEGER DEFAULT 0;");
+        }
+        if (!columnNames.includes("strongAlarmId")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN strongAlarmId TEXT DEFAULT '';");
+        }
+        if (!columnNames.includes("strongAlarmScheduledAt")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN strongAlarmScheduledAt TEXT;");
+        }
+        if (!columnNames.includes("lastStrongAlarmResult")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN lastStrongAlarmResult TEXT DEFAULT '';");
+        }
+        if (!columnNames.includes("strongAlarmSnoozeMinutes")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN strongAlarmSnoozeMinutes INTEGER DEFAULT 5;");
         }
         if (!columnNames.includes("isPinned")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN isPinned INTEGER DEFAULT 0;");
@@ -3523,6 +3632,12 @@ export default function Home() {
           subtasks: JSON.parse(t.subtasks || "[]"),
           notificationId: JSON.parse(t.notificationId || "[]"),
           usePhoneAlarm: Number(t.usePhoneAlarm || 0) === 1,
+          useStrongAlarm: Number(t.usePhoneAlarm || 0) === 1,
+          strongAlarmId:
+            typeof t.strongAlarmId === "string" ? t.strongAlarmId : "",
+          strongAlarmScheduledAt: toIsoStringOrEmpty(t.strongAlarmScheduledAt),
+          lastStrongAlarmResult: parseLastStrongAlarmResult(t.lastStrongAlarmResult),
+          strongAlarmSnoozeMinutes: Number(t.strongAlarmSnoozeMinutes || 5),
           isPinned: t.isPinned === 1,
         }));
         setTasks(loadedTasks);
@@ -3935,6 +4050,106 @@ export default function Home() {
     });
     return true;
   }, []);
+
+  const handleStrongAlarmDeepLink = useCallback(
+    (url) => {
+      if (!url || typeof url !== "string") return false;
+
+      let parsed;
+      try {
+        parsed = ExpoLinking.parse(url);
+      } catch {
+        return false;
+      }
+
+      const query = parsed?.queryParams || {};
+      const host = typeof parsed?.hostname === "string" ? parsed.hostname.toLowerCase() : "";
+      const path = typeof parsed?.path === "string" ? parsed.path.toLowerCase() : "";
+      const looksLikeStrongAlarmLink =
+        host === "task" ||
+        path.startsWith("task") ||
+        query?.alarmAction !== undefined ||
+        query?.alarmId !== undefined;
+      if (!looksLikeStrongAlarmLink) return false;
+
+      const taskIdRaw = query?.taskId ?? query?.taskID ?? query?.id;
+      const taskId = Number(taskIdRaw);
+      if (!Number.isFinite(taskId)) return false;
+
+      const alarmActionRaw = String(
+        query?.alarmAction || query?.action || STRONG_ALARM_ACTIONS.OPEN_TASK
+      ).toLowerCase();
+      const alarmId =
+        typeof query?.alarmId === "string" ? query.alarmId.trim() : "";
+      const taskTitle =
+        typeof query?.taskTitle === "string" ? query.taskTitle : "";
+      const sectionId =
+        typeof query?.sectionId === "string"
+          ? query.sectionId
+          : typeof query?.section === "string"
+            ? query.section
+            : "";
+
+      const payload = extractTaskNavigationPayload({
+        taskId,
+        taskTitle,
+        sectionId,
+        section: sectionId,
+      });
+      if (!payload?.taskId) return false;
+
+      const reminderAction =
+        alarmActionRaw === STRONG_ALARM_ACTIONS.START_2_MIN
+          ? REMINDER_ACTIONS.START_NOW
+          : REMINDER_ACTIONS.OPENED;
+      const dedupeKey = `strong-alarm:${alarmId || "none"}:${alarmActionRaw}:${payload.taskId}`;
+      if (hasHandledNotificationResponse(dedupeKey)) return true;
+      markNotificationResponseHandled(dedupeKey);
+
+      trackReminderAction(payload.taskId, reminderAction, {
+        source: "strongAlarm",
+        notificationId: alarmId || undefined,
+      });
+
+      queueNotificationTaskNavigation(payload, {
+        actionIdentifier:
+          reminderAction === REMINDER_ACTIONS.START_NOW
+            ? TASK_REMINDER_ACTION_IDS.START_NOW
+            : Notifications.DEFAULT_ACTION_IDENTIFIER,
+        reminderAction,
+        taskId: payload.taskId,
+        taskTitle: payload.taskTitle || taskTitle || "",
+        notificationId: alarmId,
+        sectionId: payload.sectionId || sectionId || "",
+      });
+
+      return true;
+    },
+    [
+      hasHandledNotificationResponse,
+      markNotificationResponseHandled,
+      queueNotificationTaskNavigation,
+      trackReminderAction,
+    ]
+  );
+
+  useEffect(() => {
+    const handleUrl = ({ url }) => {
+      if (!url) return;
+      handleStrongAlarmDeepLink(url);
+    };
+
+    const subscription = Linking.addEventListener("url", handleUrl);
+    Linking.getInitialURL()
+      .then((url) => {
+        if (url) {
+          handleStrongAlarmDeepLink(url);
+        }
+      })
+      .catch(() => null);
+
+    return () => subscription.remove();
+  }, [handleStrongAlarmDeepLink]);
 
   useEffect(() => {
     const checkSystemSchedule = async () => {
@@ -4723,6 +4938,9 @@ export default function Home() {
   const [repeatYearlyDate, setRepeatYearlyDate] = useState("");
   const [usePhoneAlarm, setUsePhoneAlarm] = useState(false);
   const [isPhoneAlarmAvailable, setIsPhoneAlarmAvailable] = useState(false);
+  const [canScheduleExactAlarmNow, setCanScheduleExactAlarmNow] = useState(
+    Platform.OS !== "android"
+  );
   const [phoneAlarmCapabilityChecked, setPhoneAlarmCapabilityChecked] = useState(
     Platform.OS !== "android"
   );
@@ -4730,38 +4948,45 @@ export default function Home() {
     useState(false);
   const [pendingEditPayload, setPendingEditPayload] = useState(null);
 
-  useEffect(() => {
-    let isMounted = true;
-
+  const refreshStrongAlarmCapability = useCallback(async () => {
     if (Platform.OS !== "android") {
       setIsPhoneAlarmAvailable(false);
+      setCanScheduleExactAlarmNow(true);
       setPhoneAlarmCapabilityChecked(true);
-      return () => {
-        isMounted = false;
-      };
+      return;
     }
 
-    const checkPhoneAlarmCapability = async () => {
-      try {
-        const available = await canUseClockAlarm();
-        if (!isMounted) return;
-        setIsPhoneAlarmAvailable(available);
-      } catch {
-        if (!isMounted) return;
-        setIsPhoneAlarmAvailable(false);
-      } finally {
-        if (isMounted) {
-          setPhoneAlarmCapabilityChecked(true);
-        }
+    try {
+      const available = await canUseStrongAlarm();
+      setIsPhoneAlarmAvailable(available);
+
+      if (!available) {
+        setCanScheduleExactAlarmNow(false);
+      } else {
+        const canExact = await canScheduleExactAlarmsNative();
+        setCanScheduleExactAlarmNow(Boolean(canExact));
       }
-    };
-
-    checkPhoneAlarmCapability();
-
-    return () => {
-      isMounted = false;
-    };
+    } catch {
+      setIsPhoneAlarmAvailable(false);
+      setCanScheduleExactAlarmNow(false);
+    } finally {
+      setPhoneAlarmCapabilityChecked(true);
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshStrongAlarmCapability();
+  }, [refreshStrongAlarmCapability]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        void refreshStrongAlarmCapability();
+      }
+    });
+    return () => subscription.remove();
+  }, [refreshStrongAlarmCapability]);
 
   const runLayoutAnimation = useCallback(() => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -4987,6 +5212,11 @@ export default function Home() {
           createdAt,
           isPinned: false,
           usePhoneAlarm: false,
+          useStrongAlarm: false,
+          strongAlarmId: "",
+          strongAlarmScheduledAt: "",
+          strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+          lastStrongAlarmResult: null,
           moodType: nextTask.moodType || "",
           firstAction: nextTask.firstAction || "",
           minimumVersion: nextTask.minimumVersion || "",
@@ -5024,6 +5254,17 @@ export default function Home() {
         const updated = !task.completed;
         const nextPinned = updated ? false : !!task.isPinned;
         const completedAt = updated ? formatSqliteDateTime(new Date()) : null;
+        const nextStrongAlarmId = updated ? "" : task.strongAlarmId || "";
+        const nextStrongAlarmScheduledAt = updated
+          ? ""
+          : toIsoStringOrEmpty(task.strongAlarmScheduledAt);
+        const nextStrongAlarmResult = updated
+          ? {
+              success: true,
+              message: "Task completed. Strong alarm cleared.",
+              at: new Date().toISOString(),
+            }
+          : parseLastStrongAlarmResult(task.lastStrongAlarmResult);
         const normalizedRepeat = normalizeTaskRepeatSettings(task);
         const repeatGroupId =
           normalizedRepeat.repeatGroupId ||
@@ -5034,6 +5275,17 @@ export default function Home() {
           recordDailyCompletion();
           showCelebration("Task completed! Keep going", "OK");
           cancelTaskReminders(task.notificationId);
+          if (task.strongAlarmId) {
+            void cancelStrongAlarmForTask(task.strongAlarmId);
+          }
+          persistStrongAlarmTaskState(task.id, {
+            strongAlarmId: "",
+            strongAlarmScheduledAt: "",
+            strongAlarmSnoozeMinutes:
+              Number(task.strongAlarmSnoozeMinutes) ||
+              STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+            lastStrongAlarmResult: nextStrongAlarmResult,
+          });
           void sendTaskCompletionNotification({ taskTitle: task.title });
           void speakEncouragement({
             muted: isVoiceMuted,
@@ -5066,8 +5318,25 @@ export default function Home() {
 
         try {
           db.runSync(
-            "UPDATE tasks SET completed = ?, isPinned = ?, completedAt = ?, repeatGroupId = ? WHERE id = ?",
-            [updated ? 1 : 0, nextPinned ? 1 : 0, completedAt, repeatGroupId, id]
+            `UPDATE tasks
+             SET completed = ?,
+                 isPinned = ?,
+                 completedAt = ?,
+                 repeatGroupId = ?,
+                 strongAlarmId = ?,
+                 strongAlarmScheduledAt = ?,
+                 lastStrongAlarmResult = ?
+             WHERE id = ?`,
+            [
+              updated ? 1 : 0,
+              nextPinned ? 1 : 0,
+              completedAt,
+              repeatGroupId,
+              nextStrongAlarmId,
+              nextStrongAlarmScheduledAt || null,
+              toStrongAlarmResultString(nextStrongAlarmResult),
+              id,
+            ]
           );
         } catch (error) {
           console.log("Update error:", error);
@@ -5097,6 +5366,9 @@ export default function Home() {
           repeatYearlyDate: normalizedRepeat.repeatYearlyDate,
           repeatGroupId,
           isPinned: nextPinned,
+          strongAlarmId: nextStrongAlarmId,
+          strongAlarmScheduledAt: nextStrongAlarmScheduledAt,
+          lastStrongAlarmResult: nextStrongAlarmResult,
         };
       })
     );
@@ -5241,6 +5513,13 @@ export default function Home() {
         notificationId: recreatedNotificationIds,
         isPinned: false,
         usePhoneAlarm: Boolean(task.usePhoneAlarm),
+        useStrongAlarm: Boolean(task.usePhoneAlarm),
+        strongAlarmId: "",
+        strongAlarmScheduledAt: "",
+        strongAlarmSnoozeMinutes:
+          Number(task.strongAlarmSnoozeMinutes || 5) ||
+          STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+        lastStrongAlarmResult: null,
         moodType: "",
         firstAction: task.firstAction || "",
         minimumVersion: task.minimumVersion || "",
@@ -6109,7 +6388,7 @@ export default function Home() {
       setRepeatMonthlyType(repeatSettings.repeatMonthlyType);
       setRepeatCustomDate(repeatSettings.repeatCustomDate);
       setRepeatYearlyDate(repeatSettings.repeatYearlyDate);
-      setUsePhoneAlarm(Boolean(task.usePhoneAlarm));
+      setUsePhoneAlarm(Boolean(task.usePhoneAlarm ?? task.useStrongAlarm));
       setStartAssistEditHint(assistHint || "");
       setModalVisible(true);
     },
@@ -6526,18 +6805,83 @@ export default function Home() {
     }, 5500);
   }, []);
 
-  const showPhoneAlarmFallbackMessage = useCallback(() => {
+  const persistStrongAlarmTaskState = useCallback(
+    (taskId, patch = {}) => {
+      const numericTaskId = Number(taskId);
+      if (!Number.isFinite(numericTaskId)) return;
+
+      const strongAlarmId =
+        typeof patch.strongAlarmId === "string" ? patch.strongAlarmId : "";
+      const strongAlarmScheduledAt =
+        typeof patch.strongAlarmScheduledAt === "string"
+          ? patch.strongAlarmScheduledAt
+          : "";
+      const strongAlarmSnoozeMinutes = Number(
+        patch.strongAlarmSnoozeMinutes ?? STRONG_ALARM_DEFAULT_SNOOZE_MINUTES
+      );
+      const normalizedSnoozeMinutes = Number.isFinite(strongAlarmSnoozeMinutes)
+        ? Math.max(1, Math.min(60, Math.round(strongAlarmSnoozeMinutes)))
+        : STRONG_ALARM_DEFAULT_SNOOZE_MINUTES;
+      const lastStrongAlarmResult = patch.lastStrongAlarmResult || null;
+
+      try {
+        db.runSync(
+          `UPDATE tasks
+           SET strongAlarmId = ?,
+               strongAlarmScheduledAt = ?,
+               lastStrongAlarmResult = ?,
+               strongAlarmSnoozeMinutes = ?
+           WHERE id = ?`,
+          [
+            strongAlarmId,
+            strongAlarmScheduledAt || null,
+            toStrongAlarmResultString(lastStrongAlarmResult),
+            normalizedSnoozeMinutes,
+            numericTaskId,
+          ]
+        );
+      } catch (error) {
+        console.log("Strong alarm task-state update error:", error);
+      }
+
+      setTasks((prev) =>
+        prev.map((task) =>
+          task.id === numericTaskId
+            ? {
+                ...task,
+                strongAlarmId,
+                strongAlarmScheduledAt,
+                strongAlarmSnoozeMinutes: normalizedSnoozeMinutes,
+                lastStrongAlarmResult,
+                useStrongAlarm: Boolean(task.usePhoneAlarm),
+              }
+            : task
+        )
+      );
+    },
+    []
+  );
+
+  const showStrongAlarmFallbackMessage = useCallback(() => {
     Alert.alert(
-      "Phone alarm",
-      "Task reminder is still saved. Phone alarm could not be opened on this device.",
+      "Strong alarm",
+      "Task reminder is saved. Strong alarm could not be scheduled on this device.",
+      [{ text: "OK", style: "cancel" }]
+    );
+  }, []);
+
+  const showStrongAlarmPermissionMessage = useCallback(() => {
+    Alert.alert(
+      "Strong alarm",
+      "Task reminder is saved. Allow strong alarms in Android settings to ring exactly on time.",
       [
         {
-          text: "Open Clock app",
+          text: "Allow strong alarms",
           onPress: () => {
-            void openAlarmClockFallback();
+            void openExactAlarmSettings();
           },
         },
-        { text: "OK", style: "cancel" },
+        { text: "Not now", style: "cancel" },
       ]
     );
   }, []);
@@ -6557,44 +6901,170 @@ export default function Home() {
       if (Platform.OS !== "android") return;
       if (!Array.isArray(tasksToCheck) || tasksToCheck.length === 0) return;
 
-      const eligibleTasks = tasksToCheck.filter((task) => Boolean(task?.usePhoneAlarm));
+      const candidateTasks = tasksToCheck.filter(Boolean);
+      const disabledTasks = candidateTasks.filter((task) => !task?.usePhoneAlarm);
+      for (const task of disabledTasks) {
+        if (task?.strongAlarmId) {
+          await cancelStrongAlarmForTask(task.strongAlarmId);
+        }
+        persistStrongAlarmTaskState(task?.id, {
+          strongAlarmId: "",
+          strongAlarmScheduledAt: "",
+          strongAlarmSnoozeMinutes:
+            Number(task?.strongAlarmSnoozeMinutes) ||
+            STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+          lastStrongAlarmResult: {
+            success: true,
+            message: "Strong alarm disabled for this task.",
+            source,
+            at: new Date().toISOString(),
+          },
+        });
+      }
+
+      const eligibleTasks = candidateTasks.filter((task) =>
+        Boolean(task?.usePhoneAlarm)
+      );
       if (!eligibleTasks.length) return;
+
+      const available = await canUseStrongAlarm();
+      setIsPhoneAlarmAvailable(available);
+      setPhoneAlarmCapabilityChecked(true);
+
+      if (!available) {
+        for (const task of eligibleTasks) {
+          persistStrongAlarmTaskState(task?.id, {
+            strongAlarmId: "",
+            strongAlarmScheduledAt: "",
+            strongAlarmSnoozeMinutes:
+              Number(task?.strongAlarmSnoozeMinutes) ||
+              STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+            lastStrongAlarmResult: {
+              success: false,
+              errorCode: "NATIVE_MODULE_UNAVAILABLE",
+              message: "Strong alarm module is unavailable.",
+              source,
+              at: new Date().toISOString(),
+            },
+          });
+        }
+        showStrongAlarmFallbackMessage();
+        return;
+      }
+
+      const canExact = await canScheduleExactAlarmsNative();
+      setCanScheduleExactAlarmNow(Boolean(canExact));
+      if (!canExact) {
+        for (const task of eligibleTasks) {
+          persistStrongAlarmTaskState(task?.id, {
+            strongAlarmId: "",
+            strongAlarmScheduledAt: "",
+            strongAlarmSnoozeMinutes:
+              Number(task?.strongAlarmSnoozeMinutes) ||
+              STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+            lastStrongAlarmResult: {
+              success: false,
+              errorCode: "EXACT_ALARM_PERMISSION_REQUIRED",
+              message:
+                "Allow strong alarms in Android settings to ring exactly on time.",
+              source,
+              at: new Date().toISOString(),
+            },
+          });
+        }
+        showStrongAlarmPermissionMessage();
+        return;
+      }
 
       const targetTask =
         (primaryTaskId
           ? eligibleTasks.find((task) => Number(task?.id) === Number(primaryTaskId))
           : null) || eligibleTasks[0];
+      const tasksToSchedule =
+        scope !== "single" && eligibleTasks.length > 1 ? [targetTask] : [targetTask];
 
-      if (!targetTask?.scheduledTime) return;
+      for (const task of tasksToSchedule) {
+        const triggerAtMillis = toTaskTimestamp(task?.scheduledTime);
+        const resultTimestamp = new Date().toISOString();
+        const snoozeMinutes =
+          Number(task?.strongAlarmSnoozeMinutes) ||
+          STRONG_ALARM_DEFAULT_SNOOZE_MINUTES;
 
-      const available = await canUseClockAlarm();
-      setIsPhoneAlarmAvailable(available);
-      setPhoneAlarmCapabilityChecked(true);
-
-      if (!available) {
-        showPhoneAlarmFallbackMessage();
-        return;
-      }
-
-      const result = await setClockAlarmForTask(targetTask, {
-        source,
-        skipUi: false,
-      });
-
-      if (result.success) {
-        showCelebration("Stronger reminder set gently.");
-        if (scope !== "single" && eligibleTasks.length > 1) {
-          Alert.alert(
-            "Reminder note",
-            "Android Clock alarms may need to be adjusted in the Clock app."
-          );
+        if (!Number.isFinite(triggerAtMillis) || triggerAtMillis <= Date.now()) {
+          persistStrongAlarmTaskState(task?.id, {
+            strongAlarmId: "",
+            strongAlarmScheduledAt: "",
+            strongAlarmSnoozeMinutes: snoozeMinutes,
+            lastStrongAlarmResult: {
+              success: false,
+              errorCode: "INVALID_TIME",
+              message: "Add a future task time first to use a strong alarm.",
+              source,
+              at: resultTimestamp,
+            },
+          });
+          continue;
         }
-        return;
-      }
 
-      showPhoneAlarmFallbackMessage();
+        const nextAlarmId = buildStrongAlarmId(task?.id, triggerAtMillis);
+        if (task?.strongAlarmId && task.strongAlarmId !== nextAlarmId) {
+          await cancelStrongAlarmForTask(task.strongAlarmId);
+        }
+
+        const result = await scheduleStrongAlarmForTask(task, {
+          alarmId: nextAlarmId,
+          reminderDate: new Date(triggerAtMillis),
+          snoozeMinutes,
+          message: "Start with one small step.",
+          sound: true,
+          vibrate: true,
+          fullScreen: false,
+        });
+
+        if (result.success) {
+          persistStrongAlarmTaskState(task?.id, {
+            strongAlarmId: result.alarmId || nextAlarmId,
+            strongAlarmScheduledAt: new Date(triggerAtMillis).toISOString(),
+            strongAlarmSnoozeMinutes: snoozeMinutes,
+            lastStrongAlarmResult: {
+              success: true,
+              message: "Strong alarm set gently.",
+              source,
+              at: resultTimestamp,
+            },
+          });
+          showCelebration("Strong alarm set gently.");
+          continue;
+        }
+
+        persistStrongAlarmTaskState(task?.id, {
+          strongAlarmId: "",
+          strongAlarmScheduledAt: "",
+          strongAlarmSnoozeMinutes: snoozeMinutes,
+          lastStrongAlarmResult: {
+            success: false,
+            errorCode: result.errorCode || "SCHEDULE_FAILED",
+            message:
+              result.message ||
+              "Task reminder is saved. Strong alarm could not be scheduled on this device.",
+            source,
+            at: resultTimestamp,
+          },
+        });
+
+        if (result.errorCode === "EXACT_ALARM_PERMISSION_REQUIRED") {
+          showStrongAlarmPermissionMessage();
+        } else {
+          showStrongAlarmFallbackMessage();
+        }
+      }
     },
-    [showCelebration, showPhoneAlarmFallbackMessage]
+    [
+      persistStrongAlarmTaskState,
+      showCelebration,
+      showStrongAlarmFallbackMessage,
+      showStrongAlarmPermissionMessage,
+    ]
   );
 
   const toggleWeeklyRepeatDay = useCallback((weekday) => {
@@ -6728,6 +7198,9 @@ export default function Home() {
 
       for (const targetTask of targets) {
         await cancelTaskReminders(targetTask.notificationId);
+        if (targetTask?.strongAlarmId) {
+          await cancelStrongAlarmForTask(targetTask.strongAlarmId);
+        }
 
         const scheduleForTarget =
           targetTask.id === editingTask.id
@@ -6814,6 +7287,17 @@ export default function Home() {
           notificationId: reminderIds,
           isPinned: !!targetTask.isPinned,
           usePhoneAlarm: Boolean(draftUsePhoneAlarm),
+          useStrongAlarm: Boolean(draftUsePhoneAlarm),
+          strongAlarmId:
+            typeof targetTask.strongAlarmId === "string"
+              ? targetTask.strongAlarmId
+              : "",
+          strongAlarmScheduledAt: toIsoStringOrEmpty(targetTask.strongAlarmScheduledAt),
+          strongAlarmSnoozeMinutes:
+            Number(targetTask.strongAlarmSnoozeMinutes || 5) ||
+            STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+          lastStrongAlarmResult:
+            parseLastStrongAlarmResult(targetTask.lastStrongAlarmResult) || null,
           repeatType: draftRepeatType,
           repeatDays: draftRepeatDays,
           repeatMonthlyType: draftRepeatMonthlyType,
@@ -6949,6 +7433,11 @@ export default function Home() {
       notificationId: reminderIds,
       isPinned: false,
       usePhoneAlarm: Boolean(draftUsePhoneAlarm),
+      useStrongAlarm: Boolean(draftUsePhoneAlarm),
+      strongAlarmId: "",
+      strongAlarmScheduledAt: "",
+      strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+      lastStrongAlarmResult: null,
       moodType: "",
       firstAction: draftFirstAction,
       minimumVersion: draftMinimumVersion,
@@ -7086,6 +7575,9 @@ export default function Home() {
 
     for (const task of targets) {
       await cancelTaskReminders(task.notificationId);
+      if (task?.strongAlarmId) {
+        await cancelStrongAlarmForTask(task.strongAlarmId);
+      }
     }
 
     const idsToDelete = [...new Set(targets.map((task) => task.id))];
@@ -7209,6 +7701,15 @@ export default function Home() {
     );
 
     setTasks((prev) => [...prev, lastDeletedTask]);
+    persistStrongAlarmTaskState(lastDeletedTask.id, {
+      strongAlarmId: lastDeletedTask.strongAlarmId || "",
+      strongAlarmScheduledAt: lastDeletedTask.strongAlarmScheduledAt || "",
+      strongAlarmSnoozeMinutes:
+        Number(lastDeletedTask.strongAlarmSnoozeMinutes) ||
+        STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+      lastStrongAlarmResult:
+        parseLastStrongAlarmResult(lastDeletedTask.lastStrongAlarmResult) || null,
+    });
     setLastDeletedTask(null);
   };
 
@@ -12268,25 +12769,47 @@ export default function Home() {
                 <View className="flex-row items-center justify-between">
                   <View className="flex-1 pr-3">
                     <Text className="text-[#E8F4F4] text-sm font-semibold">
-                      Use phone alarm for this task
+                      Strong alarm for this task
                     </Text>
                     <Text className="text-[#9FB5B5] text-xs mt-1">
                       For important tasks that need a stronger nudge.
                     </Text>
                     {!scheduledDateTime ? (
                       <Text className="text-[#FFD166] text-[11px] mt-1 font-semibold">
-                        Add a task time first to use phone alarm.
+                        Add a task time first to use a strong alarm.
                       </Text>
                     ) : null}
                     {!phoneAlarmCapabilityChecked ? (
                       <Text className="text-[#9FB5B5] text-[11px] mt-1">
-                        Checking phone alarm availability...
+                        Checking strong alarm availability...
                       </Text>
                     ) : null}
                     {phoneAlarmCapabilityChecked && !isPhoneAlarmAvailable ? (
                       <Text className="text-[#FFD166] text-[11px] mt-1 font-semibold">
-                        Phone alarm could not be opened on this device.
+                        Strong alarm is unavailable on this device.
                       </Text>
+                    ) : null}
+                    {phoneAlarmCapabilityChecked &&
+                    isPhoneAlarmAvailable &&
+                    !canScheduleExactAlarmNow &&
+                    scheduledDateTime ? (
+                      <View className="mt-2">
+                        <Text className="text-[#FFD166] text-[11px] font-semibold">
+                          Allow strong alarms in Android settings to ring exactly on
+                          time.
+                        </Text>
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={() => {
+                            void openExactAlarmSettings();
+                          }}
+                          className="self-start mt-2 px-3 py-2 rounded-xl border border-[#66b9b9]/45 bg-[#123131]/70"
+                        >
+                          <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                            Allow strong alarms
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
                     ) : null}
                   </View>
                   <Switch

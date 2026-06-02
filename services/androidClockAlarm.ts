@@ -2,72 +2,118 @@ import { Platform } from "react-native";
 import { requireNativeModule } from "expo-modules-core";
 import { parseStoredDateTime } from "../utils/formatDateTime";
 
-export type ClockAlarmResult = {
+export type AlarmErrorCode =
+  | "UNSUPPORTED_PLATFORM"
+  | "NATIVE_MODULE_UNAVAILABLE"
+  | "INVALID_TIME"
+  | "EXACT_ALARM_PERMISSION_REQUIRED"
+  | "SCHEDULE_FAILED"
+  | "CANCEL_FAILED"
+  | "ALARM_NOT_FOUND"
+  | "UNKNOWN_ERROR";
+
+export type AlarmResult = {
   success: boolean;
+  scheduled?: boolean;
+  cancelled?: boolean;
+  openedSettings?: boolean;
   launched?: boolean;
-  errorCode?: string;
+  alarmId?: string;
+  errorCode?: AlarmErrorCode | string;
   message?: string;
 };
 
-export type ClockAlarmTaskOptions = {
-  reminderDate?: Date | string;
-  skipUi?: boolean;
-  source?: "taskReminder" | "editTask" | "reschedule" | "manual";
+export type ScheduleTaskAlarmOptions = {
+  alarmId: string;
+  taskId: string;
+  title: string;
+  message?: string;
+  triggerAtMillis: number;
+  snoozeMinutes?: number;
+  sound?: boolean;
+  vibrate?: boolean;
+  fullScreen?: boolean;
 };
 
-type ClockAlarmNativeModule = {
-  canUseClockAlarm(): boolean | Promise<boolean>;
-  setClockAlarm(options: {
+export type StrongAlarmTaskOptions = {
+  alarmId?: string;
+  reminderDate?: Date | string;
+  snoozeMinutes?: number;
+  message?: string;
+  sound?: boolean;
+  vibrate?: boolean;
+  fullScreen?: boolean;
+};
+
+type StrongAlarmNativeModule = {
+  canUseStrongAlarm(): boolean | Promise<boolean>;
+  canScheduleExactAlarms(): boolean | Promise<boolean>;
+  openExactAlarmSettings(): Promise<AlarmResult>;
+  scheduleTaskAlarm(options: ScheduleTaskAlarmOptions): Promise<AlarmResult>;
+  cancelTaskAlarm(alarmId: string): Promise<AlarmResult>;
+  snoozeTaskAlarm(alarmId: string, minutes: number): Promise<AlarmResult>;
+  stopActiveAlarm(alarmId: string): Promise<AlarmResult>;
+
+  // Legacy external Clock APIs kept for compatibility.
+  canUseClockAlarm?: () => boolean | Promise<boolean>;
+  setClockAlarm?: (options: {
     hour: number;
     minutes: number;
     message: string;
     skipUi?: boolean;
-  }): Promise<ClockAlarmResult>;
-  openAlarmClockFallback(): Promise<ClockAlarmResult>;
+  }) => Promise<AlarmResult>;
+  openAlarmClockFallback?: () => Promise<AlarmResult>;
 };
 
 type TaskLike = {
+  id?: number | string | null;
   title?: string | null;
   scheduledTime?: string | null;
   reminderDate?: string | Date | null;
+  strongAlarmId?: string | null;
+  strongAlarmSnoozeMinutes?: number | null;
 };
 
-let cachedNativeModule: ClockAlarmNativeModule | null | undefined;
+let cachedNativeModule: StrongAlarmNativeModule | null | undefined;
 
-const UNSUPPORTED_RESULT: ClockAlarmResult = {
+const UNSUPPORTED_RESULT: AlarmResult = {
   success: false,
   errorCode: "UNSUPPORTED_PLATFORM",
-  message: "Phone alarms are only available on Android.",
+  message: "Strong alarms are only available on Android.",
 };
 
-const MODULE_UNAVAILABLE_RESULT: ClockAlarmResult = {
+const MODULE_UNAVAILABLE_RESULT: AlarmResult = {
   success: false,
-  errorCode: "CLOCK_APP_UNAVAILABLE",
-  message: "Phone alarm could not be opened on this device.",
+  errorCode: "NATIVE_MODULE_UNAVAILABLE",
+  message: "Strong alarm module is unavailable in this build.",
 };
 
-const normalizeResult = (result: ClockAlarmResult | null | undefined): ClockAlarmResult => {
+const normalizeResult = (result: AlarmResult | null | undefined): AlarmResult => {
   if (!result || typeof result.success !== "boolean") {
     return {
       success: false,
       errorCode: "UNKNOWN_ERROR",
-      message: "Unable to open phone alarm.",
+      message: "Strong alarm request failed.",
     };
   }
   return {
     success: result.success,
+    scheduled: result.scheduled,
+    cancelled: result.cancelled,
+    openedSettings: result.openedSettings,
     launched: result.launched,
+    alarmId: result.alarmId,
     errorCode: result.errorCode,
     message: result.message,
   };
 };
 
-const getNativeModule = (): ClockAlarmNativeModule | null => {
+const getNativeModule = (): StrongAlarmNativeModule | null => {
   if (Platform.OS !== "android") return null;
   if (cachedNativeModule !== undefined) return cachedNativeModule;
   try {
-    cachedNativeModule = requireNativeModule<ClockAlarmNativeModule>("AndroidClockAlarm");
-  } catch (_error) {
+    cachedNativeModule = requireNativeModule<StrongAlarmNativeModule>("AndroidClockAlarm");
+  } catch {
     cachedNativeModule = null;
   }
   return cachedNativeModule;
@@ -75,79 +121,253 @@ const getNativeModule = (): ClockAlarmNativeModule | null => {
 
 const resolveReminderDate = (
   task: TaskLike,
-  options: ClockAlarmTaskOptions = {}
+  options: StrongAlarmTaskOptions = {}
 ): Date | null => {
-  const value =
-    options.reminderDate ?? task?.scheduledTime ?? task?.reminderDate ?? null;
+  const value = options.reminderDate ?? task?.scheduledTime ?? task?.reminderDate ?? null;
   return parseStoredDateTime(value);
 };
 
-const buildAlarmMessage = (task: TaskLike): string => {
-  const safeTitle = typeof task?.title === "string" ? task.title.trim() : "";
-  return safeTitle ? `Task: ${safeTitle}` : "Task reminder";
+const resolveTaskId = (task: TaskLike): string | null => {
+  const rawId = task?.id;
+  if (typeof rawId === "number" && Number.isFinite(rawId)) {
+    return String(rawId);
+  }
+  if (typeof rawId === "string" && rawId.trim()) {
+    return rawId.trim();
+  }
+  return null;
 };
 
-export const canUseClockAlarm = async (): Promise<boolean> => {
+const buildAlarmTitle = (task: TaskLike): string => {
+  const title = typeof task?.title === "string" ? task.title.trim() : "";
+  return title || "Task reminder";
+};
+
+const buildAlarmId = (task: TaskLike, triggerAtMillis: number, explicitAlarmId?: string): string => {
+  const requested = typeof explicitAlarmId === "string" ? explicitAlarmId.trim() : "";
+  if (requested) return requested.slice(0, 96);
+
+  const existing = typeof task?.strongAlarmId === "string" ? task.strongAlarmId.trim() : "";
+  if (existing) return existing.slice(0, 96);
+
+  const taskId = resolveTaskId(task) || "task";
+  return `task-${taskId}-${triggerAtMillis}`;
+};
+
+const clampSnoozeMinutes = (value: number | null | undefined): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 5;
+  return Math.max(1, Math.min(60, Math.round(parsed)));
+};
+
+export const canUseStrongAlarm = async (): Promise<boolean> => {
   const nativeModule = getNativeModule();
   if (!nativeModule) return false;
 
   try {
-    const result = await Promise.resolve(nativeModule.canUseClockAlarm());
+    const result = await Promise.resolve(nativeModule.canUseStrongAlarm());
     return Boolean(result);
-  } catch (_error) {
+  } catch {
     return false;
   }
 };
 
-export const setClockAlarmForTask = async (
-  task: TaskLike,
-  options: ClockAlarmTaskOptions = {}
-): Promise<ClockAlarmResult> => {
-  if (Platform.OS !== "android") return UNSUPPORTED_RESULT;
+export const canScheduleExactAlarms = async (): Promise<boolean> => {
+  const nativeModule = getNativeModule();
+  if (!nativeModule) return false;
 
+  try {
+    const result = await Promise.resolve(nativeModule.canScheduleExactAlarms());
+    return Boolean(result);
+  } catch {
+    return false;
+  }
+};
+
+export const openExactAlarmSettings = async (): Promise<AlarmResult> => {
+  if (Platform.OS !== "android") return UNSUPPORTED_RESULT;
   const nativeModule = getNativeModule();
   if (!nativeModule) return MODULE_UNAVAILABLE_RESULT;
+
+  try {
+    return normalizeResult(await nativeModule.openExactAlarmSettings());
+  } catch {
+    return {
+      success: false,
+      errorCode: "UNKNOWN_ERROR",
+      message: "Unable to open Android alarm settings.",
+    };
+  }
+};
+
+export const scheduleStrongAlarmForTask = async (
+  task: TaskLike,
+  options: StrongAlarmTaskOptions = {}
+): Promise<AlarmResult> => {
+  if (Platform.OS !== "android") return UNSUPPORTED_RESULT;
+  const nativeModule = getNativeModule();
+  if (!nativeModule) return MODULE_UNAVAILABLE_RESULT;
+
+  const taskId = resolveTaskId(task);
+  if (!taskId) {
+    return {
+      success: false,
+      errorCode: "SCHEDULE_FAILED",
+      message: "Task ID is required for strong alarms.",
+    };
+  }
 
   const reminderDate = resolveReminderDate(task, options);
   if (!reminderDate) {
     return {
       success: false,
       errorCode: "INVALID_TIME",
-      message: "Add a task time first to use phone alarm.",
+      message: "Add a task time first to use a strong alarm.",
     };
   }
 
-  try {
-    const result = await nativeModule.setClockAlarm({
-      hour: reminderDate.getHours(),
-      minutes: reminderDate.getMinutes(),
-      message: buildAlarmMessage(task),
-      skipUi: options.skipUi ?? false,
-    });
-    return normalizeResult(result);
-  } catch (_error) {
+  const triggerAtMillis = reminderDate.getTime();
+  if (!Number.isFinite(triggerAtMillis) || triggerAtMillis <= Date.now()) {
     return {
       success: false,
-      errorCode: "INTENT_FAILED",
-      message: "Phone alarm could not be opened on this device.",
+      errorCode: "INVALID_TIME",
+      message: "Strong alarms need a future reminder time.",
+    };
+  }
+
+  const title = buildAlarmTitle(task);
+  const alarmId = buildAlarmId(task, triggerAtMillis, options.alarmId);
+
+  const payload: ScheduleTaskAlarmOptions = {
+    alarmId,
+    taskId,
+    title,
+    message: options.message || "Start with one small step.",
+    triggerAtMillis,
+    snoozeMinutes: clampSnoozeMinutes(
+      options.snoozeMinutes ?? task?.strongAlarmSnoozeMinutes ?? 5
+    ),
+    sound: options.sound ?? true,
+    vibrate: options.vibrate ?? true,
+    fullScreen: options.fullScreen ?? false,
+  };
+
+  try {
+    return normalizeResult(await nativeModule.scheduleTaskAlarm(payload));
+  } catch {
+    return {
+      success: false,
+      alarmId,
+      errorCode: "SCHEDULE_FAILED",
+      message: "Strong alarm could not be scheduled on this device.",
     };
   }
 };
 
-export const openAlarmClockFallback = async (): Promise<ClockAlarmResult> => {
+export const cancelStrongAlarmForTask = async (
+  taskOrAlarmId: string | TaskLike | null | undefined
+): Promise<AlarmResult> => {
   if (Platform.OS !== "android") return UNSUPPORTED_RESULT;
-
   const nativeModule = getNativeModule();
   if (!nativeModule) return MODULE_UNAVAILABLE_RESULT;
 
-  try {
-    const result = await nativeModule.openAlarmClockFallback();
-    return normalizeResult(result);
-  } catch (_error) {
+  const alarmId =
+    typeof taskOrAlarmId === "string"
+      ? taskOrAlarmId.trim()
+      : typeof taskOrAlarmId?.strongAlarmId === "string"
+        ? taskOrAlarmId.strongAlarmId.trim()
+        : "";
+
+  if (!alarmId) {
     return {
       success: false,
-      errorCode: "INTENT_FAILED",
-      message: "Phone alarm could not be opened on this device.",
+      errorCode: "ALARM_NOT_FOUND",
+      message: "No strong alarm is linked to this task.",
     };
   }
+
+  try {
+    return normalizeResult(await nativeModule.cancelTaskAlarm(alarmId));
+  } catch {
+    return {
+      success: false,
+      alarmId,
+      errorCode: "CANCEL_FAILED",
+      message: "Strong alarm could not be cancelled.",
+    };
+  }
+};
+
+export const snoozeStrongAlarm = async (
+  alarmId: string,
+  minutes = 5
+): Promise<AlarmResult> => {
+  if (Platform.OS !== "android") return UNSUPPORTED_RESULT;
+  const nativeModule = getNativeModule();
+  if (!nativeModule) return MODULE_UNAVAILABLE_RESULT;
+
+  const normalizedAlarmId = typeof alarmId === "string" ? alarmId.trim() : "";
+  if (!normalizedAlarmId) {
+    return {
+      success: false,
+      errorCode: "ALARM_NOT_FOUND",
+      message: "No strong alarm is linked to this task.",
+    };
+  }
+
+  try {
+    return normalizeResult(
+      await nativeModule.snoozeTaskAlarm(
+        normalizedAlarmId,
+        clampSnoozeMinutes(minutes)
+      )
+    );
+  } catch {
+    return {
+      success: false,
+      alarmId: normalizedAlarmId,
+      errorCode: "SCHEDULE_FAILED",
+      message: "Strong alarm could not be snoozed.",
+    };
+  }
+};
+
+export const stopStrongAlarm = async (alarmId: string): Promise<AlarmResult> => {
+  if (Platform.OS !== "android") return UNSUPPORTED_RESULT;
+  const nativeModule = getNativeModule();
+  if (!nativeModule) return MODULE_UNAVAILABLE_RESULT;
+
+  const normalizedAlarmId = typeof alarmId === "string" ? alarmId.trim() : "";
+  if (!normalizedAlarmId) {
+    return {
+      success: false,
+      errorCode: "ALARM_NOT_FOUND",
+      message: "No strong alarm is linked to this task.",
+    };
+  }
+
+  try {
+    return normalizeResult(await nativeModule.stopActiveAlarm(normalizedAlarmId));
+  } catch {
+    return {
+      success: false,
+      alarmId: normalizedAlarmId,
+      errorCode: "UNKNOWN_ERROR",
+      message: "Strong alarm could not be stopped.",
+    };
+  }
+};
+
+// Legacy helpers kept to avoid breaking existing imports.
+export const canUseClockAlarm = canUseStrongAlarm;
+
+export const setClockAlarmForTask = async (
+  task: TaskLike,
+  options: StrongAlarmTaskOptions = {}
+): Promise<AlarmResult> => {
+  return scheduleStrongAlarmForTask(task, options);
+};
+
+export const openAlarmClockFallback = async (): Promise<AlarmResult> => {
+  return openExactAlarmSettings();
 };
