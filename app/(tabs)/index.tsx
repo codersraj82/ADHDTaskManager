@@ -189,7 +189,6 @@ const MENU_ITEMS = [
   { key: "profile", label: "Profile Details", icon: "👤" },
   { key: "special", label: "Special Tasks", icon: "⭐" },
   { key: "tasks", label: "Tasks", icon: "🗓️" },
-  { key: "calendar", label: "Calendar View", icon: "📅" },
   { key: "mood-tracker", label: "Mood Tracker", icon: "🧠" },
   { key: "settings", label: "Settings", icon: "⚙️" },
   { key: "about", label: "About", icon: "ℹ️" },
@@ -8111,20 +8110,6 @@ export default function Home() {
     return best ? best[0] : "Building soon";
   };
 
-  const groupTasksByDate = () => {
-    return tasks.reduce((acc, task) => {
-      const date = parseStoredDateTime(task.scheduledTime);
-      const key =
-        date && !isNaN(date.getTime())
-          ? date.toLocaleDateString(undefined, {
-              month: "short",
-              day: "numeric",
-            })
-          : "Unscheduled";
-      acc[key] = [...(acc[key] || []), task];
-      return acc;
-    }, {});
-  };
   const tasksMenuTodayDate = useMemo(() => {
     const parsed = parseDayKeyToDate(todayDateKey);
     return parsed || toLocalDayStartDate(new Date());
@@ -9471,31 +9456,6 @@ export default function Home() {
     </Modal>
   );
 
-  const renderTaskMiniCard = (task, tone = "accent", allowRepeat = false) => (
-    <View key={task.id} className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-2xl p-3 mb-2">
-      <Text className="text-[#E8F4F4] font-black">{task.title}</Text>
-      <Text className="text-[#9FB5B5] text-xs mt-1">
-        {task.section} {task.scheduledTime ? `• ${formatDateTimeForDisplay(task.scheduledTime)}` : "• No schedule yet"}
-      </Text>
-      {tone === "success" && (
-        <Text className="text-[#7DFFB3] text-xs font-bold mt-2">
-          You completed this. That counts. ✨
-        </Text>
-      )}
-      {allowRepeat && (
-        <TouchableOpacity
-          onPress={() => recreateCompletedTask(task)}
-          className="self-start mt-2 flex-row items-center bg-[#66b9b9]/15 px-2.5 py-1.5 rounded-full border border-[#66b9b9]/30"
-        >
-          <Feather name="rotate-cw" size={12} color={COLORS.accent} />
-          <Text className="text-[#66b9b9] text-[10px] font-black ml-1.5 uppercase tracking-widest">
-            Repeat
-          </Text>
-        </TouchableOpacity>
-      )}
-    </View>
-  );
-
   const renderTasksMenuTaskRow = (task) => {
     if (!task) return null;
     const isCompletedView = Boolean(task.completed);
@@ -9731,8 +9691,6 @@ export default function Home() {
   );
 
   const renderPageContent = () => {
-    const groupedTasks = groupTasksByDate();
-
     if (activePage === "tasks") {
       const selectedTaskRepeatLabel = tasksMenuSelectedTask
         ? repeatLabelByTaskId[tasksMenuSelectedTask.id] || ""
@@ -10307,17 +10265,6 @@ export default function Home() {
           ))}
         </>
       );
-    }
-
-    if (activePage === "calendar") {
-      return Object.entries(groupedTasks).map(([date, dateTasks]) => (
-        <View key={date} className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
-          <Text className="text-[#66b9b9] font-black uppercase tracking-widest text-xs mb-3">
-            {date}
-          </Text>
-          {dateTasks.map((task) => renderTaskMiniCard(task, task.completed ? "success" : "accent"))}
-        </View>
-      ));
     }
 
     if (activePage === "mood-tracker") {
