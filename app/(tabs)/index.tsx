@@ -30,7 +30,6 @@ import { Feather } from "@expo/vector-icons";
 
 import { WebView } from "react-native-webview"; // For PDF viewing
 import * as Notifications from "expo-notifications";
-import * as ExpoLinking from "expo-linking";
 import DatePickerModal from "../../components/DatePickerModal";
 import {
   formatDateTimeForDisplay,
@@ -122,6 +121,11 @@ import {
   extractTaskNavigationPayload,
   findBestCurrentTask,
 } from "../../utils/taskNavigationHelpers";
+import {
+  isTaskDeepLinkUrl,
+  parseTaskDeepLink,
+  TASK_DEEP_LINK_FALLBACK_MESSAGE,
+} from "../../utils/deepLinkHelpers";
 import {
   getTaskAvoidanceSignal,
   getAvoidanceReasonText,
@@ -489,6 +493,11 @@ const isTaskDeletedOrArchived = (task) =>
   task?.archived === 1 ||
   task?.isArchived === true ||
   task?.isArchived === 1;
+
+const getTaskIdentityKey = (value) => {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+};
 
 const isTimestampWithinRange = (timestamp, start, end) =>
   timestamp !== null && timestamp >= start && timestamp <= end;
@@ -4051,63 +4060,59 @@ export default function Home() {
     return true;
   }, []);
 
+  const showTaskNavigationFallback = useCallback(() => {
+    Alert.alert("Task", TASK_DEEP_LINK_FALLBACK_MESSAGE, [
+      { text: "OK", style: "cancel" },
+    ]);
+  }, []);
+
   const handleStrongAlarmDeepLink = useCallback(
     (url) => {
       if (!url || typeof url !== "string") return false;
 
-      let parsed;
-      try {
-        parsed = ExpoLinking.parse(url);
-      } catch {
+      const parsedTaskLink = parseTaskDeepLink(url);
+      if (!parsedTaskLink) {
+        if (isTaskDeepLinkUrl(url)) {
+          showTaskNavigationFallback();
+          return true;
+        }
         return false;
       }
 
-      const query = parsed?.queryParams || {};
-      const host = typeof parsed?.hostname === "string" ? parsed.hostname.toLowerCase() : "";
-      const path = typeof parsed?.path === "string" ? parsed.path.toLowerCase() : "";
-      const looksLikeStrongAlarmLink =
-        host === "task" ||
-        path.startsWith("task") ||
-        query?.alarmAction !== undefined ||
-        query?.alarmId !== undefined;
-      if (!looksLikeStrongAlarmLink) return false;
-
-      const taskIdRaw = query?.taskId ?? query?.taskID ?? query?.id;
-      const taskId = Number(taskIdRaw);
-      if (!Number.isFinite(taskId)) return false;
-
       const alarmActionRaw = String(
-        query?.alarmAction || query?.action || STRONG_ALARM_ACTIONS.OPEN_TASK
+        parsedTaskLink.alarmAction || STRONG_ALARM_ACTIONS.OPEN_TASK
       ).toLowerCase();
-      const alarmId =
-        typeof query?.alarmId === "string" ? query.alarmId.trim() : "";
-      const taskTitle =
-        typeof query?.taskTitle === "string" ? query.taskTitle : "";
-      const sectionId =
-        typeof query?.sectionId === "string"
-          ? query.sectionId
-          : typeof query?.section === "string"
-            ? query.section
-            : "";
+      const alarmId = parsedTaskLink.alarmId || "";
+      const taskTitle = parsedTaskLink.taskTitle || "";
+      const sectionId = parsedTaskLink.sectionId || "";
 
       const payload = extractTaskNavigationPayload({
-        taskId,
+        taskId: parsedTaskLink.taskId,
         taskTitle,
         sectionId,
         section: sectionId,
-      });
+      }) || {
+        taskId: parsedTaskLink.taskId,
+        sectionId: sectionId || null,
+        taskTitle: taskTitle || null,
+      };
       if (!payload?.taskId) return false;
 
       const reminderAction =
         alarmActionRaw === STRONG_ALARM_ACTIONS.START_2_MIN
           ? REMINDER_ACTIONS.START_NOW
           : REMINDER_ACTIONS.OPENED;
-      const dedupeKey = `strong-alarm:${alarmId || "none"}:${alarmActionRaw}:${payload.taskId}`;
-      if (hasHandledNotificationResponse(dedupeKey)) return true;
-      markNotificationResponseHandled(dedupeKey);
+      if (alarmId) {
+        const dedupeKey = `strong-alarm:${alarmId}:${alarmActionRaw}:${payload.taskId}`;
+        if (hasHandledNotificationResponse(dedupeKey)) return true;
+        markNotificationResponseHandled(dedupeKey);
+      }
 
       trackReminderAction(payload.taskId, reminderAction, {
-        source: "strongAlarm",
+        source:
+          parsedTaskLink.source === "strong_alarm"
+            ? "strongAlarm"
+            : parsedTaskLink.source || "taskLink",
         notificationId: alarmId || undefined,
       });
 
@@ -4129,6 +4134,7 @@ export default function Home() {
       hasHandledNotificationResponse,
       markNotificationResponseHandled,
       queueNotificationTaskNavigation,
+      showTaskNavigationFallback,
       trackReminderAction,
     ]
   );
@@ -5867,9 +5873,12 @@ export default function Home() {
         onComplete = null,
         allowCompleted = false,
       } = options || {};
-      if (!taskId) return false;
+      const taskIdKey = getTaskIdentityKey(taskId);
+      if (!taskIdKey) return false;
 
-      const targetTask = tasks.find((task) => task.id === taskId);
+      const targetTask = tasks.find(
+        (task) => getTaskIdentityKey(task?.id) === taskIdKey
+      );
       if (!targetTask || (targetTask.completed && !allowCompleted)) return false;
 
       if (taskNavigationTimeoutRef.current) {
@@ -5983,11 +5992,11 @@ export default function Home() {
       } = {}
     ) => {
       const { allowCompleted = false } = options || {};
-      const numericTaskId = Number(taskId);
-      if (!Number.isFinite(numericTaskId)) return false;
+      const taskIdKey = getTaskIdentityKey(taskId);
+      if (!taskIdKey) return false;
 
       const targetTask =
-        tasks.find((task) => Number(task?.id) === numericTaskId) || null;
+        tasks.find((task) => getTaskIdentityKey(task?.id) === taskIdKey) || null;
       if (!targetTask || (targetTask.completed && !allowCompleted)) {
         return false;
       }
@@ -5998,12 +6007,12 @@ export default function Home() {
       ) {
         setActiveEnergyFilter(null);
         setTimeout(() => {
-          focusTaskById(numericTaskId, options);
+          focusTaskById(targetTask.id, options);
         }, 110);
         return true;
       }
 
-      return focusTaskById(numericTaskId, options);
+      return focusTaskById(targetTask.id, options);
     },
     [
       activeEnergyFilter,
@@ -6265,9 +6274,13 @@ export default function Home() {
   useEffect(() => {
     if (!pendingNotificationTaskTarget?.taskId) return;
     if (pendingNotificationTaskTarget.handled) return;
+    if (!tasksHydrated) return;
 
     const taskId = pendingNotificationTaskTarget.taskId;
-    const task = tasks.find((row) => row.id === taskId);
+    const taskIdKey = getTaskIdentityKey(taskId);
+    const task = tasks.find(
+      (row) => getTaskIdentityKey(row?.id) === taskIdKey
+    );
     const pendingAction =
       pendingNotificationTaskTarget.reminderAction ||
       notificationActionContextRef.current?.reminderAction ||
@@ -6281,6 +6294,7 @@ export default function Home() {
     if (!task || task.completed) {
       notificationActionContextRef.current = null;
       setPendingNotificationTaskTarget(null);
+      showTaskNavigationFallback();
       return;
     }
 
@@ -6338,13 +6352,16 @@ export default function Home() {
     if (!didNavigate) {
       notificationActionContextRef.current = null;
       setPendingNotificationTaskTarget(null);
+      showTaskNavigationFallback();
     }
   }, [
     openMoveGentlyForTask,
     pendingNotificationTaskTarget,
     scrollToTask,
+    showTaskNavigationFallback,
     showSnoozeAffirmation,
     tasks,
+    tasksHydrated,
   ]);
 
   const toggleDailyMoodSection = useCallback(() => {
