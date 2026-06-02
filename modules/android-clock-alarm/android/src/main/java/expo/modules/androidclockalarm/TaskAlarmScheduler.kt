@@ -47,6 +47,10 @@ internal object TaskAlarmScheduler {
       context = context,
       payload = payload,
       mutable = false
+    ) ?: return AlarmScheduleResult(
+      success = false,
+      errorCode = "SCHEDULE_FAILED",
+      message = "Strong alarm could not be scheduled."
     )
 
     return try {
