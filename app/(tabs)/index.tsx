@@ -18,6 +18,7 @@ import {
   UIManager,
   AppState,
   KeyboardAvoidingView,
+  Keyboard,
   Switch,
 } from "react-native";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -126,6 +127,7 @@ import {
   parseTaskDeepLink,
   TASK_DEEP_LINK_FALLBACK_MESSAGE,
 } from "../../utils/deepLinkHelpers";
+import { searchTasks } from "../../utils/taskSearchHelpers";
 import {
   getTaskAvoidanceSignal,
   getAvoidanceReasonText,
@@ -1033,6 +1035,7 @@ export default function Home() {
   const [isSubtaskReordering, setIsSubtaskReordering] = useState(false);
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
+  const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const [energyDropdownVisible, setEnergyDropdownVisible] = useState(false);
   const [selectedEnergyMatchType, setSelectedEnergyMatchType] = useState(null);
   const [energySuggestionSheetVisible, setEnergySuggestionSheetVisible] =
@@ -1757,6 +1760,18 @@ export default function Home() {
   const visibleSectionTasksMap = sectionTasksMap;
   const visiblePinnedTasks = pinnedTasks;
 
+  const trimmedTaskSearchQuery = taskSearchQuery.trim();
+  const isTaskSearchOpen = trimmedTaskSearchQuery.length > 0;
+  const taskSearchResults = useMemo(
+    () => searchTasks(tasks, taskSearchQuery, { limit: 20 }),
+    [taskSearchQuery, tasks]
+  );
+
+  const closeTaskSearchSurfaces = useCallback(() => {
+    setTaskSearchQuery("");
+    Keyboard.dismiss();
+  }, []);
+
   const selectedEnergyMatchOption = useMemo(
     () =>
       ENERGY_TASK_FILTERS.find(
@@ -1793,6 +1808,23 @@ export default function Home() {
     setEnergySuggestionSheetVisible(false);
     setSelectedEnergyMatchType(null);
   }, []);
+
+  const handleTaskSearchResultPress = useCallback(
+    (result) => {
+      const task = result?.task;
+      if (!task?.id) return;
+
+      closeTaskSearchSurfaces();
+      closeEnergyTaskMatchingSurfaces();
+      setTasksMenuPeriod("today");
+      setTasksMenuSelectedDateKey("");
+      setTasksMenuSelectedMonthKey("");
+      setTasksMenuActionTaskId(null);
+      setTasksMenuSelectedTaskId(task.id);
+      setActivePage("tasks");
+    },
+    [closeEnergyTaskMatchingSurfaces, closeTaskSearchSurfaces]
+  );
 
   const closeEnergySuggestionSheet = useCallback(() => {
     setEnergySuggestionSheetVisible(false);
@@ -3969,6 +4001,7 @@ export default function Home() {
 
   const queueNotificationTaskNavigation = useCallback((payload, actionMeta = {}) => {
     if (!payload?.taskId) return false;
+    closeTaskSearchSurfaces();
     closeEnergyTaskMatchingSurfaces();
     notificationActionContextRef.current = actionMeta;
     setPendingNotificationTaskTarget({
@@ -3978,7 +4011,7 @@ export default function Home() {
       reminderAction: actionMeta.reminderAction || null,
     });
     return true;
-  }, [closeEnergyTaskMatchingSurfaces]);
+  }, [closeEnergyTaskMatchingSurfaces, closeTaskSearchSurfaces]);
 
   const showTaskNavigationFallback = useCallback(() => {
     Alert.alert("Task", TASK_DEEP_LINK_FALLBACK_MESSAGE, [
@@ -6736,18 +6769,30 @@ export default function Home() {
 
   const handleCurrentTaskFabPress = useCallback(() => {
     if (!currentTaskQuickTaskId) return;
+    closeTaskSearchSurfaces();
     closeEnergyTaskMatchingSurfaces();
     scrollToTask(currentTaskQuickTaskId, {
       highlight: true,
     });
-  }, [closeEnergyTaskMatchingSurfaces, currentTaskQuickTaskId, scrollToTask]);
+  }, [
+    closeEnergyTaskMatchingSurfaces,
+    closeTaskSearchSurfaces,
+    currentTaskQuickTaskId,
+    scrollToTask,
+  ]);
 
   const handleSmartTaskPress = useCallback(() => {
     const targetTask = smartActionTask?.task;
     if (!targetTask) return;
+    closeTaskSearchSurfaces();
     closeEnergyTaskMatchingSurfaces();
     scrollToTask(targetTask.id);
-  }, [closeEnergyTaskMatchingSurfaces, smartActionTask?.task, scrollToTask]);
+  }, [
+    closeEnergyTaskMatchingSurfaces,
+    closeTaskSearchSurfaces,
+    smartActionTask?.task,
+    scrollToTask,
+  ]);
 
   const triggerShake = () => {
     Animated.sequence([
@@ -8480,6 +8525,16 @@ export default function Home() {
     });
   };
 
+  const handleTasksMenuMarkCompletedTaskPending = async (task) => {
+    if (!task?.id || !task.completed) return;
+    if (Number(tasksMenuActionTaskId) === Number(task.id)) return;
+
+    setTasksMenuActionTaskId(task.id);
+    await toggleTask(task.id);
+    setTasksMenuActionTaskId(null);
+    showCelebration("Marked pending. You can return to it gently.");
+  };
+
   // --- Inside export default function Home() ---
 
   // Helper to update subtasks in DB
@@ -9927,6 +9982,29 @@ export default function Home() {
 
                     <TouchableOpacity
                       activeOpacity={0.86}
+                      disabled={taskActionBusy}
+                      onPress={() =>
+                        handleTasksMenuMarkCompletedTaskPending(tasksMenuSelectedTask)
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel="Mark completed task as pending"
+                      className={`rounded-full px-3 py-2 mr-2 mb-2 border ${
+                        taskActionBusy
+                          ? "bg-[#123131]/50 border-[#337a7a]/20"
+                          : "bg-[#123131]/80 border-[#7DFFB3]/35"
+                      }`}
+                    >
+                      <Text
+                        className={`text-[10px] font-black uppercase tracking-widest ${
+                          taskActionBusy ? "text-[#9FB5B5]" : "text-[#7DFFB3]"
+                        }`}
+                      >
+                        Mark Pending
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      activeOpacity={0.86}
                       onPress={() => handleTasksMenuEditPendingTask(tasksMenuSelectedTask)}
                       accessibilityRole="button"
                       accessibilityLabel="Edit completed task"
@@ -10635,6 +10713,140 @@ export default function Home() {
       </Modal>
     );
   };
+
+  const renderTaskSearchResultRow = (result) => {
+    const task = result?.task;
+    if (!task) return null;
+
+    const isCompletedResult = result.status === "completed";
+    const statusLabel = isCompletedResult ? "Completed" : "Pending";
+    const dateValue = isCompletedResult
+      ? task.completedAt || task.updatedAt || task.createdAt || task.scheduledTime
+      : task.updatedAt || task.scheduledTime || task.dueDate || task.createdAt;
+    const dateLabel = formatDateTimeForDisplay(dateValue);
+    const metadataPills = [
+      task.isPinned ? "Pinned" : "",
+      repeatLabelByTaskId[task.id] ? "Recurring" : "",
+      result.reason || "",
+    ].filter(Boolean);
+
+    return (
+      <TouchableOpacity
+        key={`task-search-result-${task.id}`}
+        accessibilityRole="button"
+        accessibilityLabel={`Open task, ${task.title || "task"}, ${statusLabel}`}
+        activeOpacity={0.86}
+        onPress={() => handleTaskSearchResultPress(result)}
+        className="rounded-2xl border border-[#337a7a]/30 bg-[#123131]/60 px-3.5 py-3 mb-2.5"
+      >
+        <View className="flex-row items-start justify-between">
+          <Text
+            numberOfLines={2}
+            className="text-[#E8F4F4] text-sm font-black flex-1 pr-2"
+          >
+            {task.title || "Task"}
+          </Text>
+          <View
+            className={`rounded-full border px-2 py-0.5 ${
+              isCompletedResult
+                ? "bg-[#123131]/80 border-[#7DFFB3]/35"
+                : "bg-[#123131]/80 border-[#66b9b9]/35"
+            }`}
+          >
+            <Text
+              className={`text-[9px] font-black uppercase tracking-widest ${
+                isCompletedResult ? "text-[#7DFFB3]" : "text-[#66b9b9]"
+              }`}
+            >
+              {statusLabel}
+            </Text>
+          </View>
+        </View>
+
+        <Text numberOfLines={1} className="text-[#9FB5B5] text-[11px] mt-1">
+          {task.section || task.category || "Task"}
+          {dateLabel ? ` | ${dateLabel}` : ""}
+        </Text>
+
+        {metadataPills.length ? (
+          <View className="flex-row flex-wrap mt-2">
+            {metadataPills.slice(0, 3).map((pill) => (
+              <View
+                key={`task-search-result-${task.id}-${pill}`}
+                className="mr-1.5 mb-1 rounded-full border border-[#66b9b9]/22 bg-[#061414]/55 px-2 py-0.5"
+              >
+                <Text className="text-[#9FB5B5] text-[9px] font-bold">
+                  {pill}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderTaskSearchPanel = () => (
+    <View className="mx-4 mb-4">
+      <View className="rounded-2xl border border-[#337a7a]/35 bg-[#123131]/72 px-3.5 py-2.5 flex-row items-center">
+        <Feather name="search" size={16} color={COLORS.accent} />
+        <TextInput
+          value={taskSearchQuery}
+          onChangeText={setTaskSearchQuery}
+          placeholder="Search tasks…"
+          placeholderTextColor={COLORS.muted}
+          accessibilityLabel="Search tasks"
+          accessibilityHint="Search pending and completed tasks"
+          returnKeyType="search"
+          className="flex-1 text-[#E8F4F4] text-sm font-semibold ml-2 py-1"
+        />
+        {isTaskSearchOpen ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Clear task search"
+            activeOpacity={0.82}
+            onPress={closeTaskSearchSurfaces}
+            className="ml-2 rounded-full border border-[#337a7a]/35 bg-[#061414]/55 p-1.5"
+          >
+            <Feather name="x" size={14} color={COLORS.muted} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
+      {isTaskSearchOpen ? (
+        <View className="mt-2 rounded-2xl border border-[#337a7a]/30 bg-[#0B1F1F] p-3">
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+              Search results
+            </Text>
+            <Text className="text-[#66b9b9] text-[10px] font-bold">
+              Showing best matches
+            </Text>
+          </View>
+
+          {taskSearchResults.length ? (
+            <ScrollView
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              style={{ maxHeight: 330 }}
+            >
+              {taskSearchResults.map((result) => renderTaskSearchResultRow(result))}
+            </ScrollView>
+          ) : (
+            <View className="rounded-2xl border border-[#337a7a]/30 bg-[#123131]/50 px-4 py-4">
+              <Text className="text-[#E8F4F4] text-sm font-black text-center">
+                No matching tasks found.
+              </Text>
+              <Text className="text-[#9FB5B5] text-xs font-semibold text-center mt-1.5">
+                Try a shorter word or check another task name.
+              </Text>
+            </View>
+          )}
+        </View>
+      ) : null}
+    </View>
+  );
 
   const renderEnergyTaskSuggestionRow = (suggestion) => {
     const task = suggestion?.task;
@@ -11740,6 +11952,8 @@ export default function Home() {
         scrollEnabled={!isSubtaskReordering}
         onScroll={homeScrollHandler}
         scrollEventThrottle={16}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         contentContainerStyle={{
           paddingTop: headerContainerHeight + 14,
           paddingBottom: listBottomPadding,
@@ -12119,6 +12333,8 @@ export default function Home() {
             </Text>
           </View>
         </View>
+
+        {renderTaskSearchPanel()}
 
         <View className="mx-4 mb-4">
           <TouchableOpacity
