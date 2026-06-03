@@ -4903,6 +4903,9 @@ export default function Home() {
   const [phoneAlarmCapabilityChecked, setPhoneAlarmCapabilityChecked] = useState(
     Platform.OS !== "android"
   );
+  const [togglingStrongAlarmTaskId, setTogglingStrongAlarmTaskId] =
+    useState(null);
+  const togglingStrongAlarmTaskIdRef = useRef(null);
   const [editRepeatScopeModalVisible, setEditRepeatScopeModalVisible] =
     useState(false);
   const [pendingEditPayload, setPendingEditPayload] = useState(null);
@@ -6851,23 +6854,47 @@ export default function Home() {
         ? Math.max(1, Math.min(60, Math.round(strongAlarmSnoozeMinutes)))
         : STRONG_ALARM_DEFAULT_SNOOZE_MINUTES;
       const lastStrongAlarmResult = patch.lastStrongAlarmResult || null;
+      const hasUsePhoneAlarmPatch = typeof patch.usePhoneAlarm === "boolean";
+      const nextUsePhoneAlarm = hasUsePhoneAlarmPatch
+        ? Boolean(patch.usePhoneAlarm)
+        : null;
 
       try {
-        db.runSync(
-          `UPDATE tasks
-           SET strongAlarmId = ?,
-               strongAlarmScheduledAt = ?,
-               lastStrongAlarmResult = ?,
-               strongAlarmSnoozeMinutes = ?
-           WHERE id = ?`,
-          [
-            strongAlarmId,
-            strongAlarmScheduledAt || null,
-            toStrongAlarmResultString(lastStrongAlarmResult),
-            normalizedSnoozeMinutes,
-            numericTaskId,
-          ]
-        );
+        if (hasUsePhoneAlarmPatch) {
+          db.runSync(
+            `UPDATE tasks
+             SET usePhoneAlarm = ?,
+                 strongAlarmId = ?,
+                 strongAlarmScheduledAt = ?,
+                 lastStrongAlarmResult = ?,
+                 strongAlarmSnoozeMinutes = ?
+             WHERE id = ?`,
+            [
+              nextUsePhoneAlarm ? 1 : 0,
+              strongAlarmId,
+              strongAlarmScheduledAt || null,
+              toStrongAlarmResultString(lastStrongAlarmResult),
+              normalizedSnoozeMinutes,
+              numericTaskId,
+            ]
+          );
+        } else {
+          db.runSync(
+            `UPDATE tasks
+             SET strongAlarmId = ?,
+                 strongAlarmScheduledAt = ?,
+                 lastStrongAlarmResult = ?,
+                 strongAlarmSnoozeMinutes = ?
+             WHERE id = ?`,
+            [
+              strongAlarmId,
+              strongAlarmScheduledAt || null,
+              toStrongAlarmResultString(lastStrongAlarmResult),
+              normalizedSnoozeMinutes,
+              numericTaskId,
+            ]
+          );
+        }
       } catch (error) {
         console.log("Strong alarm task-state update error:", error);
       }
@@ -6875,14 +6902,20 @@ export default function Home() {
       setTasks((prev) =>
         prev.map((task) =>
           task.id === numericTaskId
-            ? {
-                ...task,
-                strongAlarmId,
-                strongAlarmScheduledAt,
-                strongAlarmSnoozeMinutes: normalizedSnoozeMinutes,
-                lastStrongAlarmResult,
-                useStrongAlarm: Boolean(task.usePhoneAlarm),
-              }
+            ? (() => {
+                const resolvedUsePhoneAlarm = hasUsePhoneAlarmPatch
+                  ? nextUsePhoneAlarm
+                  : Boolean(task.usePhoneAlarm);
+                return {
+                  ...task,
+                  usePhoneAlarm: resolvedUsePhoneAlarm,
+                  useStrongAlarm: resolvedUsePhoneAlarm,
+                  strongAlarmId,
+                  strongAlarmScheduledAt,
+                  strongAlarmSnoozeMinutes: normalizedSnoozeMinutes,
+                  lastStrongAlarmResult,
+                };
+              })()
             : task
         )
       );
@@ -6913,6 +6946,224 @@ export default function Home() {
       ]
     );
   }, []);
+
+  const showStrongAlarmToggleNotice = useCallback((message) => {
+    Alert.alert("Strong alarm", message, [{ text: "OK", style: "cancel" }]);
+  }, []);
+
+  const showStrongAlarmTogglePermissionMessage = useCallback(() => {
+    Alert.alert(
+      "Strong alarm",
+      "Strong alarm needs Android alarm permission.",
+      [
+        {
+          text: "Open settings",
+          onPress: () => {
+            void openExactAlarmSettings();
+          },
+        },
+        { text: "Not now", style: "cancel" },
+      ]
+    );
+  }, []);
+
+  const handleTaskHeaderStrongAlarmToggle = useCallback(
+    async (task) => {
+      const numericTaskId = Number(task?.id);
+      if (!task || !Number.isFinite(numericTaskId)) return;
+      if (togglingStrongAlarmTaskIdRef.current !== null) return;
+
+      if (task.completed) {
+        showStrongAlarmToggleNotice(
+          "Completed tasks do not need alarms. Duplicate or schedule again to set a new alarm."
+        );
+        return;
+      }
+
+      if (isTaskDeletedOrArchived(task)) return;
+
+      togglingStrongAlarmTaskIdRef.current = numericTaskId;
+      setTogglingStrongAlarmTaskId(numericTaskId);
+
+      const resultTimestamp = new Date().toISOString();
+      const snoozeMinutes =
+        Number(task.strongAlarmSnoozeMinutes) ||
+        STRONG_ALARM_DEFAULT_SNOOZE_MINUTES;
+      const isStrongAlarmEnabled = Boolean(
+        task.usePhoneAlarm || task.useStrongAlarm || task.strongAlarmId
+      );
+
+      try {
+        if (isStrongAlarmEnabled) {
+          let cancelResult = null;
+          if (task.strongAlarmId) {
+            cancelResult = await cancelStrongAlarmForTask(task.strongAlarmId);
+          }
+
+          const cancelSucceeded =
+            !cancelResult ||
+            cancelResult.success ||
+            cancelResult.errorCode === "ALARM_NOT_FOUND";
+          const message = cancelSucceeded
+            ? "Strong alarm turned off. App reminders still stay active."
+            : "Alarm was turned off in the app. If it still rings, stop it from the alarm screen.";
+
+          persistStrongAlarmTaskState(numericTaskId, {
+            usePhoneAlarm: false,
+            strongAlarmId: "",
+            strongAlarmScheduledAt: "",
+            strongAlarmSnoozeMinutes: snoozeMinutes,
+            lastStrongAlarmResult: {
+              success: cancelSucceeded,
+              errorCode: cancelResult?.success ? undefined : cancelResult?.errorCode,
+              message,
+              source: "manual",
+              at: resultTimestamp,
+            },
+          });
+
+          if (cancelSucceeded) {
+            showCelebration("Strong alarm turned off. App reminders still stay active.", "OK");
+          } else {
+            showStrongAlarmToggleNotice(message);
+          }
+          return;
+        }
+
+        if (Platform.OS !== "android") {
+          showStrongAlarmToggleNotice("Strong alarms are only available on Android.");
+          return;
+        }
+
+        const triggerAtMillis = toTaskTimestamp(task.scheduledTime);
+        if (!task.scheduledTime || !Number.isFinite(triggerAtMillis)) {
+          showStrongAlarmToggleNotice(
+            "Add a task time first to use a strong alarm."
+          );
+          return;
+        }
+
+        if (triggerAtMillis <= Date.now()) {
+          showStrongAlarmToggleNotice("Choose a future time to use a strong alarm.");
+          return;
+        }
+
+        const available = await canUseStrongAlarm();
+        setIsPhoneAlarmAvailable(available);
+        setPhoneAlarmCapabilityChecked(true);
+
+        if (!available) {
+          persistStrongAlarmTaskState(numericTaskId, {
+            usePhoneAlarm: false,
+            strongAlarmId: "",
+            strongAlarmScheduledAt: "",
+            strongAlarmSnoozeMinutes: snoozeMinutes,
+            lastStrongAlarmResult: {
+              success: false,
+              errorCode: "NATIVE_MODULE_UNAVAILABLE",
+              message: "Strong alarm module is unavailable.",
+              source: "manual",
+              at: resultTimestamp,
+            },
+          });
+          showStrongAlarmFallbackMessage();
+          return;
+        }
+
+        const canExact = await canScheduleExactAlarmsNative();
+        setCanScheduleExactAlarmNow(Boolean(canExact));
+
+        if (!canExact) {
+          persistStrongAlarmTaskState(numericTaskId, {
+            usePhoneAlarm: false,
+            strongAlarmId: "",
+            strongAlarmScheduledAt: "",
+            strongAlarmSnoozeMinutes: snoozeMinutes,
+            lastStrongAlarmResult: {
+              success: false,
+              errorCode: "EXACT_ALARM_PERMISSION_REQUIRED",
+              message: "Strong alarm needs Android alarm permission.",
+              source: "manual",
+              at: resultTimestamp,
+            },
+          });
+          showStrongAlarmTogglePermissionMessage();
+          return;
+        }
+
+        const nextAlarmId = buildStrongAlarmId(numericTaskId, triggerAtMillis);
+        if (task.strongAlarmId && task.strongAlarmId !== nextAlarmId) {
+          await cancelStrongAlarmForTask(task.strongAlarmId);
+        }
+
+        const result = await scheduleStrongAlarmForTask(task, {
+          alarmId: nextAlarmId,
+          reminderDate: new Date(triggerAtMillis),
+          snoozeMinutes,
+          message: "Start with one small step.",
+          sound: true,
+          vibrate: true,
+          fullScreen: false,
+        });
+
+        if (result.success) {
+          persistStrongAlarmTaskState(numericTaskId, {
+            usePhoneAlarm: true,
+            strongAlarmId: result.alarmId || nextAlarmId,
+            strongAlarmScheduledAt: new Date(triggerAtMillis).toISOString(),
+            strongAlarmSnoozeMinutes: snoozeMinutes,
+            lastStrongAlarmResult: {
+              success: true,
+              message: "Strong alarm set gently.",
+              source: "manual",
+              at: resultTimestamp,
+            },
+          });
+          showCelebration("Strong alarm set gently.");
+          return;
+        }
+
+        persistStrongAlarmTaskState(numericTaskId, {
+          usePhoneAlarm: false,
+          strongAlarmId: "",
+          strongAlarmScheduledAt: "",
+          strongAlarmSnoozeMinutes: snoozeMinutes,
+          lastStrongAlarmResult: {
+            success: false,
+            errorCode: result.errorCode || "SCHEDULE_FAILED",
+            message:
+              result.message ||
+              "Task reminder is saved. Strong alarm could not be scheduled on this device.",
+            source: "manual",
+            at: resultTimestamp,
+          },
+        });
+
+        if (result.errorCode === "EXACT_ALARM_PERMISSION_REQUIRED") {
+          showStrongAlarmTogglePermissionMessage();
+        } else if (result.errorCode === "INVALID_TIME") {
+          showStrongAlarmToggleNotice("Choose a future time to use a strong alarm.");
+        } else {
+          showStrongAlarmFallbackMessage();
+        }
+      } catch (error) {
+        console.log("Task header strong alarm toggle error:", error);
+        showStrongAlarmFallbackMessage();
+      } finally {
+        togglingStrongAlarmTaskIdRef.current = null;
+        setTogglingStrongAlarmTaskId((current) =>
+          Number(current) === numericTaskId ? null : current
+        );
+      }
+    },
+    [
+      persistStrongAlarmTaskState,
+      showCelebration,
+      showStrongAlarmFallbackMessage,
+      showStrongAlarmToggleNotice,
+      showStrongAlarmTogglePermissionMessage,
+    ]
+  );
 
   const launchOptionalPhoneAlarmForTasks = useCallback(
     async ({
@@ -11174,6 +11425,11 @@ export default function Home() {
               taskSupportSignalById[task.id] || EMPTY_TASK_SUPPORT_SIGNAL;
             const supportReasonText = getAvoidanceReasonText(taskSupportSignal);
             const isArchivedOrDeletedTask = isTaskDeletedOrArchived(task);
+            const isStrongAlarmEnabled = Boolean(
+              task.usePhoneAlarm || task.useStrongAlarm || task.strongAlarmId
+            );
+            const isStrongAlarmToggleBusy =
+              Number(togglingStrongAlarmTaskId) === Number(task.id);
             const showTaskSupportHint =
               isTaskExpanded &&
               !task.completed &&
@@ -11358,6 +11614,53 @@ export default function Home() {
                       </View>
 
                       <View className="flex-row items-center">
+                        {Platform.OS === "android" &&
+                        !task.completed &&
+                        !isArchivedOrDeletedTask && (
+                          <TouchableOpacity
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                              isStrongAlarmEnabled
+                                ? "Disable strong alarm for this task"
+                                : "Enable strong alarm for this task"
+                            }
+                            accessibilityHint={
+                              isStrongAlarmEnabled
+                                ? "Turns off the strong alarm backup. App reminders remain active"
+                                : "Adds a stronger Android alarm backup for this task"
+                            }
+                            accessibilityState={
+                              isStrongAlarmToggleBusy
+                                ? { disabled: true }
+                                : undefined
+                            }
+                            disabled={isStrongAlarmToggleBusy}
+                            activeOpacity={0.7}
+                            onPress={(event) => {
+                              event.stopPropagation?.();
+                              void handleTaskHeaderStrongAlarmToggle(task);
+                            }}
+                            className={`w-8 h-8 mr-2 rounded-xl border items-center justify-center ${
+                              isStrongAlarmEnabled
+                                ? "bg-[#66b9b9]/15 border-[#66b9b9]/40"
+                                : "bg-[#123131]/45 border-[#337a7a]/35"
+                            }`}
+                          >
+                            <Feather
+                              name={
+                                isStrongAlarmToggleBusy
+                                  ? "loader"
+                                  : isStrongAlarmEnabled
+                                    ? "bell"
+                                    : "bell-off"
+                              }
+                              size={14}
+                              color={
+                                isStrongAlarmEnabled ? COLORS.accent : COLORS.muted
+                              }
+                            />
+                          </TouchableOpacity>
+                        )}
                         {!task.completed && (
                           <TouchableOpacity
                             activeOpacity={0.7}
