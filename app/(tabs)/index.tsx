@@ -12754,7 +12754,7 @@ export default function Home() {
               keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
               contentContainerStyle={{
                 padding: 24,
-                paddingBottom: Math.max(insets.bottom, 20) + 148,
+                paddingBottom: Math.max(insets.bottom, 20) + 32,
               }}
             >
             <Text className="text-[#E8F4F4] text-2xl font-black mb-6 uppercase tracking-tight">
@@ -13209,28 +13209,36 @@ export default function Home() {
                 </TouchableOpacity>
               )}
             </TouchableOpacity>
-          </ScrollView>
-          <View className="bg-[#0B1F1F] px-6 pt-3 pb-2 border-t border-[#66b9b9]/20">
-            {timeError ? (
-              <Text className="text-[#FF7B7B] font-bold text-xs mb-2 text-center">
-                ⚠️ Task time must be within section time
-              </Text>
-            ) : null}
-            <TouchableOpacity
-              onPress={handleSaveTask}
-              className="bg-[#66b9b9] p-4 rounded-2xl shadow-lg shadow-[#66b9b9]/30 border border-[#99bdbd]/60"
-            >
-              <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-base">
-                {isEditMode ? "Update Task" : "Save Task"}
-              </Text>
-            </TouchableOpacity>
 
-            <TouchableOpacity onPress={closeTaskModal} className="mt-3 p-2">
-              <Text className="text-[#9FB5B5] text-center font-bold text-xs uppercase tracking-widest">
-                Cancel
-              </Text>
-            </TouchableOpacity>
-          </View>
+            <View className="mt-5 pt-3 border-t border-[#66b9b9]/20">
+              {timeError ? (
+                <Text className="text-[#FF7B7B] font-bold text-xs mb-2 text-center">
+                  ⚠️ Task time must be within section time
+                </Text>
+              ) : null}
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={isEditMode ? "Update task" : "Save task"}
+                onPress={handleSaveTask}
+                className="bg-[#66b9b9] p-4 rounded-2xl shadow-lg shadow-[#66b9b9]/30 border border-[#99bdbd]/60"
+              >
+                <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-base">
+                  {isEditMode ? "Update Task" : "Save Task"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Cancel task editing"
+                onPress={closeTaskModal}
+                className="mt-3 p-2"
+              >
+                <Text className="text-[#9FB5B5] text-center font-bold text-xs uppercase tracking-widest">
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
         </View>
         </KeyboardAvoidingView>
       </Modal>
