@@ -133,9 +133,8 @@ import {
 import { getOverwhelmSuggestions } from "../../utils/overwhelmMode";
 import {
   ENERGY_TASK_FILTERS,
-  ENERGY_FILTER_EMPTY_MESSAGES,
-  filterTasksByEnergyFilter,
-  doesTaskMatchEnergyFilter,
+  ENERGY_TASK_SUGGESTION_COPY,
+  getEnergyTaskSuggestions,
 } from "../../utils/energyTaskMatching";
 import OverwhelmModeSheet from "../../components/task/OverwhelmModeSheet";
 import Reanimated, {
@@ -1034,7 +1033,10 @@ export default function Home() {
   const [isSubtaskReordering, setIsSubtaskReordering] = useState(false);
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
-  const [activeEnergyFilter, setActiveEnergyFilter] = useState(null);
+  const [energyDropdownVisible, setEnergyDropdownVisible] = useState(false);
+  const [selectedEnergyMatchType, setSelectedEnergyMatchType] = useState(null);
+  const [energySuggestionSheetVisible, setEnergySuggestionSheetVisible] =
+    useState(false);
   const [timeError, setTimeError] = useState(false);
   const [sectionTimes, setSectionTimes] = useState({
     Morning: { start: "", end: "" },
@@ -1752,129 +1754,58 @@ export default function Home() {
     return nextMap;
   }, [tasks]);
 
-  const handleEnergyFilterPress = useCallback((filter) => {
-    setActiveEnergyFilter((current) => (current === filter ? null : filter));
+  const visibleSectionTasksMap = sectionTasksMap;
+  const visiblePinnedTasks = pinnedTasks;
+
+  const selectedEnergyMatchOption = useMemo(
+    () =>
+      ENERGY_TASK_FILTERS.find(
+        (filterOption) => filterOption.key === selectedEnergyMatchType
+      ) || null,
+    [selectedEnergyMatchType]
+  );
+
+  const selectedEnergySuggestionCopy = selectedEnergyMatchType
+    ? ENERGY_TASK_SUGGESTION_COPY[selectedEnergyMatchType] || null
+    : null;
+
+  const energyTaskSuggestions = useMemo(
+    () =>
+      getEnergyTaskSuggestions(tasks, selectedEnergyMatchType, new Date(), {
+        taskSupportSignalById,
+        moodType: effectiveMoodTypeForDailyProgress,
+        limit: 7,
+      }),
+    [
+      effectiveMoodTypeForDailyProgress,
+      selectedEnergyMatchType,
+      taskSupportSignalById,
+      tasks,
+    ]
+  );
+
+  const toggleEnergyDropdown = useCallback(() => {
+    setEnergyDropdownVisible((current) => !current);
   }, []);
 
-  const energyFilteredSectionTasksMap = useMemo(() => {
-    if (!activeEnergyFilter) return sectionTasksMap;
-    const now = new Date();
+  const closeEnergyTaskMatchingSurfaces = useCallback(() => {
+    setEnergyDropdownVisible(false);
+    setEnergySuggestionSheetVisible(false);
+    setSelectedEnergyMatchType(null);
+  }, []);
 
-    return SECTION_ORDER.reduce((acc, sectionName) => {
-      acc[sectionName] = filterTasksByEnergyFilter(
-        sectionTasksMap[sectionName] || [],
-        activeEnergyFilter,
-        now,
-        {
-          taskSupportSignalById,
-          moodType: effectiveMoodTypeForDailyProgress,
-          keepInputOrderForTodayOnly: true,
-        }
-      );
-      return acc;
-    }, {});
-  }, [
-    activeEnergyFilter,
-    effectiveMoodTypeForDailyProgress,
-    sectionTasksMap,
-    taskSupportSignalById,
-  ]);
+  const closeEnergySuggestionSheet = useCallback(() => {
+    setEnergySuggestionSheetVisible(false);
+    setSelectedEnergyMatchType(null);
+  }, []);
 
-  const energyFilteredPinnedTasks = useMemo(() => {
-    if (!activeEnergyFilter) return pinnedTasks;
-    return filterTasksByEnergyFilter(pinnedTasks, activeEnergyFilter, new Date(), {
-      taskSupportSignalById,
-      moodType: effectiveMoodTypeForDailyProgress,
-      keepInputOrderForTodayOnly: true,
-    });
-  }, [
-    activeEnergyFilter,
-    effectiveMoodTypeForDailyProgress,
-    pinnedTasks,
-    taskSupportSignalById,
-  ]);
+  const handleEnergyMatchSelect = useCallback((matchType) => {
+    setEnergyDropdownVisible(false);
+    setSelectedEnergyMatchType(matchType);
+    setEnergySuggestionSheetVisible(true);
+  }, []);
 
-  const visibleSectionTasksMap = activeEnergyFilter
-    ? energyFilteredSectionTasksMap
-    : sectionTasksMap;
-  const visiblePinnedTasks = activeEnergyFilter ? energyFilteredPinnedTasks : pinnedTasks;
-
-  const energyFilteredSectionHeaderStats = useMemo(() => {
-    if (!activeEnergyFilter) return null;
-    const now = new Date();
-    const nowTime = now.getTime();
-    const { start, end } = getDayBounds(now);
-
-    return SECTION_ORDER.reduce((acc, sectionName) => {
-      const sectionTasks = energyFilteredSectionTasksMap[sectionName] || [];
-      const todayPendingCount = sectionTasks.reduce((count, task) => {
-        const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
-        return isTimestampWithinRange(scheduledTimestamp, start, end)
-          ? count + 1
-          : count;
-      }, 0);
-
-      const nearestUpcomingTaskTitle =
-        sectionTasks
-          .map((task) => ({
-            task,
-            timestamp: toTaskTimestamp(task.scheduledTime),
-          }))
-          .filter((item) => item.timestamp !== null && item.timestamp >= nowTime)
-          .sort((a, b) => {
-            if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
-            return (a.task.id ?? 0) - (b.task.id ?? 0);
-          })[0]?.task?.title ?? null;
-
-      acc[sectionName] = {
-        pendingCount: sectionTasks.length,
-        todayPendingCount,
-        todayCompletedCount: 0,
-        nearestUpcomingTaskTitle,
-      };
-      return acc;
-    }, {});
-  }, [activeEnergyFilter, energyFilteredSectionTasksMap]);
-
-  const energyFilteredPinnedHeaderStats = useMemo(() => {
-    if (!activeEnergyFilter) return null;
-    const now = new Date();
-    const nowTime = now.getTime();
-    const { start, end } = getDayBounds(now);
-
-    let todayPendingCount = 0;
-    let nearestUpcomingTaskTitle = null;
-    let nearestUpcomingTime = Number.POSITIVE_INFINITY;
-
-    energyFilteredPinnedTasks.forEach((task) => {
-      const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
-      if (isTimestampWithinRange(scheduledTimestamp, start, end)) {
-        todayPendingCount += 1;
-      }
-
-      if (
-        scheduledTimestamp !== null &&
-        scheduledTimestamp >= nowTime &&
-        scheduledTimestamp < nearestUpcomingTime
-      ) {
-        nearestUpcomingTime = scheduledTimestamp;
-        nearestUpcomingTaskTitle = task.title || null;
-      }
-    });
-
-    return {
-      pendingCount: energyFilteredPinnedTasks.length,
-      todayPendingCount,
-      todayCompletedCount: 0,
-      nearestUpcomingTaskTitle,
-    };
-  }, [activeEnergyFilter, energyFilteredPinnedTasks]);
-
-  const activeEnergyFilterEmptyMessage = activeEnergyFilter
-    ? ENERGY_FILTER_EMPTY_MESSAGES[activeEnergyFilter] || ""
-    : "";
-
-  const energyFilterMoodSuggestion = useMemo(() => {
+  const energyMatchMoodSuggestion = useMemo(() => {
     if (
       effectiveMoodTypeForDailyProgress === MOOD_TYPES.FRUSTRATED ||
       effectiveMoodTypeForDailyProgress === MOOD_TYPES.SAD
@@ -1892,17 +1823,6 @@ export default function Home() {
     }
     return "Match tasks to your energy.";
   }, [effectiveMoodTypeForDailyProgress]);
-
-  const isTaskMatchingActiveEnergyFilter = useCallback(
-    (task, now = new Date()) => {
-      if (!activeEnergyFilter) return true;
-      return doesTaskMatchEnergyFilter(task, activeEnergyFilter, now, {
-        taskSupportSignalById,
-        moodType: effectiveMoodTypeForDailyProgress,
-      });
-    },
-    [activeEnergyFilter, effectiveMoodTypeForDailyProgress, taskSupportSignalById]
-  );
 
   const overwhelmSuggestions = useMemo(
     () => getOverwhelmSuggestions(tasks, new Date()),
@@ -4049,6 +3969,7 @@ export default function Home() {
 
   const queueNotificationTaskNavigation = useCallback((payload, actionMeta = {}) => {
     if (!payload?.taskId) return false;
+    closeEnergyTaskMatchingSurfaces();
     notificationActionContextRef.current = actionMeta;
     setPendingNotificationTaskTarget({
       ...payload,
@@ -4057,7 +3978,7 @@ export default function Home() {
       reminderAction: actionMeta.reminderAction || null,
     });
     return true;
-  }, []);
+  }, [closeEnergyTaskMatchingSurfaces]);
 
   const showTaskNavigationFallback = useCallback(() => {
     Alert.alert("Task", TASK_DEEP_LINK_FALLBACK_MESSAGE, [
@@ -6000,25 +5921,9 @@ export default function Home() {
         return false;
       }
 
-      if (
-        activeEnergyFilter &&
-        !isTaskMatchingActiveEnergyFilter(targetTask, new Date())
-      ) {
-        setActiveEnergyFilter(null);
-        setTimeout(() => {
-          focusTaskById(targetTask.id, options);
-        }, 110);
-        return true;
-      }
-
       return focusTaskById(targetTask.id, options);
     },
-    [
-      activeEnergyFilter,
-      focusTaskById,
-      isTaskMatchingActiveEnergyFilter,
-      tasks,
-    ]
+    [focusTaskById, tasks]
   );
 
   const handleSelectProgressTask = useCallback(
@@ -6270,10 +6175,69 @@ export default function Home() {
     [closeOverwhelmMode, openMoveGentlyForTask]
   );
 
+  const handleEnergySuggestionGoToTask = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      closeEnergySuggestionSheet();
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(task.id, { highlight: true });
+    },
+    [closeEnergySuggestionSheet, scrollToTask]
+  );
+
+  const handleEnergySuggestionStartTwoMinutes = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      closeEnergySuggestionSheet();
+      setFirstStepOnlyTaskId(null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          startFocusActionRef.current?.(
+            task.id,
+            START_ASSIST_SHORT_FOCUS_SECONDS
+          );
+          setRecoverySuccessMessage("Just 2 minutes. Starting counts.");
+        },
+      });
+    },
+    [closeEnergySuggestionSheet, scrollToTask]
+  );
+
+  const handleEnergySuggestionStartSmall = useCallback(
+    (task) => {
+      if (!task || task.completed) return;
+      const hasFirstAction =
+        typeof task.firstAction === "string" && task.firstAction.trim().length > 0;
+      const hasMinimumVersion =
+        typeof task.minimumVersion === "string" &&
+        task.minimumVersion.trim().length > 0;
+
+      if (!hasFirstAction && !hasMinimumVersion) return;
+
+      closeEnergySuggestionSheet();
+      setFirstStepOnlyTaskId(hasFirstAction ? task.id : null);
+      scrollToTask(task.id, {
+        highlight: true,
+        onComplete: () => {
+          startFocusActionRef.current?.(
+            task.id,
+            HEAVY_SUPPORT_MINIMUM_FOCUS_SECONDS
+          );
+          setRecoverySuccessMessage(
+            "Small counts. Start with the smallest version."
+          );
+        },
+      });
+    },
+    [closeEnergySuggestionSheet, scrollToTask]
+  );
+
   useEffect(() => {
     if (!pendingNotificationTaskTarget?.taskId) return;
     if (pendingNotificationTaskTarget.handled) return;
     if (!tasksHydrated) return;
+    closeEnergyTaskMatchingSurfaces();
 
     const taskId = pendingNotificationTaskTarget.taskId;
     const taskIdKey = getTaskIdentityKey(taskId);
@@ -6354,6 +6318,7 @@ export default function Home() {
       showTaskNavigationFallback();
     }
   }, [
+    closeEnergyTaskMatchingSurfaces,
     openMoveGentlyForTask,
     pendingNotificationTaskTarget,
     scrollToTask,
@@ -6771,16 +6736,18 @@ export default function Home() {
 
   const handleCurrentTaskFabPress = useCallback(() => {
     if (!currentTaskQuickTaskId) return;
+    closeEnergyTaskMatchingSurfaces();
     scrollToTask(currentTaskQuickTaskId, {
       highlight: true,
     });
-  }, [currentTaskQuickTaskId, scrollToTask]);
+  }, [closeEnergyTaskMatchingSurfaces, currentTaskQuickTaskId, scrollToTask]);
 
   const handleSmartTaskPress = useCallback(() => {
     const targetTask = smartActionTask?.task;
     if (!targetTask) return;
+    closeEnergyTaskMatchingSurfaces();
     scrollToTask(targetTask.id);
-  }, [smartActionTask?.task, scrollToTask]);
+  }, [closeEnergyTaskMatchingSurfaces, smartActionTask?.task, scrollToTask]);
 
   const triggerShake = () => {
     Animated.sequence([
@@ -10669,6 +10636,170 @@ export default function Home() {
     );
   };
 
+  const renderEnergyTaskSuggestionRow = (suggestion) => {
+    const task = suggestion?.task;
+    if (!task) return null;
+
+    const metadataPills = getTaskEnergyMetadataPills(task).slice(0, 4);
+    const scheduleLabel = task.scheduledTime
+      ? formatDateTimeForDisplay(task.scheduledTime)
+      : task.dueDate
+        ? formatDateTimeForDisplay(task.dueDate)
+        : "No schedule yet";
+    const hasFirstAction =
+      typeof task.firstAction === "string" && task.firstAction.trim().length > 0;
+    const hasMinimumVersion =
+      typeof task.minimumVersion === "string" &&
+      task.minimumVersion.trim().length > 0;
+    const hasSmallStart = hasFirstAction || hasMinimumVersion;
+    const smallStartText = hasFirstAction
+      ? task.firstAction.trim()
+      : hasMinimumVersion
+        ? task.minimumVersion.trim()
+        : "";
+
+    return (
+      <View
+        key={`energy-suggestion-${task.id}`}
+        className="rounded-2xl border border-[#337a7a]/30 bg-[#123131]/60 px-3.5 py-3 mb-3"
+      >
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={`Go to task, ${task.title || "task"}`}
+          activeOpacity={0.86}
+          onPress={() => handleEnergySuggestionGoToTask(task)}
+        >
+          <Text
+            numberOfLines={2}
+            className="text-[#E8F4F4] text-sm font-black"
+          >
+            {task.title || "Task"}
+          </Text>
+          <Text className="text-[#66b9b9] text-[11px] font-bold mt-1">
+            {suggestion.reason}
+          </Text>
+          <Text numberOfLines={1} className="text-[#9FB5B5] text-[11px] mt-1">
+            {task.section || task.category || "Task"} | {scheduleLabel}
+          </Text>
+        </TouchableOpacity>
+
+        {metadataPills.length ? (
+          <View className="flex-row flex-wrap mt-2">
+            {metadataPills.map((pill) => (
+              <View
+                key={`energy-suggestion-${task.id}-${pill}`}
+                className="mr-1.5 mb-1.5 rounded-full border border-[#66b9b9]/25 bg-[#061414]/60 px-2 py-0.5"
+              >
+                <Text className="text-[#9FB5B5] text-[9px] font-bold">
+                  {pill}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {smallStartText ? (
+          <Text numberOfLines={2} className="text-[#B6C26E] text-[10px] mt-1">
+            Tiny step: {smallStartText}
+          </Text>
+        ) : null}
+
+        <View className="flex-row flex-wrap mt-3">
+          <TouchableOpacity
+            activeOpacity={0.84}
+            onPress={() => handleEnergySuggestionGoToTask(task)}
+            className="mr-2 mb-2 rounded-full border border-[#66b9b9]/35 bg-[#123131]/80 px-3 py-1.5"
+          >
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+              Go to task
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.84}
+            onPress={() => handleEnergySuggestionStartTwoMinutes(task)}
+            className="mr-2 mb-2 rounded-full border border-[#66b9b9]/35 bg-[#061414]/70 px-3 py-1.5"
+          >
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+              Start 2 min
+            </Text>
+          </TouchableOpacity>
+          {hasSmallStart ? (
+            <TouchableOpacity
+              activeOpacity={0.84}
+              onPress={() => handleEnergySuggestionStartSmall(task)}
+              className="mr-2 mb-2 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/75 px-3 py-1.5"
+            >
+              <Text className="text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
+                Start small
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </View>
+    );
+  };
+
+  const renderEnergyTaskSuggestionSheet = () => {
+    const sheetCopy = selectedEnergySuggestionCopy || {
+      title: selectedEnergyMatchOption?.label || "Tasks",
+      subtitle: "Match tasks to your energy.",
+      emptyMessage: "No matching tasks right now.",
+    };
+
+    return (
+      <Modal
+        visible={energySuggestionSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={closeEnergySuggestionSheet}
+      >
+        <View className="flex-1 justify-end bg-[#061414]/80">
+          <View className="max-h-[82%] rounded-t-[28px] border-t border-[#66b9b9]/30 bg-[#0B1F1F] px-5 pt-4 pb-6 shadow-2xl shadow-[#66b9b9]/15">
+            <View className="flex-row items-start justify-between mb-3">
+              <View className="flex-1 pr-3">
+                <Text className="text-[#E8F4F4] text-xl font-black">
+                  {sheetCopy.title}
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs font-semibold mt-1 leading-5">
+                  {sheetCopy.subtitle}
+                </Text>
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Close task suggestions"
+                activeOpacity={0.84}
+                onPress={closeEnergySuggestionSheet}
+                className="rounded-full border border-[#66b9b9]/30 bg-[#123131]/80 px-3 py-1.5"
+              >
+                <Text className="text-[#66b9b9] text-xs font-black">Close</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 22 }}
+            >
+              {energyTaskSuggestions.length ? (
+                energyTaskSuggestions.map((suggestion) =>
+                  renderEnergyTaskSuggestionRow(suggestion)
+                )
+              ) : (
+                <View className="rounded-2xl border border-[#337a7a]/30 bg-[#123131]/50 px-4 py-4">
+                  <Text className="text-[#9FB5B5] text-sm font-semibold text-center">
+                    {sheetCopy.emptyMessage}
+                  </Text>
+                  <Text className="text-[#66b9b9] text-xs font-semibold text-center mt-1.5">
+                    Match tasks to your energy.
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
   const renderOnboardingModal = () => (
     <Modal visible={onboardingVisible} transparent animationType="fade">
       <View className="flex-1 bg-[#061414]/95 justify-center px-5">
@@ -10740,26 +10871,9 @@ export default function Home() {
       SECTION_SURFACE_CLASSES[section] || SECTION_SURFACE_CLASSES.Work;
     const sectionHeaderClass =
       SECTION_HEADER_CLASSES[section] || SECTION_HEADER_CLASSES.Work;
-    const filteredStatsForSection = isPinnedVirtualSection
-      ? energyFilteredPinnedHeaderStats
-      : energyFilteredSectionHeaderStats?.[section];
     const sectionStats = isPinnedVirtualSection
-      ? activeEnergyFilter
-        ? filteredStatsForSection || {
-            pendingCount: 0,
-            todayPendingCount: 0,
-            todayCompletedCount: 0,
-            nearestUpcomingTaskTitle: null,
-          }
-        : pinnedHeaderStats
-      : activeEnergyFilter
-        ? filteredStatsForSection || {
-            pendingCount: 0,
-            todayPendingCount: 0,
-            todayCompletedCount: 0,
-            nearestUpcomingTaskTitle: null,
-          }
-        : sectionHeaderStats[section] || {
+      ? pinnedHeaderStats
+      : sectionHeaderStats[section] || {
           pendingCount: 0,
           todayPendingCount: 0,
           todayCompletedCount: 0,
@@ -10824,14 +10938,6 @@ export default function Home() {
 
           {isSectionExpanded && (
             <View className="px-3 pb-3">
-              {activeEnergyFilter && sectionTasks.length === 0 ? (
-                <View className="rounded-2xl border border-[#337a7a]/25 bg-[#061414]/55 px-3 py-2.5 mt-1">
-                  <Text className="text-[#9FB5B5] text-[11px] leading-4">
-                    {activeEnergyFilterEmptyMessage}
-                  </Text>
-                </View>
-              ) : null}
-
               {sectionTasks.map((task) => {
             const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
             const taskDate = parseStoredDateTime(task.scheduledTime);
@@ -12015,42 +12121,52 @@ export default function Home() {
         </View>
 
         <View className="mx-4 mb-4">
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingRight: 8 }}
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Find a task that fits me now"
+            accessibilityHint="Opens energy-based task suggestions"
+            accessibilityState={{ expanded: energyDropdownVisible }}
+            activeOpacity={0.86}
+            onPress={toggleEnergyDropdown}
+            className="rounded-2xl border border-[#337a7a]/35 bg-[#123131]/72 px-3.5 py-3 flex-row items-center justify-between"
           >
-            {ENERGY_TASK_FILTERS.map((filterOption) => {
-              const isActive = activeEnergyFilter === filterOption.key;
-              return (
+            <View className="flex-1 pr-3">
+              <Text className="text-[#E8F4F4] text-sm font-black">
+                Find a task that fits me now
+              </Text>
+              <Text className="text-[#9FB5B5] text-[11px] font-semibold mt-0.5">
+                {energyMatchMoodSuggestion}
+              </Text>
+            </View>
+            <Feather
+              name={energyDropdownVisible ? "chevron-up" : "chevron-down"}
+              size={18}
+              color={COLORS.accent}
+            />
+          </TouchableOpacity>
+
+          {energyDropdownVisible ? (
+            <View className="mt-2 rounded-2xl border border-[#337a7a]/30 bg-[#0B1F1F] overflow-hidden">
+              {ENERGY_TASK_FILTERS.map((filterOption, index) => (
                 <TouchableOpacity
                   key={filterOption.key}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: isActive }}
-                  accessibilityLabel={`${filterOption.label} filter`}
-                  activeOpacity={0.86}
-                  onPress={() => handleEnergyFilterPress(filterOption.key)}
-                  className={`mr-2 px-3 py-1.5 rounded-full border ${
-                    isActive
-                      ? "bg-[#D9A441]/18 border-[#D9A441]/55"
-                      : "bg-[#123131]/72 border-[#337a7a]/35"
+                  accessibilityLabel={filterOption.label}
+                  activeOpacity={0.84}
+                  onPress={() => handleEnergyMatchSelect(filterOption.key)}
+                  className={`px-3.5 py-3 flex-row items-center justify-between ${
+                    index === ENERGY_TASK_FILTERS.length - 1
+                      ? ""
+                      : "border-b border-[#337a7a]/20"
                   }`}
                 >
-                  <Text
-                    className={`text-[10px] font-black uppercase tracking-widest ${
-                      isActive ? "text-[#D9A441]" : "text-[#9FB5B5]"
-                    }`}
-                  >
+                  <Text className="text-[#E8F4F4] text-xs font-black uppercase tracking-widest">
                     {filterOption.label}
                   </Text>
+                  <Feather name="arrow-up-right" size={14} color={COLORS.accent} />
                 </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-          {energyFilterMoodSuggestion ? (
-            <Text className="text-[#9FB5B5] text-[11px] mt-2 ml-1">
-              {energyFilterMoodSuggestion}
-            </Text>
+              ))}
+            </View>
           ) : null}
         </View>
 
@@ -12153,6 +12269,7 @@ export default function Home() {
       {renderFixedFooter()}
       {renderDrawer()}
       {renderPageModal()}
+      {renderEnergyTaskSuggestionSheet()}
       {renderProgressTaskSheet()}
       {renderOnboardingModal()}
       {renderRecoveryModal()}

@@ -4,7 +4,6 @@ import { getTaskAvoidanceSignal, isTaskFeelingHeavy } from "./taskSupportSignals
 export const ENERGY_TASK_FILTERS = Object.freeze([
   { key: "lowEnergy", label: "Low energy" },
   { key: "quickWin", label: "Quick win" },
-  { key: "bestNow", label: "Best now" },
   { key: "important", label: "Important" },
   { key: "needsFocus", label: "Needs focus" },
   { key: "canDoAnywhere", label: "Can do anywhere" },
@@ -12,12 +11,50 @@ export const ENERGY_TASK_FILTERS = Object.freeze([
   { key: "todayOnly", label: "Today only" },
 ]);
 
+export const ENERGY_TASK_SUGGESTION_COPY = Object.freeze({
+  lowEnergy: {
+    title: "Low-energy tasks",
+    subtitle: "Start with something that does not ask too much from you.",
+    emptyMessage: "No low-energy tasks found. You can make one task smaller.",
+  },
+  quickWin: {
+    title: "Quick wins",
+    subtitle: "Small wins can help your brain build momentum.",
+    emptyMessage: "No quick wins right now. Try adding a first small action.",
+  },
+  important: {
+    title: "Important tasks",
+    subtitle: "These may matter most right now.",
+    emptyMessage: "No important tasks waiting.",
+  },
+  needsFocus: {
+    title: "Focus-needed tasks",
+    subtitle: "Choose this when you have enough attention for deeper work.",
+    emptyMessage: "No focus-needed tasks right now.",
+  },
+  canDoAnywhere: {
+    title: "Tasks you can do anywhere",
+    subtitle: "These tasks do not need a special setup.",
+    emptyMessage: "No anywhere tasks yet.",
+  },
+  feelingHeavy: {
+    title: "Tasks that may need a softer start",
+    subtitle: "No guilt. These may need a softer restart.",
+    emptyMessage: "No heavy tasks detected. That is okay.",
+  },
+  todayOnly: {
+    title: "Today’s tasks",
+    subtitle: "Tasks planned for today.",
+    emptyMessage: "No tasks scheduled for today.",
+  },
+});
+
 export const ENERGY_FILTER_EMPTY_MESSAGES = Object.freeze({
   lowEnergy: "No low-energy tasks found. You can make one task smaller.",
   quickWin: "No quick wins right now. Try adding a first small action.",
   bestNow: "No best-now matches yet. Choose what fits your capacity.",
   important: "No important tasks waiting.",
-  needsFocus: "No deep-focus tasks right now.",
+  needsFocus: "No focus-needed tasks right now.",
   canDoAnywhere: "No anywhere tasks yet.",
   feelingHeavy: "No heavy tasks detected. That is okay.",
   todayOnly: "No tasks scheduled for today.",
@@ -96,6 +133,43 @@ const getFocusRequired = (task) => normalize(task?.focusRequired || task?.focusN
 
 const getTaskContext = (task) => normalize(task?.taskContext || task?.context);
 
+const hasDependencyValue = (value) => {
+  if (Array.isArray(value)) return value.filter(Boolean).length > 0;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value > 0;
+  if (typeof value === "string") {
+    const normalized = normalize(value);
+    return Boolean(
+      normalized &&
+        normalized !== "false" &&
+        normalized !== "no" &&
+        normalized !== "none" &&
+        normalized !== "anywhere"
+    );
+  }
+  return false;
+};
+
+const hasSetupDependency = (task) =>
+  [
+    task?.location,
+    task?.taskLocation,
+    task?.requiredLocation,
+    task?.tool,
+    task?.tools,
+    task?.requiredTool,
+    task?.requiredTools,
+    task?.setup,
+    task?.setupRequired,
+    task?.requiresSetup,
+  ].some(hasDependencyValue);
+
+const isWorkOrStudyTask = (task) =>
+  [task?.section, task?.category, task?.type, task?.taskType].some((value) => {
+    const normalized = normalize(value);
+    return normalized.includes("work") || normalized.includes("study");
+  });
+
 const getEffectiveSnoozeCount = (task) => {
   if (
     task?.reminderSnoozeCount !== undefined &&
@@ -130,8 +204,11 @@ const getSupportSignal = (task, now, taskSupportSignalById = null) => {
 
 const getFallbackHeavinessScore = (task) =>
   getEffectiveSnoozeCount(task) +
+  toNumber(task?.snoozeCount) +
   toNumber(task?.rescheduleCount) +
-  toNumber(task?.reminderMoveGentlyCount);
+  toNumber(task?.reminderMoveGentlyCount) +
+  toNumber(task?.stuckCount) +
+  (hasText(task?.lastStuckAt) ? 1 : 0);
 
 const getPrimaryTaskTimestamp = (task) =>
   toTaskTimestamp(task?.scheduledTime) ?? toTaskTimestamp(task?.dueDate);
@@ -182,6 +259,8 @@ const toFilterEntry = (task, index, now, options = {}) => {
     energyRequired: getEnergyRequired(task),
     focusRequired: getFocusRequired(task),
     taskContext: getTaskContext(task),
+    hasSetupDependency: hasSetupDependency(task),
+    isWorkOrStudyContext: isWorkOrStudyTask(task),
     isPinned: Boolean(task?.isPinned),
     isHighPriority: isHighPriority(task),
     isToday: isTodayTask(task, now),
@@ -230,7 +309,9 @@ export const isLowEnergyTask = (task) => {
   return (
     energyRequired === "low" ||
     (estimatedMinutes !== null && estimatedMinutes <= LOW_ENERGY_DURATION_LIMIT) ||
-    focusRequired === "light"
+    focusRequired === "light" ||
+    hasFirstAction(task) ||
+    hasMinimumVersion(task)
   );
 };
 
@@ -242,15 +323,20 @@ export const isQuickWinTask = (
   if (!isTaskPending(task)) return false;
 
   const entry = toFilterEntry(task, 0, now, options);
-  const isLowEnergy =
-    entry.energyRequired === "low" ||
-    entry.focusRequired === "light";
   const isShort =
     entry.estimatedMinutes !== null &&
     entry.estimatedMinutes <= SHORT_DURATION_LIMIT;
 
-  if (!isLowEnergy || !isShort) return false;
+  if (
+    !isShort &&
+    entry.incompleteSubtasks > 1 &&
+    !entry.hasFirstAction &&
+    !entry.hasMinimumVersion
+  ) {
+    return false;
+  }
   if (entry.isHeavy) return false;
+  if (entry.energyRequired === "high" && !entry.hasMinimumVersion) return false;
 
   return true;
 };
@@ -315,12 +401,15 @@ export const isNeedsFocusTask = (task) => {
   return (
     focusRequired === "deep" ||
     energyRequired === "high" ||
-    (estimatedMinutes !== null && estimatedMinutes >= NEEDS_FOCUS_DURATION_MIN)
+    (estimatedMinutes !== null && estimatedMinutes >= NEEDS_FOCUS_DURATION_MIN) ||
+    isWorkOrStudyTask(task)
   );
 };
 
 export const isCanDoAnywhereTask = (task) =>
-  isTaskPending(task) && getTaskContext(task) === "anywhere";
+  isTaskPending(task) &&
+  (getTaskContext(task) === "anywhere" ||
+    (!getTaskContext(task) && !hasSetupDependency(task)));
 
 export const isFeelingHeavyTask = (
   task,
@@ -376,6 +465,10 @@ const sortLowEnergy = (a, b) => {
 
   if (a.focusRequired === "light" && b.focusRequired !== "light") return -1;
   if (a.focusRequired !== "light" && b.focusRequired === "light") return 1;
+
+  const aHasSmallStart = a.hasFirstAction || a.hasMinimumVersion;
+  const bHasSmallStart = b.hasFirstAction || b.hasMinimumVersion;
+  if (aHasSmallStart !== bHasSmallStart) return aHasSmallStart ? -1 : 1;
 
   if (a.dueSoonRank !== b.dueSoonRank) return a.dueSoonRank - b.dueSoonRank;
   return compareByStableOrder(a, b);
@@ -481,6 +574,10 @@ const sortNeedsFocus = (a, b) => {
 };
 
 const sortCanDoAnywhere = (a, b) => {
+  const aExplicitAnywhere = a.taskContext === "anywhere";
+  const bExplicitAnywhere = b.taskContext === "anywhere";
+  if (aExplicitAnywhere !== bExplicitAnywhere) return aExplicitAnywhere ? -1 : 1;
+
   if (a.isToday !== b.isToday) return a.isToday ? -1 : 1;
 
   const durationCompare = compareWithNullLast(a.estimatedMinutes, b.estimatedMinutes);
@@ -530,17 +627,24 @@ const matchesEntryForFilter = (entry, filter, options = {}) => {
         entry.energyRequired === "low" ||
         (entry.estimatedMinutes !== null &&
           entry.estimatedMinutes <= LOW_ENERGY_DURATION_LIMIT) ||
-        entry.focusRequired === "light"
+        entry.focusRequired === "light" ||
+        entry.hasFirstAction ||
+        entry.hasMinimumVersion
       );
     case "quickWin": {
-      const isLowEnergy =
-        entry.energyRequired === "low" ||
-        entry.focusRequired === "light";
       const isShort =
         entry.estimatedMinutes !== null &&
         entry.estimatedMinutes <= SHORT_DURATION_LIMIT;
-      if (!isLowEnergy || !isShort) return false;
+      if (
+        !isShort &&
+        entry.incompleteSubtasks > 1 &&
+        !entry.hasFirstAction &&
+        !entry.hasMinimumVersion
+      ) {
+        return false;
+      }
       if (entry.isHeavy) return false;
+      if (entry.energyRequired === "high" && !entry.hasMinimumVersion) return false;
       return true;
     }
     case "bestNow":
@@ -558,10 +662,12 @@ const matchesEntryForFilter = (entry, filter, options = {}) => {
         entry.focusRequired === "deep" ||
         entry.energyRequired === "high" ||
         (entry.estimatedMinutes !== null &&
-          entry.estimatedMinutes >= NEEDS_FOCUS_DURATION_MIN)
+          entry.estimatedMinutes >= NEEDS_FOCUS_DURATION_MIN) ||
+        entry.isWorkOrStudyContext
       );
     case "canDoAnywhere":
-      return entry.taskContext === "anywhere";
+      return entry.taskContext === "anywhere" ||
+        (!entry.taskContext && !entry.hasSetupDependency);
     case "feelingHeavy":
       return entry.isHeavy;
     case "todayOnly":
@@ -624,4 +730,83 @@ export const filterTasksByEnergyFilter = (
 
   const sortedEntries = sortEntriesForFilter(matchingEntries, filter, options);
   return sortedEntries.map((entry) => entry.task);
+};
+
+const getSuggestionReasonForFilter = (entry, filter) => {
+  switch (filter) {
+    case "lowEnergy":
+      if (entry.energyRequired === "low") return "Low-energy task.";
+      if (
+        entry.estimatedMinutes !== null &&
+        entry.estimatedMinutes <= LOW_ENERGY_DURATION_LIMIT
+      ) {
+        return "Short task.";
+      }
+      if (entry.hasFirstAction || entry.hasMinimumVersion) {
+        return "Has a small starting step.";
+      }
+      return "Light focus task.";
+    case "quickWin":
+      if (
+        entry.estimatedMinutes !== null &&
+        entry.estimatedMinutes <= SHORT_DURATION_LIMIT
+      ) {
+        return "Small and doable.";
+      }
+      if (entry.incompleteSubtasks <= 1) return "Only one small step.";
+      return "Good for momentum.";
+    case "important":
+      if (entry.isPinned) return "Pinned task.";
+      if (entry.isOverdue || entry.isToday) return "May matter today.";
+      return "Scheduled soon.";
+    case "needsFocus":
+      if (entry.focusRequired === "deep") return "Needs deeper attention.";
+      return "Good for a focused session.";
+    case "canDoAnywhere":
+      if (entry.taskContext === "anywhere") return "Can be done anywhere.";
+      return "No special setup needed.";
+    case "feelingHeavy":
+      if (entry.heavinessScore >= 3) return "This has been moved a few times.";
+      if (entry.hasFirstAction || entry.hasMinimumVersion) {
+        return "Try the smallest useful version.";
+      }
+      return "May need a softer start.";
+    case "todayOnly":
+      if (getPrimaryTaskTimestamp(entry.task) !== null) {
+        return "Scheduled for today.";
+      }
+      return "Part of today’s plan.";
+    default:
+      return "Match tasks to your energy.";
+  }
+};
+
+export const getEnergyTaskSuggestions = (
+  tasks,
+  matchType,
+  now = new Date(),
+  options = {}
+) => {
+  if (!matchType) return [];
+
+  const safeTasks = Array.isArray(tasks) ? tasks.filter(Boolean) : [];
+  if (!safeTasks.length) return [];
+
+  const numericLimit = Number(options?.limit);
+  const limit =
+    Number.isFinite(numericLimit) && numericLimit > 0
+      ? Math.min(Math.round(numericLimit), 12)
+      : 7;
+
+  const matchingEntries = safeTasks
+    .map((task, index) => toFilterEntry(task, index, now, options))
+    .filter((entry) => matchesEntryForFilter(entry, matchType, options));
+
+  return sortEntriesForFilter(matchingEntries, matchType, options)
+    .slice(0, limit)
+    .map((entry, index) => ({
+      task: entry.task,
+      reason: getSuggestionReasonForFilter(entry, matchType),
+      score: limit - index,
+    }));
 };
