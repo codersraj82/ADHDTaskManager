@@ -90,7 +90,7 @@ function DatePickerModal({
   return (
     <Modal visible={visible} transparent animationType="fade">
       <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-        <View className="flex-1 bg-[#050607]/90 justify-center px-5">
+        <View className="flex-1 bg-[#050607]/95 justify-center px-5">
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : undefined}
           >
@@ -172,4 +172,3 @@ function DatePickerModal({
 }
 
 export default memo(DatePickerModal);
-

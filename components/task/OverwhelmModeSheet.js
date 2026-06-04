@@ -31,7 +31,7 @@ export default function OverwhelmModeSheet({
       <View className="flex-1 justify-end">
         <Pressable
           onPress={onClose}
-          className="absolute inset-0 bg-[#061414]/88"
+          className="absolute inset-0 bg-[#061414]/95"
           accessibilityLabel="Close Overwhelm Mode"
         />
 

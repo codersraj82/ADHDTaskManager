@@ -255,7 +255,7 @@ const FOCUS_AUTO_DISMISS_COUNTDOWN_SECONDS = Math.max(
 );
 const HEADER_HIDE_SCROLL_THRESHOLD = 48;
 const HEADER_SHOW_SCROLL_THRESHOLD = 12;
-const HEADER_HIDE_OFFSET_FALLBACK = 172;
+const HEADER_HIDE_OFFSET_FALLBACK = 184;
 const HEADER_AFFIRMATION_MARQUEE_GAP = 56;
 const HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC = 24;
 const HEADER_AFFIRMATION_MIN_DURATION_MS = 12000;
@@ -1167,7 +1167,7 @@ export default function Home() {
     if (!headerAffirmationViewportWidth || !headerAffirmationTextWidth) {
       return false;
     }
-    return headerAffirmationTextWidth > headerAffirmationViewportWidth - 4;
+    return headerAffirmationTextWidth > headerAffirmationViewportWidth * 1.9;
   }, [headerAffirmationTextWidth, headerAffirmationViewportWidth]);
 
   const handleHeaderAffirmationViewportLayout = useCallback((event) => {
@@ -1956,7 +1956,7 @@ export default function Home() {
   const smartTaskEmojiPulse = useSharedValue(0);
   const currentTaskFabPulse = useSharedValue(0);
   const recoveryBackdropStyle = useAnimatedStyle(() => ({
-    opacity: recoverySheetProgress.value * 0.86,
+    opacity: recoverySheetProgress.value * 0.96,
   }));
   const recoverySheetStyle = useAnimatedStyle(() => ({
     opacity: recoverySheetProgress.value,
@@ -1967,7 +1967,7 @@ export default function Home() {
     transform: [{ scale: 0.94 + recoverySuccessPulse.value * 0.06 }],
   }));
   const todayPlanBackdropStyle = useAnimatedStyle(() => ({
-    opacity: todayPlanSheetProgress.value * 0.82,
+    opacity: todayPlanSheetProgress.value * 0.96,
   }));
   const todayPlanSheetStyle = useAnimatedStyle(() => ({
     opacity: todayPlanSheetProgress.value,
@@ -9151,11 +9151,17 @@ export default function Home() {
     });
   }, []);
 
-  const renderFixedHeader = () => (
+  const renderFixedHeader = (inScrollContent = false) => (
     <Reanimated.View
       onLayout={handleHeaderLayout}
-      style={[headerAnimatedStyle, { paddingTop: Math.max(insets.top, 8) + 4 }]}
-      className="absolute top-0 left-0 right-0 z-30 bg-[#061414]/95 px-4 pb-4 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]"
+      style={
+        inScrollContent
+          ? { paddingTop: Math.max(insets.top, 8) + 4 }
+          : [headerAnimatedStyle, { paddingTop: Math.max(insets.top, 8) + 4 }]
+      }
+      className={`${
+        inScrollContent ? "relative" : "absolute top-0 left-0 right-0 z-30"
+      } bg-[#061414]/95 px-4 pb-4 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]`}
     >
       <View className="flex-row items-center">
         {renderAvatar("small")}
@@ -9180,11 +9186,11 @@ export default function Home() {
       </View>
       <Animated.View
         style={{ opacity: affirmationOpacity }}
-        className="mt-4 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 h-[44px] justify-center"
+        className="mt-3 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 py-2 min-h-[54px] justify-center"
       >
         <View
           onLayout={handleHeaderAffirmationViewportLayout}
-          className="relative h-5 justify-center overflow-hidden"
+          className="relative min-h-[38px] justify-center overflow-hidden"
         >
           {shouldScrollHeaderAffirmation ? (
             <Reanimated.View
@@ -9201,9 +9207,9 @@ export default function Home() {
             </Reanimated.View>
           ) : (
             <Text
-              numberOfLines={1}
+              numberOfLines={2}
               ellipsizeMode="tail"
-              className="text-[#E8F4F4] text-sm font-bold leading-5"
+              className="text-[#E8F4F4] text-sm font-bold leading-5 flex-shrink"
             >
               {currentAffirmation}
             </Text>
@@ -9685,7 +9691,7 @@ export default function Home() {
 
   const renderDrawer = () => (
     <Modal visible={drawerVisible} transparent animationType="fade">
-      <Pressable onPress={closeDrawer} className="flex-1 bg-[#061414]/80">
+      <Pressable onPress={closeDrawer} className="flex-1 bg-[#061414]/92">
         <Animated.View
           style={{ transform: [{ translateX: drawerX }] }}
           className="w-[82%] max-w-[320px] h-full bg-[#0B1F1F] border-r border-[#66b9b9]/30 px-5 pt-14 pb-8 shadow-2xl shadow-[#66b9b9]/20"
@@ -10842,7 +10848,7 @@ export default function Home() {
       <View className="flex-1 justify-end">
         <Pressable
           onPress={closeProgressTaskSheet}
-          className="absolute inset-0 bg-[#061414]/88"
+          className="absolute inset-0 bg-[#061414]/95"
         />
         <View className="bg-[#0B1F1F] rounded-t-[30px] border border-[#66b9b9]/30 px-4 pt-4 pb-5 max-h-[78%]">
           <View className="flex-row items-start justify-between pb-3 border-b border-[#66b9b9]/20">
@@ -11038,9 +11044,11 @@ export default function Home() {
   };
 
   const renderTaskSearchPanel = () => (
-    <View className="mx-4 mb-4">
-      <View className="rounded-2xl border border-[#337a7a]/35 bg-[#123131]/72 px-3.5 py-2.5 flex-row items-center">
-        <Feather name="search" size={16} color={COLORS.accent} />
+    <View className="mx-4 mb-3">
+      <View className="rounded-2xl border border-[#66b9b9]/50 bg-[#0B1F1F] px-3 py-2 flex-row items-center shadow-xl shadow-[#66b9b9]/15">
+        <View className="w-8 h-8 rounded-xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center">
+          <Feather name="search" size={15} color={COLORS.accent} />
+        </View>
         <TextInput
           value={taskSearchQuery}
           onChangeText={setTaskSearchQuery}
@@ -11049,7 +11057,7 @@ export default function Home() {
           accessibilityLabel="Search tasks"
           accessibilityHint="Search pending and completed tasks"
           returnKeyType="search"
-          className="flex-1 text-[#E8F4F4] text-sm font-semibold ml-2 py-1"
+          className="flex-1 text-[#E8F4F4] text-sm font-semibold ml-2 py-1.5"
         />
         {isTaskSearchOpen ? (
           <TouchableOpacity
@@ -11057,15 +11065,15 @@ export default function Home() {
             accessibilityLabel="Clear task search"
             activeOpacity={0.82}
             onPress={closeTaskSearchSurfaces}
-            className="ml-2 rounded-full border border-[#337a7a]/35 bg-[#061414]/55 p-1.5"
+            className="ml-2 rounded-full border border-[#66b9b9]/30 bg-[#123131]/80 p-1.5"
           >
-            <Feather name="x" size={14} color={COLORS.muted} />
+            <Feather name="x" size={14} color={COLORS.accent} />
           </TouchableOpacity>
         ) : null}
       </View>
 
       {isTaskSearchOpen ? (
-        <View className="mt-2 rounded-2xl border border-[#337a7a]/30 bg-[#0B1F1F] p-3">
+        <View className="mt-2 rounded-2xl border border-[#66b9b9]/35 bg-[#0B1F1F] p-3 shadow-xl shadow-[#66b9b9]/10">
           <View className="flex-row items-center justify-between mb-2">
             <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
               Search results
@@ -11216,7 +11224,7 @@ export default function Home() {
         animationType="slide"
         onRequestClose={closeEnergySuggestionSheet}
       >
-        <View className="flex-1 justify-end bg-[#061414]/80">
+        <View className="flex-1 justify-end bg-[#061414]/95">
           <View className="max-h-[82%] rounded-t-[28px] border-t border-[#66b9b9]/30 bg-[#0B1F1F] px-5 pt-4 pb-6 shadow-2xl shadow-[#66b9b9]/15">
             <View className="flex-row items-start justify-between mb-3">
               <View className="flex-1 pr-3">
@@ -12247,21 +12255,26 @@ export default function Home() {
   return (
     <>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
-      {renderFixedHeader()}
       {renderFloatingMenuShortcut()}
       <Reanimated.ScrollView
         ref={scrollRef}
         className="flex-1 bg-[#061414]"
+        stickyHeaderIndices={[1]}
         scrollEnabled={!isSubtaskReordering}
         onScroll={homeScrollHandler}
         scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         contentContainerStyle={{
-          paddingTop: headerContainerHeight + 14,
           paddingBottom: listBottomPadding,
         }}
       >
+        {renderFixedHeader(true)}
+
+        <View className="z-20 bg-[#061414]/95 pt-3 pb-1 border-b border-[#66b9b9]/15">
+          {renderTaskSearchPanel()}
+        </View>
+
         <Text
           className="hidden"
         >
@@ -12637,8 +12650,6 @@ export default function Home() {
           </View>
         </View>
 
-        {renderTaskSearchPanel()}
-
         <View className="mx-4 mb-4">
           <TouchableOpacity
             accessibilityRole="button"
@@ -12799,7 +12810,7 @@ export default function Home() {
         animationType="fade"
         onRequestClose={closeTodayPlanCelebration}
       >
-        <View className="flex-1 bg-[#061414]/88 justify-center px-6">
+        <View className="flex-1 bg-[#061414]/95 justify-center px-6">
           <View
             accessible
             accessibilityRole="alert"
@@ -12857,7 +12868,7 @@ export default function Home() {
           setTaskMoodPromptTaskId(null);
         }}
       >
-        <View className="flex-1 bg-[#061414]/90 justify-end px-4 pb-8">
+        <View className="flex-1 bg-[#061414]/95 justify-end px-4 pb-8">
           <View className="bg-[#0B1F1F] rounded-[28px] border border-[#66b9b9]/30 p-5 shadow-2xl shadow-[#66b9b9]/15">
             <Text className="text-[#E8F4F4] text-lg font-black">
               How did this task feel?
@@ -12907,7 +12918,7 @@ export default function Home() {
           keyboardVerticalOffset={modalKeyboardOffset}
         >
           <View
-            className="flex-1 bg-[#061414]/90 justify-end px-4"
+            className="flex-1 bg-[#061414]/95 justify-end px-4"
             style={{ paddingBottom: modalBottomPadding }}
           >
             <View className="max-h-[86%] bg-[#0B1F1F] rounded-[28px] border border-[#66b9b9]/30 p-5 shadow-2xl shadow-[#66b9b9]/15">
@@ -13763,7 +13774,7 @@ export default function Home() {
       </Modal>
 
       <Modal visible={editRepeatScopeModalVisible} transparent animationType="fade">
-        <View className="flex-1 bg-[#061414]/90 justify-center px-6">
+        <View className="flex-1 bg-[#061414]/95 justify-center px-6">
           <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/15">
             <Text className="text-[#66b9b9] text-xl font-black mb-4 uppercase tracking-tight">
               Apply Changes
@@ -13816,7 +13827,7 @@ export default function Home() {
 
       {/* Section Date Time Modal */}
       <Modal visible={timeModalVisible} transparent animationType="fade">
-        <View className="flex-1 bg-[#061414]/90 justify-center px-6">
+        <View className="flex-1 bg-[#061414]/95 justify-center px-6">
           <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
             <Text className="text-[#E8F4F4] text-xl font-black mb-6 uppercase tracking-tighter text-center">
               Set Focus Time ⏱
@@ -13943,7 +13954,7 @@ export default function Home() {
       </TouchableOpacity>
 
       <Modal visible={celebration.visible} transparent animationType="fade">
-        <View className="flex-1 bg-[#061414]/90 justify-center items-center px-8">
+        <View className="flex-1 bg-[#061414]/95 justify-center items-center px-8">
           <Animated.View
             style={{
               transform: [{ scale: modalScale }],
@@ -13979,7 +13990,7 @@ export default function Home() {
         animationType="fade"
         onRequestClose={closeSnoozeAffirmation}
       >
-        <View className="flex-1 bg-[#061414]/88 justify-center px-6">
+        <View className="flex-1 bg-[#061414]/95 justify-center px-6">
           <View
             accessible
             accessibilityRole="alert"
@@ -14019,7 +14030,7 @@ export default function Home() {
       </Modal>
 
       <Modal visible={deleteModalVisible} transparent animationType="fade">
-        <View className="flex-1 bg-[#061414]/90 justify-center px-6">
+        <View className="flex-1 bg-[#061414]/95 justify-center px-6">
           <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#FF7B7B]/45 shadow-2xl shadow-[#FF7B7B]/15">
             <Text className="text-[#FF7B7B] text-xl font-black mb-4 uppercase tracking-tight">
               Delete Task
