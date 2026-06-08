@@ -43,6 +43,7 @@ import {
   MOOD_HEADER_SUPPORT_AFFIRMATIONS,
   TASK_START_AFFIRMATIONS,
 } from "../../utils/affirmations";
+import { ABOUT_APP_CONTENT } from "../../utils/aboutContent";
 import {
   getRandomAffirmation,
   getSectionAffirmations,
@@ -192,7 +193,7 @@ const MENU_ITEMS = [
   { key: "tasks", label: "Tasks", icon: "🗓️" },
   { key: "mood-tracker", label: "Mood Tracker", icon: "🧠" },
   { key: "settings", label: "Settings", icon: "⚙️" },
-  { key: "about", label: "About", icon: "ℹ️" },
+  { key: "about", label: "About This App", icon: "ℹ️" },
   { key: "support", label: "Support This Project", icon: "❤️" },
 ];
 
@@ -262,6 +263,9 @@ const APP_HEADER_AFFIRMATION_HEIGHT = 58;
 const APP_HEADER_AFFIRMATION_TEXT_HEIGHT = 40;
 const FLOATING_MENU_BUTTON_SIZE = 44;
 const FLOATING_MENU_SEARCH_GAP = 8;
+const TASK_SEARCH_TOP_GAP = 12;
+const TASK_SEARCH_CLOSED_SPACER_HEIGHT = 76;
+const TASK_SEARCH_OPEN_SPACER_HEIGHT = 468;
 const HEADER_HIDE_SCROLL_THRESHOLD = 48;
 const HEADER_SHOW_SCROLL_THRESHOLD = 12;
 const HEADER_HIDE_OFFSET_FALLBACK = 184;
@@ -917,6 +921,7 @@ export default function Home() {
   const insets = useSafeAreaInsets();
   const headerTopPadding = Math.max(insets.top, 8) + APP_HEADER_SAFE_TOP_GAP;
   const headerContainerHeight = headerTopPadding + APP_HEADER_CONTENT_HEIGHT;
+  const floatingControlTop = Math.max(insets.top, 8) + 6;
   const [tasks, setTasks] = useState([
     {
       id: 1,
@@ -2041,6 +2046,24 @@ export default function Home() {
       { translateY: (1 - floatingMenuOpacity.value) * -8 },
       { scale: 0.96 + floatingMenuOpacity.value * 0.04 },
     ],
+  }));
+  const taskSearchFloatingContainerStyle = useAnimatedStyle(() => ({
+    top:
+      headerContainerHeight +
+      TASK_SEARCH_TOP_GAP -
+      floatingMenuOpacity.value *
+        Math.max(
+          0,
+          headerContainerHeight + TASK_SEARCH_TOP_GAP - floatingControlTop
+        ),
+  }));
+  const taskSearchPanelFloatingStyle = useAnimatedStyle(() => ({
+    marginLeft: APP_HORIZONTAL_PADDING,
+    marginRight:
+      APP_HORIZONTAL_PADDING +
+      floatingMenuOpacity.value *
+        (FLOATING_MENU_BUTTON_SIZE + FLOATING_MENU_SEARCH_GAP),
+    marginBottom: 12,
   }));
 
   const homeScrollHandler = useAnimatedScrollHandler(
@@ -9245,7 +9268,7 @@ export default function Home() {
       pointerEvents={isHeaderCollapsed ? "auto" : "none"}
       style={[
         floatingMenuAnimatedStyle,
-        { top: Math.max(insets.top, 8) + 6, right: APP_HORIZONTAL_PADDING },
+        { top: floatingControlTop, right: APP_HORIZONTAL_PADDING },
       ]}
       className="absolute z-40"
     >
@@ -9981,6 +10004,35 @@ export default function Home() {
       </Text>
       <Text className="text-[#66b9b9] text-xs font-semibold text-center mt-1.5">
         {hint}
+      </Text>
+    </View>
+  );
+
+  const renderAboutSectionHeading = (title) => (
+    <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest mb-2 mt-2">
+      {title}
+    </Text>
+  );
+
+  const renderAboutBullet = (item) => (
+    <View key={`about-help-${item}`} className="flex-row items-start mb-2">
+      <View className="w-1.5 h-1.5 rounded-full bg-[#66b9b9]/80 mt-2 mr-2" />
+      <Text className="text-[#E8F4F4] text-sm leading-5 flex-1">
+        {item}
+      </Text>
+    </View>
+  );
+
+  const renderAboutFeatureCard = (feature) => (
+    <View
+      key={`about-feature-${feature.title}`}
+      className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-2.5"
+    >
+      <Text className="text-[#E8F4F4] text-sm font-black">
+        {feature.title}
+      </Text>
+      <Text className="text-[#9FB5B5] text-xs leading-5 mt-1.5">
+        {feature.body}
       </Text>
     </View>
   );
@@ -10787,6 +10839,60 @@ export default function Home() {
       );
     }
 
+    if (activePage === "about") {
+      return (
+        <>
+          <View className="bg-[#123131]/60 rounded-2xl p-5 border border-[#66b9b9]/25 mb-3">
+            <Text className="text-[#E8F4F4] text-lg font-black">
+              About This App
+            </Text>
+            <Text className="text-[#9FB5B5] text-sm leading-6 mt-2">
+              {ABOUT_APP_CONTENT.intro}
+            </Text>
+          </View>
+
+          {renderAboutSectionHeading("What this app helps with")}
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            {ABOUT_APP_CONTENT.helpsWith.map((item) => renderAboutBullet(item))}
+          </View>
+
+          {renderAboutSectionHeading("Key features")}
+          {ABOUT_APP_CONTENT.features.map((feature) => renderAboutFeatureCard(feature))}
+
+          {renderAboutSectionHeading("Who this app is for")}
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            {ABOUT_APP_CONTENT.audience.map((paragraph) => (
+              <Text
+                key={`about-audience-${paragraph}`}
+                className="text-[#E8F4F4] text-sm leading-6 mb-2"
+              >
+                {paragraph}
+              </Text>
+            ))}
+          </View>
+
+          {renderAboutSectionHeading("Our approach")}
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            {ABOUT_APP_CONTENT.approach.map((paragraph) => (
+              <Text
+                key={`about-approach-${paragraph}`}
+                className="text-[#E8F4F4] text-sm leading-6 mb-2"
+              >
+                {paragraph}
+              </Text>
+            ))}
+          </View>
+
+          {renderAboutSectionHeading("Important note")}
+          <View className="bg-[#061414]/65 rounded-2xl p-4 border border-[#66b9b9]/25 mb-3">
+            <Text className="text-[#9FB5B5] text-sm leading-6">
+              {ABOUT_APP_CONTENT.disclaimer}
+            </Text>
+          </View>
+        </>
+      );
+    }
+
     if (activePage === "settings") {
       return (
         <>
@@ -10957,6 +11063,8 @@ export default function Home() {
     const pageSubtitle =
       activePage === "tasks"
         ? "Review pending and completed tasks by time."
+        : activePage === "about"
+          ? "Self-management support, one small next step."
         : "Calm details, no pressure.";
     return (
       <Modal visible={!!activePage} transparent animationType="slide">
@@ -11060,15 +11168,7 @@ export default function Home() {
   };
 
   const renderTaskSearchPanel = () => (
-    <View
-      style={{
-        marginLeft: APP_HORIZONTAL_PADDING,
-        marginRight: isHeaderCollapsed
-          ? APP_HORIZONTAL_PADDING + FLOATING_MENU_BUTTON_SIZE + FLOATING_MENU_SEARCH_GAP
-          : APP_HORIZONTAL_PADDING,
-        marginBottom: 12,
-      }}
-    >
+    <Reanimated.View style={taskSearchPanelFloatingStyle}>
       <View className="rounded-2xl border border-[#66b9b9]/50 bg-[#0B1F1F] px-3 py-2 flex-row items-center shadow-xl shadow-[#66b9b9]/15">
         <View className="w-8 h-8 rounded-xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center">
           <Feather name="search" size={15} color={COLORS.accent} />
@@ -11128,7 +11228,7 @@ export default function Home() {
           )}
         </View>
       ) : null}
-    </View>
+    </Reanimated.View>
   );
 
   const renderEnergyTaskSuggestionRow = (suggestion) => {
@@ -12280,10 +12380,16 @@ export default function Home() {
     <>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
       {renderFloatingMenuShortcut()}
+      <Reanimated.View
+        pointerEvents="box-none"
+        style={taskSearchFloatingContainerStyle}
+        className="absolute left-0 right-0 z-30"
+      >
+        {renderTaskSearchPanel()}
+      </Reanimated.View>
       <Reanimated.ScrollView
         ref={scrollRef}
         className="flex-1 bg-[#061414]"
-        stickyHeaderIndices={[1]}
         scrollEnabled={!isSubtaskReordering}
         onScroll={homeScrollHandler}
         scrollEventThrottle={16}
@@ -12295,9 +12401,13 @@ export default function Home() {
       >
         {renderFixedHeader(true)}
 
-        <View className="z-20 bg-[#061414]/95 pt-3 pb-1 border-b border-[#66b9b9]/15">
-          {renderTaskSearchPanel()}
-        </View>
+        <View
+          style={{
+            height: isTaskSearchOpen
+              ? TASK_SEARCH_OPEN_SPACER_HEIGHT
+              : TASK_SEARCH_CLOSED_SPACER_HEIGHT,
+          }}
+        />
 
         <Text
           className="hidden"
