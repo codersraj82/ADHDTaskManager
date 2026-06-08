@@ -253,6 +253,15 @@ const FOCUS_AUTO_DISMISS_COUNTDOWN_SECONDS = Math.max(
   1,
   Math.round(FOCUS_AUTO_DISMISS_DELAY_MS / 1000)
 );
+const APP_HORIZONTAL_PADDING = 16;
+const APP_HEADER_SAFE_TOP_GAP = 4;
+const APP_HEADER_CONTENT_HEIGHT = 156;
+const APP_HEADER_BOTTOM_PADDING = 16;
+const APP_HEADER_TOP_ROW_HEIGHT = 54;
+const APP_HEADER_AFFIRMATION_HEIGHT = 58;
+const APP_HEADER_AFFIRMATION_TEXT_HEIGHT = 40;
+const FLOATING_MENU_BUTTON_SIZE = 44;
+const FLOATING_MENU_SEARCH_GAP = 8;
 const HEADER_HIDE_SCROLL_THRESHOLD = 48;
 const HEADER_SHOW_SCROLL_THRESHOLD = 12;
 const HEADER_HIDE_OFFSET_FALLBACK = 184;
@@ -906,6 +915,8 @@ const buildScheduledDateTimeForDay = (dayDate, sourceValue = null) => {
 //*************main component function********* */
 export default function Home() {
   const insets = useSafeAreaInsets();
+  const headerTopPadding = Math.max(insets.top, 8) + APP_HEADER_SAFE_TOP_GAP;
+  const headerContainerHeight = headerTopPadding + APP_HEADER_CONTENT_HEIGHT;
   const [tasks, setTasks] = useState([
     {
       id: 1,
@@ -1108,9 +1119,6 @@ export default function Home() {
   });
   const [isOverwhelmModeVisible, setIsOverwhelmModeVisible] = useState(false);
   const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
-  const [headerContainerHeight, setHeaderContainerHeight] = useState(
-    HEADER_HIDE_OFFSET_FALLBACK
-  );
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
   const [headerAffirmationViewportWidth, setHeaderAffirmationViewportWidth] =
     useState(0);
@@ -9142,28 +9150,31 @@ export default function Home() {
     );
   };
 
-  const handleHeaderLayout = useCallback((event) => {
-    const measured = Math.ceil(event?.nativeEvent?.layout?.height || 0);
-    if (!measured) return;
-    setHeaderContainerHeight((prev) => {
-      if (Math.abs(prev - measured) < 2) return prev;
-      return measured;
-    });
-  }, []);
-
   const renderFixedHeader = (inScrollContent = false) => (
     <Reanimated.View
-      onLayout={handleHeaderLayout}
       style={
         inScrollContent
-          ? { paddingTop: Math.max(insets.top, 8) + 4 }
-          : [headerAnimatedStyle, { paddingTop: Math.max(insets.top, 8) + 4 }]
+          ? {
+              height: headerContainerHeight,
+              paddingTop: headerTopPadding,
+              paddingHorizontal: APP_HORIZONTAL_PADDING,
+              paddingBottom: APP_HEADER_BOTTOM_PADDING,
+            }
+          : [
+              headerAnimatedStyle,
+              {
+                height: headerContainerHeight,
+                paddingTop: headerTopPadding,
+                paddingHorizontal: APP_HORIZONTAL_PADDING,
+                paddingBottom: APP_HEADER_BOTTOM_PADDING,
+              },
+            ]
       }
       className={`${
         inScrollContent ? "relative" : "absolute top-0 left-0 right-0 z-30"
-      } bg-[#061414]/95 px-4 pb-4 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]`}
+      } bg-[#061414]/95 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]`}
     >
-      <View className="flex-row items-center">
+      <View className="flex-row items-center" style={{ height: APP_HEADER_TOP_ROW_HEIGHT }}>
         {renderAvatar("small")}
         <View className="flex-1 px-3">
           <Text numberOfLines={1} className="text-[#E8F4F4] text-lg font-black tracking-tight">
@@ -9185,12 +9196,13 @@ export default function Home() {
         </TouchableOpacity>
       </View>
       <Animated.View
-        style={{ opacity: affirmationOpacity }}
-        className="mt-3 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 py-2 min-h-[54px] justify-center"
+        style={{ opacity: affirmationOpacity, height: APP_HEADER_AFFIRMATION_HEIGHT }}
+        className="mt-3 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 py-2 justify-center overflow-hidden"
       >
         <View
           onLayout={handleHeaderAffirmationViewportLayout}
-          className="relative min-h-[38px] justify-center overflow-hidden"
+          style={{ height: APP_HEADER_AFFIRMATION_TEXT_HEIGHT }}
+          className="relative justify-center overflow-hidden"
         >
           {shouldScrollHeaderAffirmation ? (
             <Reanimated.View
@@ -9233,14 +9245,18 @@ export default function Home() {
       pointerEvents={isHeaderCollapsed ? "auto" : "none"}
       style={[
         floatingMenuAnimatedStyle,
-        { top: Math.max(insets.top, 8) + 6 },
+        { top: Math.max(insets.top, 8) + 6, right: APP_HORIZONTAL_PADDING },
       ]}
-      className="absolute right-4 z-40"
+      className="absolute z-40"
     >
       <TouchableOpacity
         onPress={openDrawer}
         activeOpacity={0.8}
-        className="w-11 h-11 rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/35 items-center justify-center shadow-lg shadow-[#66b9b9]/15"
+        style={{
+          width: FLOATING_MENU_BUTTON_SIZE,
+          height: FLOATING_MENU_BUTTON_SIZE,
+        }}
+        className="rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/35 items-center justify-center shadow-lg shadow-[#66b9b9]/15"
       >
         <Text className="text-[#E8F4F4] text-2xl leading-none">{"\u2261"}</Text>
       </TouchableOpacity>
@@ -11044,7 +11060,15 @@ export default function Home() {
   };
 
   const renderTaskSearchPanel = () => (
-    <View className="mx-4 mb-3">
+    <View
+      style={{
+        marginLeft: APP_HORIZONTAL_PADDING,
+        marginRight: isHeaderCollapsed
+          ? APP_HORIZONTAL_PADDING + FLOATING_MENU_BUTTON_SIZE + FLOATING_MENU_SEARCH_GAP
+          : APP_HORIZONTAL_PADDING,
+        marginBottom: 12,
+      }}
+    >
       <View className="rounded-2xl border border-[#66b9b9]/50 bg-[#0B1F1F] px-3 py-2 flex-row items-center shadow-xl shadow-[#66b9b9]/15">
         <View className="w-8 h-8 rounded-xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center">
           <Feather name="search" size={15} color={COLORS.accent} />
