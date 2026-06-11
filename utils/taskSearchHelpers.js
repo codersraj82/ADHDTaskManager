@@ -1,4 +1,8 @@
 import { parseStoredDateTime } from "./formatDateTime";
+import {
+  getDisplayFileName,
+  normalizeTaskAttachments,
+} from "./taskAttachmentHelpers";
 
 const normalizeText = (value = "") =>
   String(value || "")
@@ -99,6 +103,11 @@ const scoreSecondaryField = (query, value, containsScore = 15) => {
 };
 
 const getAttachmentName = (task) => {
+  const attachments = normalizeTaskAttachments(task);
+  if (attachments.length) {
+    return attachments.map((attachment) => getDisplayFileName(attachment)).join(" ");
+  }
+
   const attachment = String(task?.attachment || "").trim();
   if (!attachment) return "";
   const parts = attachment.split(/[\\/]/).filter(Boolean);

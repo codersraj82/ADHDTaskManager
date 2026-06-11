@@ -68,6 +68,7 @@ export const initDB = () => {
     { name: "scheduledTime", type: "TEXT" },
     { name: "details", type: "TEXT" },
     { name: "attachment", type: "TEXT" },
+    { name: "attachments", type: "TEXT DEFAULT '[]'" },
     // Adding default empty arrays for JSON columns
     { name: "subtasks", type: "TEXT DEFAULT '[]'" },
     { name: "notificationId", type: "TEXT DEFAULT '[]'" },

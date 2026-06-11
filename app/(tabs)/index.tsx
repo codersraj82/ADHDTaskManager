@@ -135,6 +135,22 @@ import {
 } from "../../utils/taskSupportSignals";
 import { getOverwhelmSuggestions } from "../../utils/overwhelmMode";
 import {
+  MAX_TASK_ATTACHMENTS,
+  copyAttachmentToAppStorage,
+  downloadTaskAttachment,
+  getAttachmentFileUri,
+  getAttachmentIcon,
+  getDisplayFileName,
+  getFileExtension,
+  getPrimaryAttachmentUri,
+  isDuplicateAttachment,
+  normalizeTaskAttachments,
+  openTaskAttachment,
+  removeAttachmentFileIfAppOwned,
+  removeAttachmentFromTask,
+  serializeTaskAttachments,
+} from "../../utils/taskAttachmentHelpers";
+import {
   ENERGY_TASK_FILTERS,
   ENERGY_TASK_SUGGESTION_COPY,
   getEnergyTaskSuggestions,
@@ -1019,7 +1035,6 @@ export default function Home() {
   });
   const [scheduledDateTime, setScheduledDateTime] = useState("");
   const [taskDetails, setTaskDetails] = useState("");
-  const [taskAttachment, setTaskAttachment] = useState("");
   const [detailsHeight, setDetailsHeight] = useState(80);
   const [expandedTaskId, setExpandedTaskId] = useState(null);
   const [firstStepOnlyTaskId, setFirstStepOnlyTaskId] = useState(null);
@@ -1065,8 +1080,8 @@ export default function Home() {
 
   const [timeAdjusted, setTimeAdjusted] = useState(false);
 
-  const [attachmentUri, setAttachmentUri] = useState(null);
-  const [attachmentName, setAttachmentName] = useState("");
+  const [taskAttachments, setTaskAttachments] = useState([]);
+  const [expandedAttachmentTasks, setExpandedAttachmentTasks] = useState({});
   const [viewerVisible, setViewerVisible] = useState(false);
   const [currentFile, setCurrentFile] = useState({ uri: null, type: null });
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
@@ -2905,8 +2920,12 @@ export default function Home() {
           }
         }
 
+        const normalizedAttachments = normalizeTaskAttachments(task);
+
         return {
           ...task,
+          attachment: task.attachment || getPrimaryAttachmentUri(normalizedAttachments),
+          attachments: normalizedAttachments,
           completed: task.completed === 1 || task.completed === true,
           isPinned: task.isPinned === 1 || task.isPinned === true,
           subtasks: Array.isArray(parsedSubtasks) ? parsedSubtasks : [],
@@ -3368,7 +3387,7 @@ export default function Home() {
           repeatCustomDate TEXT DEFAULT '',
           repeatYearlyDate TEXT DEFAULT '',
           repeatGroupId TEXT DEFAULT '',
-          scheduledTime TEXT, details TEXT, attachment TEXT,
+          scheduledTime TEXT, details TEXT, attachment TEXT, attachments TEXT DEFAULT '[]',
           subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
           usePhoneAlarm INTEGER DEFAULT 0,
           strongAlarmId TEXT DEFAULT '',
@@ -3447,6 +3466,9 @@ export default function Home() {
           db.execSync(
             "ALTER TABLE tasks ADD COLUMN notificationId TEXT DEFAULT '[]';"
           );
+        }
+        if (!columnNames.includes("attachments")) {
+          db.execSync("ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT '[]';");
         }
         if (!columnNames.includes("usePhoneAlarm")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN usePhoneAlarm INTEGER DEFAULT 0;");
@@ -3585,52 +3607,58 @@ export default function Home() {
 
         // 3. Load All Data (Tasks + Section Settings)
         const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
-        const loadedTasks = taskResult.map((t) => ({
-          ...t,
-          completed: t.completed === 1,
-          completedAt: t.completedAt || null,
-          createdAt: t.createdAt || null,
-          moodType: t.moodType || "",
-          firstAction: t.firstAction || "",
-          minimumVersion: t.minimumVersion || "",
-          energyRequired: normalizeEnergyRequiredValue(t.energyRequired),
-          focusRequired: normalizeFocusRequiredValue(t.focusRequired),
-          taskContext: normalizeTaskContextValue(t.taskContext),
-          estimatedMinutes: normalizeEstimatedMinutesValue(t.estimatedMinutes),
-          startAssistUsedCount: Number(t.startAssistUsedCount || 0),
-          lastStartAssistAt: t.lastStartAssistAt || "",
-          stuckCount: Number(t.stuckCount || 0),
-          lastStuckAt: t.lastStuckAt || "",
-          reminderOpenCount: Number(t.reminderOpenCount || 0),
-          reminderStartNowCount: Number(t.reminderStartNowCount || 0),
-          reminderSnoozeCount: Number(t.reminderSnoozeCount || 0),
-          reminderMoveGentlyCount: Number(t.reminderMoveGentlyCount || 0),
-          reminderMakeSmallerCount: Number(t.reminderMakeSmallerCount || 0),
-          lastReminderActionAt: toIsoStringOrEmpty(t.lastReminderActionAt),
-          lastReminderAction:
-            typeof t.lastReminderAction === "string" ? t.lastReminderAction : "",
-          reminderActionHistory: parseReminderActionHistory(t.reminderActionHistory),
-          snoozeCount: Number(t.snoozeCount || 0),
-          lastSnoozedAt: toIsoStringOrEmpty(t.lastSnoozedAt),
-          rescheduleCount: Number(t.rescheduleCount || 0),
-          lastRescheduledAt: toIsoStringOrEmpty(t.lastRescheduledAt),
-          repeatType: normalizeRepeatType(t.repeatType),
-          repeatDays: parseRepeatDays(t.repeatDays),
-          repeatMonthlyType: t.repeatMonthlyType || "",
-          repeatCustomDate: t.repeatCustomDate || "",
-          repeatYearlyDate: t.repeatYearlyDate || "",
-          repeatGroupId: t.repeatGroupId || "",
-          subtasks: JSON.parse(t.subtasks || "[]"),
-          notificationId: JSON.parse(t.notificationId || "[]"),
-          usePhoneAlarm: Number(t.usePhoneAlarm || 0) === 1,
-          useStrongAlarm: Number(t.usePhoneAlarm || 0) === 1,
-          strongAlarmId:
-            typeof t.strongAlarmId === "string" ? t.strongAlarmId : "",
-          strongAlarmScheduledAt: toIsoStringOrEmpty(t.strongAlarmScheduledAt),
-          lastStrongAlarmResult: parseLastStrongAlarmResult(t.lastStrongAlarmResult),
-          strongAlarmSnoozeMinutes: Number(t.strongAlarmSnoozeMinutes || 5),
-          isPinned: t.isPinned === 1,
-        }));
+        const loadedTasks = taskResult.map((t) => {
+          const normalizedAttachments = normalizeTaskAttachments(t);
+
+          return {
+            ...t,
+            attachment: t.attachment || getPrimaryAttachmentUri(normalizedAttachments),
+            attachments: normalizedAttachments,
+            completed: t.completed === 1,
+            completedAt: t.completedAt || null,
+            createdAt: t.createdAt || null,
+            moodType: t.moodType || "",
+            firstAction: t.firstAction || "",
+            minimumVersion: t.minimumVersion || "",
+            energyRequired: normalizeEnergyRequiredValue(t.energyRequired),
+            focusRequired: normalizeFocusRequiredValue(t.focusRequired),
+            taskContext: normalizeTaskContextValue(t.taskContext),
+            estimatedMinutes: normalizeEstimatedMinutesValue(t.estimatedMinutes),
+            startAssistUsedCount: Number(t.startAssistUsedCount || 0),
+            lastStartAssistAt: t.lastStartAssistAt || "",
+            stuckCount: Number(t.stuckCount || 0),
+            lastStuckAt: t.lastStuckAt || "",
+            reminderOpenCount: Number(t.reminderOpenCount || 0),
+            reminderStartNowCount: Number(t.reminderStartNowCount || 0),
+            reminderSnoozeCount: Number(t.reminderSnoozeCount || 0),
+            reminderMoveGentlyCount: Number(t.reminderMoveGentlyCount || 0),
+            reminderMakeSmallerCount: Number(t.reminderMakeSmallerCount || 0),
+            lastReminderActionAt: toIsoStringOrEmpty(t.lastReminderActionAt),
+            lastReminderAction:
+              typeof t.lastReminderAction === "string" ? t.lastReminderAction : "",
+            reminderActionHistory: parseReminderActionHistory(t.reminderActionHistory),
+            snoozeCount: Number(t.snoozeCount || 0),
+            lastSnoozedAt: toIsoStringOrEmpty(t.lastSnoozedAt),
+            rescheduleCount: Number(t.rescheduleCount || 0),
+            lastRescheduledAt: toIsoStringOrEmpty(t.lastRescheduledAt),
+            repeatType: normalizeRepeatType(t.repeatType),
+            repeatDays: parseRepeatDays(t.repeatDays),
+            repeatMonthlyType: t.repeatMonthlyType || "",
+            repeatCustomDate: t.repeatCustomDate || "",
+            repeatYearlyDate: t.repeatYearlyDate || "",
+            repeatGroupId: t.repeatGroupId || "",
+            subtasks: JSON.parse(t.subtasks || "[]"),
+            notificationId: JSON.parse(t.notificationId || "[]"),
+            usePhoneAlarm: Number(t.usePhoneAlarm || 0) === 1,
+            useStrongAlarm: Number(t.usePhoneAlarm || 0) === 1,
+            strongAlarmId:
+              typeof t.strongAlarmId === "string" ? t.strongAlarmId : "",
+            strongAlarmScheduledAt: toIsoStringOrEmpty(t.strongAlarmScheduledAt),
+            lastStrongAlarmResult: parseLastStrongAlarmResult(t.lastStrongAlarmResult),
+            strongAlarmSnoozeMinutes: Number(t.strongAlarmSnoozeMinutes || 5),
+            isPinned: t.isPinned === 1,
+          };
+        });
         setTasks(loadedTasks);
         loadDailyMoodEntries();
 
@@ -5110,6 +5138,8 @@ export default function Home() {
       if (existing?.id) return;
 
       const createdAt = formatSqliteDateTime(new Date());
+      const nextTaskAttachments = normalizeTaskAttachments(nextTask);
+      const nextTaskAttachmentUri = getPrimaryAttachmentUri(nextTaskAttachments);
 
       const result = db.runSync(
         `INSERT INTO tasks (
@@ -5127,6 +5157,7 @@ export default function Home() {
           scheduledTime,
           details,
           attachment,
+          attachments,
           subtasks,
           notificationId,
           isPinned,
@@ -5143,7 +5174,7 @@ export default function Home() {
           stuckCount,
           lastStuckAt
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nextTask.title || "Task",
           nextTask.section || "Morning",
@@ -5158,7 +5189,8 @@ export default function Home() {
           repeatGroupId,
           nextTask.scheduledTime || "",
           nextTask.details || "",
-          nextTask.attachment || "",
+          nextTaskAttachmentUri,
+          serializeTaskAttachments(nextTaskAttachments),
           JSON.stringify(nextTask.subtasks || []),
           JSON.stringify([]),
           0,
@@ -5193,6 +5225,8 @@ export default function Home() {
         {
           ...nextTask,
           id: insertedId,
+          attachment: nextTaskAttachmentUri,
+          attachments: nextTaskAttachments,
           repeatType: normalized.repeatType,
           repeatDays: normalized.repeatDays,
           repeatMonthlyType: normalized.repeatMonthlyType,
@@ -5407,6 +5441,8 @@ export default function Home() {
         title: subtask.title,
         completed: false,
       }));
+      const taskAttachments = normalizeTaskAttachments(task);
+      const taskAttachmentUri = getPrimaryAttachmentUri(taskAttachments);
       const shouldCopyNotifications =
         Array.isArray(task.notificationId) && task.notificationId.length > 0;
 
@@ -5426,6 +5462,7 @@ export default function Home() {
         scheduledTime,
         details,
         attachment,
+        attachments,
         subtasks,
         notificationId,
         isPinned,
@@ -5442,7 +5479,7 @@ export default function Home() {
         stuckCount,
         lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
           task.title || "Task",
           task.section || "Morning",
@@ -5457,7 +5494,8 @@ export default function Home() {
           repeatGroupId,
           newScheduledTime,
           task.details || "",
-          task.attachment || "",
+          taskAttachmentUri,
+          serializeTaskAttachments(taskAttachments),
           JSON.stringify(recreatedSubtasks),
           JSON.stringify([]),
           0,
@@ -5495,6 +5533,8 @@ export default function Home() {
         completed: false,
         completedAt: null,
         repeatType: normalizedRepeat.repeatType,
+        attachment: taskAttachmentUri,
+        attachments: taskAttachments,
         repeatDays: normalizedRepeat.repeatDays,
         repeatMonthlyType: normalizedRepeat.repeatMonthlyType,
         repeatCustomDate: normalizedRepeat.repeatCustomDate,
@@ -5572,8 +5612,7 @@ export default function Home() {
     setRepeatCustomDate("");
     setRepeatYearlyDate("");
     setUsePhoneAlarm(false);
-    setAttachmentUri(null);
-    setAttachmentName("");
+    setTaskAttachments([]);
     setTimeAdjusted(false);
     setTimeError(false);
     setDetailsHeight(80);
@@ -5610,8 +5649,7 @@ export default function Home() {
     setRepeatCustomDate("");
     setRepeatYearlyDate("");
     setUsePhoneAlarm(false);
-    setAttachmentUri(null);
-    setAttachmentName("");
+    setTaskAttachments([]);
     setTimeAdjusted(false);
     setTimeError(false);
     setStartAssistEditHint("");
@@ -6437,6 +6475,7 @@ export default function Home() {
       setRepeatCustomDate(repeatSettings.repeatCustomDate);
       setRepeatYearlyDate(repeatSettings.repeatYearlyDate);
       setUsePhoneAlarm(Boolean(task.usePhoneAlarm ?? task.useStrongAlarm));
+      setTaskAttachments(normalizeTaskAttachments(task));
       setStartAssistEditHint(assistHint || "");
       setModalVisible(true);
     },
@@ -7439,6 +7478,11 @@ export default function Home() {
       normalizedFirstAction && !firstActionAlreadyInSubtasks
         ? [buildSubtask(normalizedFirstAction), ...baseSubtasks]
         : baseSubtasks;
+    const attachmentsToSave = normalizeTaskAttachments({
+      ...editingTask,
+      attachments: taskAttachments,
+      attachment: taskAttachments.length ? getPrimaryAttachmentUri(taskAttachments) : "",
+    });
 
     return {
       finalTime,
@@ -7455,6 +7499,7 @@ export default function Home() {
       taskContext: normalizedTaskContext,
       estimatedMinutes: normalizedEstimatedMinutes,
       subtasksToSave,
+      attachmentsToSave,
     };
   };
   const executeTaskSave = async (scope = "single", explicitDraft = null) => {
@@ -7476,7 +7521,10 @@ export default function Home() {
       taskContext: draftTaskContext,
       estimatedMinutes: draftEstimatedMinutes,
       subtasksToSave,
+      attachmentsToSave,
     } = draft;
+    const serializedAttachments = serializeTaskAttachments(attachmentsToSave);
+    const legacyAttachmentUri = getPrimaryAttachmentUri(attachmentsToSave);
 
     if (isEditMode && editingTask) {
       const editingTime =
@@ -7505,6 +7553,7 @@ export default function Home() {
       }
 
       const updatedById = new Map();
+      const removedAttachmentsToCleanUp = [];
 
       for (const targetTask of targets) {
         await cancelTaskReminders(targetTask.notificationId);
@@ -7533,6 +7582,18 @@ export default function Home() {
               scheduledTime: scheduleForTarget,
             }, { source: "normal" })
           : [];
+        const previousAttachments = normalizeTaskAttachments(targetTask);
+        previousAttachments.forEach((attachment) => {
+          const stillAttached = attachmentsToSave.some(
+            (nextAttachment) => nextAttachment.id === attachment.id
+          );
+          if (!stillAttached) {
+            removedAttachmentsToCleanUp.push({
+              taskId: targetTask.id,
+              attachment,
+            });
+          }
+        });
 
         db.runSync(
           `UPDATE tasks
@@ -7541,6 +7602,7 @@ export default function Home() {
                scheduledTime = ?,
                details = ?,
                attachment = ?,
+               attachments = ?,
                 subtasks = ?,
                 notificationId = ?,
                 isPinned = ?,
@@ -7564,7 +7626,8 @@ export default function Home() {
             selectedSection,
             scheduleForTarget,
             taskDetails,
-            attachmentUri || "",
+            legacyAttachmentUri,
+            serializedAttachments,
             JSON.stringify(subtasksToSave),
             JSON.stringify(reminderIds),
             targetTask.isPinned ? 1 : 0,
@@ -7592,7 +7655,8 @@ export default function Home() {
           section: selectedSection,
           scheduledTime: scheduleForTarget,
           details: taskDetails,
-          attachment: attachmentUri,
+          attachment: legacyAttachmentUri,
+          attachments: attachmentsToSave,
           subtasks: subtasksToSave,
           notificationId: reminderIds,
           isPinned: !!targetTask.isPinned,
@@ -7628,8 +7692,28 @@ export default function Home() {
         prev.map((task) => (updatedById.has(task.id) ? updatedById.get(task.id) : task))
       );
 
-      setAttachmentUri(null);
-      setAttachmentName("");
+      if (removedAttachmentsToCleanUp.length) {
+        const nextTaskList = (Array.isArray(tasksRef.current)
+          ? tasksRef.current
+          : []
+        ).map((task) => (updatedById.has(task.id) ? updatedById.get(task.id) : task));
+
+        for (const { attachment } of removedAttachmentsToCleanUp) {
+          const uri = getAttachmentFileUri(attachment);
+          const stillReferenced = nextTaskList.some((task) => {
+            if (!task) return false;
+            return normalizeTaskAttachments(task).some(
+              (candidate) => getAttachmentFileUri(candidate) === uri
+            );
+          });
+
+          if (!stillReferenced) {
+            await removeAttachmentFileIfAppOwned(attachment);
+          }
+        }
+      }
+
+      setTaskAttachments([]);
       resetTaskForm();
       return {
         mode: "edit",
@@ -7659,6 +7743,7 @@ export default function Home() {
         scheduledTime,
         details,
         attachment,
+        attachments,
         subtasks,
         notificationId,
         isPinned,
@@ -7675,7 +7760,7 @@ export default function Home() {
         stuckCount,
         lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         taskName,
         selectedSection,
@@ -7690,7 +7775,8 @@ export default function Home() {
         repeatGroupId,
         finalTime,
         taskDetails,
-        attachmentUri || "",
+        legacyAttachmentUri,
+        serializedAttachments,
         JSON.stringify(subtasksToSave),
         JSON.stringify([]),
         0,
@@ -7738,7 +7824,8 @@ export default function Home() {
       createdAt,
       scheduledTime: finalTime,
       details: taskDetails,
-      attachment: attachmentUri,
+      attachment: legacyAttachmentUri,
+      attachments: attachmentsToSave,
       subtasks: subtasksToSave,
       notificationId: reminderIds,
       isPinned: false,
@@ -7775,8 +7862,7 @@ export default function Home() {
 
     setTasks((prev) => [...prev, createdTask]);
 
-    setAttachmentUri(null);
-    setAttachmentName("");
+    setTaskAttachments([]);
     resetTaskForm();
     return {
       mode: "create",
@@ -7916,6 +8002,8 @@ export default function Home() {
 
   const handleUndoDelete = () => {
     if (!lastDeletedTask) return;
+    const restoredAttachments = normalizeTaskAttachments(lastDeletedTask);
+    const restoredAttachmentUri = getPrimaryAttachmentUri(restoredAttachments);
 
     db.runSync(
       `INSERT INTO tasks (
@@ -7934,6 +8022,7 @@ export default function Home() {
         scheduledTime,
         details,
         attachment,
+        attachments,
         subtasks,
         notificationId,
         isPinned,
@@ -7961,7 +8050,7 @@ export default function Home() {
         lastSnoozedAt,
         rescheduleCount,
         lastRescheduledAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
@@ -7977,7 +8066,8 @@ export default function Home() {
         lastDeletedTask.repeatGroupId || "",
         lastDeletedTask.scheduledTime || "",
         lastDeletedTask.details || "",
-        lastDeletedTask.attachment || "",
+        restoredAttachmentUri,
+        serializeTaskAttachments(restoredAttachments),
         JSON.stringify(lastDeletedTask.subtasks || []),
         JSON.stringify(lastDeletedTask.notificationId || []),
         lastDeletedTask.isPinned ? 1 : 0,
@@ -8010,7 +8100,14 @@ export default function Home() {
       ]
     );
 
-    setTasks((prev) => [...prev, lastDeletedTask]);
+    setTasks((prev) => [
+      ...prev,
+      {
+        ...lastDeletedTask,
+        attachment: restoredAttachmentUri,
+        attachments: restoredAttachments,
+      },
+    ]);
     persistStrongAlarmTaskState(lastDeletedTask.id, {
       strongAlarmId: lastDeletedTask.strongAlarmId || "",
       strongAlarmScheduledAt: lastDeletedTask.strongAlarmScheduledAt || "",
@@ -8300,17 +8397,243 @@ export default function Home() {
     [closeSchedulePicker, datePickerModal, saveSectionConfig, sectionTimes]
   );
 
-  const pickDocument = async () => {
-    let result = await DocumentPicker.getDocumentAsync({
-      type: ["image/*", "application/pdf"], // Limit to images and PDFs
-      copyToCacheDirectory: true,
-    });
+  const handleRemoveDraftAttachment = async (attachmentId) => {
+    const attachmentToRemove = taskAttachments.find(
+      (attachment) => attachment.id === attachmentId
+    );
+    setTaskAttachments((prev) =>
+      prev.filter((attachment) => attachment.id !== attachmentId)
+    );
 
-    if (!result.canceled) {
-      setAttachmentUri(result.assets[0].uri);
-      setAttachmentName(result.assets[0].name);
+    if (!attachmentToRemove) return;
+
+    const savedAttachments = normalizeTaskAttachments(editingTask);
+    const wasAlreadySaved = savedAttachments.some(
+      (attachment) => attachment.id === attachmentToRemove.id
+    );
+
+    if (!wasAlreadySaved) {
+      await removeAttachmentFileIfAppOwned(attachmentToRemove);
     }
   };
+
+  const pickDocument = async () => {
+    if (taskAttachments.length >= MAX_TASK_ATTACHMENTS) {
+      Alert.alert("Attachments", "You can attach up to 10 files to one task.");
+      return;
+    }
+
+    const result = await DocumentPicker.getDocumentAsync({
+      type: "*/*",
+      copyToCacheDirectory: true,
+      multiple: true,
+    });
+
+    if (result.canceled) return;
+
+    const selectedAssets = Array.isArray(result.assets) ? result.assets : [];
+    if (!selectedAssets.length) return;
+
+    const nextAttachments = [...taskAttachments];
+    let duplicateCount = 0;
+    let attachErrorCount = 0;
+
+    for (const asset of selectedAssets) {
+      if (nextAttachments.length >= MAX_TASK_ATTACHMENTS) break;
+
+      if (isDuplicateAttachment(nextAttachments, asset)) {
+        duplicateCount += 1;
+        continue;
+      }
+
+      try {
+        const attachment = await copyAttachmentToAppStorage(asset);
+        nextAttachments.push(attachment);
+      } catch (error) {
+        attachErrorCount += 1;
+        console.log("Attachment copy error:", error);
+      }
+    }
+
+    setTaskAttachments(nextAttachments);
+
+    if (selectedAssets.length > nextAttachments.length - taskAttachments.length) {
+      const reachedLimit =
+        taskAttachments.length + selectedAssets.length > MAX_TASK_ATTACHMENTS;
+      if (reachedLimit) {
+        Alert.alert("Attachments", "You can attach up to 10 files to one task.");
+      }
+    }
+
+    if (duplicateCount > 0) {
+      Alert.alert("Attachments", "This file is already attached.");
+    }
+
+    if (attachErrorCount > 0) {
+      Alert.alert("Attachments", "Could not attach one of the selected files.");
+    }
+  };
+
+  const handleOpenAttachment = useCallback(async (attachment) => {
+    const result = await openTaskAttachment(attachment, {
+      openViewer: (uri, type) => {
+        setCurrentFile({ uri, type });
+        setViewerVisible(true);
+      },
+    });
+
+    if (!result?.success) {
+      Alert.alert("Attachments", "This file could not be opened on this device.");
+    }
+  }, []);
+
+  const handleDownloadAttachment = useCallback(async (attachment) => {
+    const result = await downloadTaskAttachment(attachment);
+    Alert.alert(
+      "Attachments",
+      result?.message ||
+        (result?.success
+          ? "Attachment saved."
+          : "Could not save this attachment on this device.")
+    );
+  }, []);
+
+  const isAttachmentReferencedByOtherTasks = useCallback(
+    (attachment, excludedTaskIds = []) => {
+      const uri = getAttachmentFileUri(attachment);
+      if (!uri) return false;
+
+      const excludedIds = new Set(
+        (Array.isArray(excludedTaskIds) ? excludedTaskIds : [excludedTaskIds])
+          .filter((id) => id !== undefined && id !== null)
+          .map((id) => String(id))
+      );
+      const allTasks = Array.isArray(tasksRef.current) ? tasksRef.current : [];
+
+      return allTasks.some((task) => {
+        if (!task || excludedIds.has(String(task.id))) return false;
+        return normalizeTaskAttachments(task).some(
+          (candidate) => getAttachmentFileUri(candidate) === uri
+        );
+      });
+    },
+    []
+  );
+
+  const deleteTaskAttachment = useCallback(
+    async (taskId, attachmentId) => {
+      const allTasks = Array.isArray(tasksRef.current) ? tasksRef.current : [];
+      const currentTask = allTasks.find(
+        (task) => String(task?.id) === String(taskId)
+      );
+
+      if (!currentTask) {
+        Alert.alert("Attachments", "Could not delete this attachment.");
+        return {
+          success: false,
+          errorCode: "TASK_NOT_FOUND",
+          message: "Could not delete this attachment.",
+        };
+      }
+
+      const currentAttachments = normalizeTaskAttachments(currentTask);
+      const attachmentToDelete = currentAttachments.find(
+        (attachment) => attachment.id === attachmentId
+      );
+
+      if (!attachmentToDelete) {
+        Alert.alert("Attachments", "Could not delete this attachment.");
+        return {
+          success: false,
+          errorCode: "ATTACHMENT_NOT_FOUND",
+          message: "Could not delete this attachment.",
+        };
+      }
+
+      const updatedTask = removeAttachmentFromTask(currentTask, attachmentId);
+      const nextAttachments = normalizeTaskAttachments({
+        ...updatedTask,
+        attachment: updatedTask.attachments?.length
+          ? getPrimaryAttachmentUri(updatedTask.attachments)
+          : "",
+      });
+      const nextLegacyAttachment = getPrimaryAttachmentUri(nextAttachments);
+
+      try {
+        db.runSync(
+          "UPDATE tasks SET attachment = ?, attachments = ? WHERE id = ?",
+          [nextLegacyAttachment, serializeTaskAttachments(nextAttachments), taskId]
+        );
+
+        setTasks((prev) =>
+          prev.map((task) =>
+            String(task.id) === String(taskId)
+              ? {
+                  ...task,
+                  attachment: nextLegacyAttachment,
+                  attachments: nextAttachments,
+                }
+              : task
+          )
+        );
+
+        let fileDeleted = false;
+        if (!isAttachmentReferencedByOtherTasks(attachmentToDelete, [taskId])) {
+          const deleteResult =
+            await removeAttachmentFileIfAppOwned(attachmentToDelete);
+          fileDeleted = Boolean(deleteResult?.fileDeleted);
+        }
+
+        Alert.alert(
+          "Attachments",
+          fileDeleted
+            ? "Attachment deleted."
+            : "Attachment removed from this task."
+        );
+
+        return {
+          success: true,
+          removed: true,
+          fileDeleted,
+          taskUpdated: true,
+        };
+      } catch (error) {
+        console.log("Attachment delete error:", error);
+        Alert.alert("Attachments", "Could not delete this attachment.");
+        return {
+          success: false,
+          errorCode: "TASK_UPDATE_FAILED",
+          message: "Could not delete this attachment.",
+        };
+      }
+    },
+    [isAttachmentReferencedByOtherTasks]
+  );
+
+  const confirmDeleteAttachment = useCallback(
+    (task, attachment) => {
+      if (!task || !attachment) return;
+
+      Alert.alert("Delete attachment?", "This removes the file from this task.", [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void deleteTaskAttachment(task.id, attachment.id);
+          },
+        },
+      ]);
+    },
+    [deleteTaskAttachment]
+  );
+
+  const toggleAttachmentListExpansion = useCallback((taskId) => {
+    setExpandedAttachmentTasks((prev) => ({
+      ...prev,
+      [taskId]: !prev[taskId],
+    }));
+  }, []);
 
   const saveOnboardingProfile = () => {
     const name = profileDraftName.trim();
@@ -9127,6 +9450,113 @@ export default function Home() {
       </Text>
     </View>
   );
+
+  const renderAttachmentList = (
+    task,
+    { showAll = false, allowExpand = true } = {}
+  ) => {
+    const attachments = normalizeTaskAttachments(task);
+    if (!attachments.length) return null;
+
+    const taskId = task?.id ?? "task";
+    const isExpanded = showAll || expandedAttachmentTasks[taskId];
+    const visibleAttachments = isExpanded ? attachments : attachments.slice(0, 3);
+    const hiddenCount = Math.max(attachments.length - visibleAttachments.length, 0);
+
+    return (
+      <View className="mt-3 p-3 rounded-2xl bg-[#061414]/55 border border-[#337a7a]/25">
+        <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-1">
+          Attachments
+        </Text>
+        {visibleAttachments.map((attachment, index) => {
+          const displayName = getDisplayFileName(attachment);
+          const extension = getFileExtension(displayName, attachment.mimeType);
+
+          return (
+            <View
+              key={`${taskId}-attachment-${attachment.id || index}`}
+              className="mt-2 rounded-xl border border-[#337a7a]/25 bg-[#123131]/45 p-2"
+            >
+              <View className="flex-row items-center">
+                <Feather
+                  name={getAttachmentIcon(attachment)}
+                  size={15}
+                  color={COLORS.accent}
+                />
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={() => handleOpenAttachment(attachment)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${displayName}`}
+                  className="flex-1 ml-2 mr-2"
+                >
+                  <Text
+                    numberOfLines={1}
+                    ellipsizeMode="middle"
+                    className="text-[#E8F4F4] text-xs font-bold"
+                  >
+                    {displayName}
+                  </Text>
+                </TouchableOpacity>
+                {extension ? (
+                  <View className="px-2 py-0.5 rounded-full bg-[#061414]/70 border border-[#66b9b9]/25">
+                    <Text className="text-[#66b9b9] text-[9px] font-black uppercase">
+                      {extension}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <View className="flex-row flex-wrap items-center mt-2 ml-6">
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={() => handleOpenAttachment(attachment)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${displayName}`}
+                  className="mr-3"
+                >
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                    Open
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={() => handleDownloadAttachment(attachment)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Download ${displayName}`}
+                  className="mr-3"
+                >
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                    Download
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={() => confirmDeleteAttachment(task, attachment)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Delete ${displayName}`}
+                >
+                  <Text className="text-[#FF7B7B] text-[10px] font-black uppercase tracking-widest">
+                    Delete
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          );
+        })}
+        {allowExpand && attachments.length > 3 ? (
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={() => toggleAttachmentListExpansion(taskId)}
+            className="self-start mt-2 px-3 py-1.5 rounded-full bg-[#123131]/70 border border-[#337a7a]/35"
+          >
+            <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+              {isExpanded ? "Show fewer" : `+${hiddenCount} more attachments`}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+    );
+  };
 
   const renderMoodSelectorRow = ({
     selectedMoodType,
@@ -10172,33 +10602,10 @@ export default function Home() {
                 </View>
               ) : null}
 
-              {tasksMenuSelectedTask.attachment ? (
-                <View className="mt-2 bg-[#061414]/60 border border-[#337a7a]/25 rounded-xl p-3">
-                  <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-1">
-                    Attachment
-                  </Text>
-                  <TouchableOpacity
-                    activeOpacity={0.84}
-                    accessibilityRole="button"
-                    accessibilityLabel="Open task attachment"
-                    onPress={() => {
-                      const attachmentUri = String(tasksMenuSelectedTask.attachment || "").trim();
-                      if (!attachmentUri) return;
-                      const isPdf = attachmentUri.toLowerCase().endsWith(".pdf");
-                      setCurrentFile({
-                        uri: attachmentUri,
-                        type: isPdf ? "pdf" : "image",
-                      });
-                      setViewerVisible(true);
-                    }}
-                    className="self-start bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2"
-                  >
-                    <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-                      Open Attachment
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              ) : null}
+              {renderAttachmentList(tasksMenuSelectedTask, {
+                showAll: true,
+                allowExpand: false,
+              })}
 
               {Array.isArray(tasksMenuSelectedTask.subtasks) &&
               tasksMenuSelectedTask.subtasks.length > 0 ? (
@@ -12287,25 +12694,7 @@ export default function Home() {
                       </Text>
                     )}
 
-                    {task.attachment ? (
-                      <TouchableOpacity
-                        onPress={() => {
-                          const isPdf = task.attachment
-                            .toLowerCase()
-                            .endsWith(".pdf");
-                          setCurrentFile({
-                            uri: task.attachment,
-                            type: isPdf ? "pdf" : "image",
-                          });
-                          setViewerVisible(true);
-                        }}
-                        className="mt-3 flex-row items-center bg-[#123131]/80 self-start p-1.5 px-3 rounded-full border border-[#66b9b9]/25"
-                      >
-                        <Text className="text-[#66b9b9] text-xs font-bold">
-                          View Attachment
-                        </Text>
-                      </TouchableOpacity>
-                    ) : null}
+                    {renderAttachmentList(task)}
 
                     <View className="mt-3 p-3 rounded-2xl bg-[#123131]/70 border border-[#66b9b9]/25">
                       <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
@@ -13858,21 +14247,76 @@ export default function Home() {
               ) : null}
             </View>
 
-            <TouchableOpacity
-              onPress={pickDocument}
-              className={`mt-2 p-4 rounded-2xl border flex-row items-center ${attachmentUri ? "bg-[#123131]/80 border-[#7DFFB3]/70" : "bg-[#061414]/45 border-[#66b9b9]/25"}`}
-            >
-              <Text className="text-[#E8F4F4] flex-1 font-semibold text-sm">
-                {attachmentUri
-                  ? `📎 ${attachmentName || "File Selected"}`
-                  : "📁 Upload Image or PDF"}
-              </Text>
-              {attachmentUri && (
-                <TouchableOpacity onPress={() => setAttachmentUri(null)} className="ml-2 bg-[#FF7B7B]/15 px-2 py-1 rounded-lg border border-[#FF7B7B]/25">
-                  <Text className="text-[#FF7B7B] font-black text-[10px] uppercase">Remove</Text>
+            <View className="mt-2 p-4 rounded-2xl border bg-[#061414]/45 border-[#66b9b9]/25">
+              <View className="flex-row items-center justify-between">
+                <View className="flex-1 pr-3">
+                  <Text className="text-[#E8F4F4] font-black text-sm">
+                    Attachments
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-[11px] font-semibold mt-1">
+                    Add bills, photos, PDFs, or notes related to this task.
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  activeOpacity={0.84}
+                  onPress={pickDocument}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add files"
+                  className="bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2"
+                >
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                    Add files
+                  </Text>
                 </TouchableOpacity>
-              )}
-            </TouchableOpacity>
+              </View>
+
+              {taskAttachments.length > 0 ? (
+                <View className="mt-3">
+                  {taskAttachments.map((attachment, index) => {
+                    const displayName = getDisplayFileName(attachment);
+                    const extension = getFileExtension(displayName, attachment.mimeType);
+
+                    return (
+                      <View
+                        key={`draft-attachment-${attachment.id || index}`}
+                        className="flex-row items-center rounded-xl border border-[#337a7a]/25 bg-[#123131]/45 p-2 mb-2"
+                      >
+                        <Feather
+                          name={getAttachmentIcon(attachment)}
+                          size={15}
+                          color={COLORS.accent}
+                        />
+                        <View className="flex-1 ml-2 mr-2">
+                          <Text
+                            numberOfLines={1}
+                            ellipsizeMode="middle"
+                            className="text-[#E8F4F4] text-xs font-bold"
+                          >
+                            {displayName}
+                          </Text>
+                        </View>
+                        {extension ? (
+                          <Text className="text-[#66b9b9] text-[9px] font-black uppercase mr-2">
+                            {extension}
+                          </Text>
+                        ) : null}
+                        <TouchableOpacity
+                          activeOpacity={0.82}
+                          onPress={() => handleRemoveDraftAttachment(attachment.id)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Remove ${displayName}`}
+                          className="bg-[#FF7B7B]/15 px-2 py-1 rounded-lg border border-[#FF7B7B]/25"
+                        >
+                          <Text className="text-[#FF7B7B] font-black text-[10px] uppercase">
+                            Remove
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
 
             <View className="mt-5 pt-3 border-t border-[#66b9b9]/20">
               {timeError ? (
