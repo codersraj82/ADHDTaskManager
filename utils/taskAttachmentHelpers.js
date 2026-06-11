@@ -1,6 +1,7 @@
 import { Linking, Platform } from "react-native";
 import { Directory, File, Paths } from "expo-file-system";
 import * as FileSystem from "expo-file-system/legacy";
+import * as IntentLauncher from "expo-intent-launcher";
 import * as Sharing from "expo-sharing";
 
 export const MAX_TASK_ATTACHMENTS = 10;
@@ -70,6 +71,8 @@ const PRESENTATION_EXTENSIONS = new Set(["ppt", "pptx", "odp"]);
 const TEXT_EXTENSIONS = new Set(["txt", "md", "rtf", "json", "csv"]);
 const ARCHIVE_EXTENSIONS = new Set(["zip", "rar", "7z", "tar", "gz"]);
 const TEXT_PREVIEW_MAX_BYTES = 250 * 1024;
+const ANDROID_ACTION_VIEW = "android.intent.action.VIEW";
+const ANDROID_FLAG_GRANT_READ_URI_PERMISSION = 1;
 
 const nowId = () =>
   `att-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -638,11 +641,11 @@ const openUriWithLinking = async (uri = "") => {
 };
 
 const copyAttachmentToShareCache = async (accessible = {}) => {
-  const shareDir = new Directory(Paths.cache, "share-attachments");
-  shareDir.create({ intermediates: true, idempotent: true });
+  const cacheDir = new Directory(Paths.cache, "open-attachments");
+  cacheDir.create({ intermediates: true, idempotent: true });
 
   const targetFile = new File(
-    shareDir,
+    cacheDir,
     ensureUniqueFileName(accessible.name || "attachment.bin")
   );
 
@@ -665,13 +668,37 @@ const copyAttachmentToShareCache = async (accessible = {}) => {
   return targetFile.uri;
 };
 
+const openAndroidFileWithIntent = async (accessible = {}) => {
+  const fileUri = accessible.uri.startsWith("file://")
+    ? await copyAttachmentToShareCache(accessible)
+    : accessible.uri;
+  const contentUri = fileUri.startsWith("file://")
+    ? await FileSystem.getContentUriAsync(fileUri)
+    : fileUri;
+
+  await IntentLauncher.startActivityAsync(ANDROID_ACTION_VIEW, {
+    data: contentUri,
+    type: accessible.mimeType || "application/octet-stream",
+    flags: ANDROID_FLAG_GRANT_READ_URI_PERMISSION,
+  });
+};
+
 export const openDocumentExternally = async (attachment = {}) => {
   const kind = getAttachmentKind(attachment);
   const accessible = await validateAttachmentFile(attachment);
   if (!accessible.success) return accessible;
 
-  const { uri, mimeType, name } = accessible;
   try {
+    if (Platform.OS === "android") {
+      await openAndroidFileWithIntent(accessible);
+      return {
+        success: true,
+        opened: true,
+        copied: accessible.uri.startsWith("file://"),
+      };
+    }
+
+    const { uri, mimeType, name } = accessible;
     if (uri.startsWith("file://")) {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) {
