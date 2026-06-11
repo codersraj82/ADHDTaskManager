@@ -1,4 +1,4 @@
-import { Linking, Platform } from "react-native";
+import { Linking, Platform, Share } from "react-native";
 import { Directory, File, Paths } from "expo-file-system";
 import * as FileSystem from "expo-file-system/legacy";
 
@@ -28,7 +28,11 @@ const MIME_EXTENSION_MAP = {
 
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "heic", "heif"]);
 const SPREADSHEET_EXTENSIONS = new Set(["xls", "xlsx", "csv", "ods"]);
+const WORD_EXTENSIONS = new Set(["doc", "docx", "odt"]);
+const PRESENTATION_EXTENSIONS = new Set(["ppt", "pptx", "odp"]);
 const TEXT_EXTENSIONS = new Set(["txt", "md", "rtf", "json", "csv"]);
+const ARCHIVE_EXTENSIONS = new Set(["zip", "rar", "7z", "tar", "gz"]);
+const TEXT_PREVIEW_MAX_BYTES = 250 * 1024;
 
 const nowId = () =>
   `att-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -217,16 +221,41 @@ export const getAttachmentIcon = (attachment = {}) => {
   if (mimeType.startsWith("image/") || IMAGE_EXTENSIONS.has(extension)) return "image";
   if (extension === "pdf" || mimeType === "application/pdf") return "file-text";
   if (SPREADSHEET_EXTENSIONS.has(extension)) return "grid";
+  if (WORD_EXTENSIONS.has(extension)) return "file-text";
+  if (PRESENTATION_EXTENSIONS.has(extension)) return "monitor";
   if (TEXT_EXTENSIONS.has(extension) || mimeType.startsWith("text/")) return "file-text";
   return "paperclip";
 };
 
-export const getAttachmentViewerType = (attachment = {}) => {
-  const extension = getFileExtension(getDisplayFileName(attachment), attachment.mimeType);
+export const getAttachmentKind = (attachment = {}) => {
+  const displayName = getDisplayFileName(attachment);
+  const extension = getFileExtension(displayName, attachment.mimeType);
   const mimeType = getSafeString(attachment.mimeType).toLowerCase();
 
   if (mimeType.startsWith("image/") || IMAGE_EXTENSIONS.has(extension)) return "image";
   if (extension === "pdf" || mimeType === "application/pdf") return "pdf";
+  if (SPREADSHEET_EXTENSIONS.has(extension)) return "spreadsheet";
+  if (WORD_EXTENSIONS.has(extension)) return "word";
+  if (PRESENTATION_EXTENSIONS.has(extension)) return "presentation";
+  if (TEXT_EXTENSIONS.has(extension) || mimeType.startsWith("text/")) return "text";
+  if (ARCHIVE_EXTENSIONS.has(extension)) return "archive";
+  return "unknown";
+};
+
+export const getAttachmentMimeType = (attachment = {}) => {
+  const mimeType = getSafeString(attachment.mimeType);
+  if (mimeType) return mimeType;
+
+  const extension = getFileExtension(getDisplayFileName(attachment));
+  const matchedMime = Object.entries(MIME_EXTENSION_MAP).find(
+    ([, mappedExtension]) => mappedExtension === extension
+  );
+
+  return matchedMime?.[0] || "application/octet-stream";
+};
+
+export const getAttachmentViewerType = (attachment = {}) => {
+  if (getAttachmentKind(attachment) === "image") return "image";
   return null;
 };
 
@@ -330,41 +359,161 @@ export const removeAttachmentFromTask = (task = {}, attachmentId = "") => {
   };
 };
 
-export const openTaskAttachment = async (attachment = {}, options = {}) => {
+const getOpenFailureMessage = (kind) => {
+  if (kind === "pdf") {
+    return "Could not open this PDF on this device. You can try Download.";
+  }
+
+  if (["word", "spreadsheet", "presentation"].includes(kind)) {
+    return "No app found to open this file. You can try Download.";
+  }
+
+  return "This file could not be opened on this device.";
+};
+
+export const ensureAttachmentAccessible = async (attachment = {}) => {
   const uri = getAttachmentFileUri(attachment);
   if (!uri) {
     return {
       success: false,
       errorCode: "ATTACHMENT_NOT_FOUND",
-      message: "This file could not be opened on this device.",
+      message: "This attachment file is missing. It may have been moved or removed.",
     };
   }
 
-  const viewerType = getAttachmentViewerType(attachment);
-  if (viewerType && typeof options.openViewer === "function") {
-    options.openViewer(uri, viewerType);
-    return { success: true };
-  }
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (uri.startsWith("file://") && info?.exists === false) {
+      return {
+        success: false,
+        errorCode: "FILE_NOT_FOUND",
+        message: "This attachment file is missing. It may have been moved or removed.",
+      };
+    }
 
+    return {
+      success: true,
+      attachment,
+      uri,
+      size: Number.isFinite(Number(info?.size)) ? Number(info.size) : attachment.size,
+    };
+  } catch (error) {
+    if (uri.startsWith("content://") || uri.startsWith("http://") || uri.startsWith("https://")) {
+      return { success: true, attachment, uri, size: attachment.size };
+    }
+
+    return {
+      success: false,
+      errorCode: "FILE_NOT_ACCESSIBLE",
+      message: "This file is no longer accessible. Try adding it again.",
+      error,
+    };
+  }
+};
+
+export const openAttachmentExternally = async (attachment = {}) => {
+  const kind = getAttachmentKind(attachment);
+  const accessible = await ensureAttachmentAccessible(attachment);
+  if (!accessible.success) return accessible;
+
+  const uri = accessible.uri;
   try {
     let openUri = uri;
     if (Platform.OS === "android" && uri.startsWith("file://")) {
       openUri = await FileSystem.getContentUriAsync(uri);
     }
+
     await Linking.openURL(openUri);
-    return { success: true };
+    return { success: true, opened: true };
   } catch (error) {
     return {
       success: false,
       errorCode: "OPEN_FAILED",
+      message: getOpenFailureMessage(kind),
+      error,
+    };
+  }
+};
+
+export const shareAttachment = async (attachment = {}) => {
+  const accessible = await ensureAttachmentAccessible(attachment);
+  if (!accessible.success) return accessible;
+
+  try {
+    let shareUrl = accessible.uri;
+    if (Platform.OS === "android" && shareUrl.startsWith("file://")) {
+      shareUrl = await FileSystem.getContentUriAsync(shareUrl);
+    }
+
+    await Share.share({
+      title: getDisplayFileName(attachment),
+      message: getDisplayFileName(attachment),
+      url: shareUrl,
+    });
+
+    return { success: true, shared: true };
+  } catch (error) {
+    return {
+      success: false,
+      errorCode: "SHARE_FAILED",
       message: "This file could not be opened on this device.",
       error,
     };
   }
 };
 
+export const openTaskAttachment = async (attachment = {}, options = {}) => {
+  const kind = getAttachmentKind(attachment);
+  const viewerType = getAttachmentViewerType(attachment);
+
+  if (viewerType && typeof options.openViewer === "function") {
+    const accessible = await ensureAttachmentAccessible(attachment);
+    if (!accessible.success) return accessible;
+
+    options.openViewer({
+      uri: accessible.uri,
+      type: viewerType,
+      name: getDisplayFileName(attachment),
+      attachment,
+    });
+    return { success: true, opened: true };
+  }
+
+  if (kind === "text" && typeof options.openTextViewer === "function") {
+    const accessible = await ensureAttachmentAccessible(attachment);
+    if (!accessible.success) return accessible;
+
+    const size = Number(accessible.size || attachment.size || 0);
+    if (!size || size <= TEXT_PREVIEW_MAX_BYTES) {
+      try {
+        const text = await FileSystem.readAsStringAsync(accessible.uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        options.openTextViewer({
+          uri: accessible.uri,
+          type: "text",
+          name: getDisplayFileName(attachment),
+          content: text,
+          attachment,
+        });
+        return { success: true, opened: true };
+      } catch {
+        // Fall through to external open.
+      }
+    }
+  }
+
+  const externalResult = await openAttachmentExternally(attachment);
+  if (externalResult.success) return externalResult;
+
+  const shareResult = await shareAttachment(attachment);
+  if (shareResult.success) return shareResult;
+
+  return externalResult;
+};
+
 const getDownloadMimeType = (attachment = {}) =>
-  getSafeString(attachment.mimeType) || "application/octet-stream";
+  getAttachmentMimeType(attachment);
 
 const copyAttachmentToAppSavedFolder = async (attachment = {}) => {
   const sourceUri = getAttachmentFileUri(attachment);

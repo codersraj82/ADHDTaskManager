@@ -29,7 +29,6 @@ import { Directory, File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
 
-import { WebView } from "react-native-webview"; // For PDF viewing
 import * as Notifications from "expo-notifications";
 import DatePickerModal from "../../components/DatePickerModal";
 import {
@@ -8474,19 +8473,6 @@ export default function Home() {
     }
   };
 
-  const handleOpenAttachment = useCallback(async (attachment) => {
-    const result = await openTaskAttachment(attachment, {
-      openViewer: (uri, type) => {
-        setCurrentFile({ uri, type });
-        setViewerVisible(true);
-      },
-    });
-
-    if (!result?.success) {
-      Alert.alert("Attachments", "This file could not be opened on this device.");
-    }
-  }, []);
-
   const handleDownloadAttachment = useCallback(async (attachment) => {
     const result = await downloadTaskAttachment(attachment);
     Alert.alert(
@@ -8497,6 +8483,38 @@ export default function Home() {
           : "Could not save this attachment on this device.")
     );
   }, []);
+
+  const handleOpenAttachment = useCallback(
+    async (attachment) => {
+      const result = await openTaskAttachment(attachment, {
+        openViewer: (file) => {
+          setCurrentFile(file);
+          setViewerVisible(true);
+        },
+        openTextViewer: (file) => {
+          setCurrentFile(file);
+          setViewerVisible(true);
+        },
+      });
+
+      if (!result?.success) {
+        Alert.alert(
+          "Attachments",
+          result?.message || "This file could not be opened on this device.",
+          [
+            { text: "Close", style: "cancel" },
+            {
+              text: "Download",
+              onPress: () => {
+                void handleDownloadAttachment(attachment);
+              },
+            },
+          ]
+        );
+      }
+    },
+    [handleDownloadAttachment]
+  );
 
   const isAttachmentReferencedByOtherTasks = useCallback(
     (attachment, excludedTaskIds = []) => {
@@ -14752,28 +14770,90 @@ export default function Home() {
       />
       <Modal visible={viewerVisible} animationType="fade" transparent={false}>
         <View className="flex-1 bg-[#061414]">
-          {/* Header */}
           <View className="flex-row justify-between p-6 pt-14 bg-[#0B1F1F] border-b border-[#66b9b9]/25 shadow-lg shadow-[#66b9b9]/10">
-            <Text className="text-[#E8F4F4] text-lg font-black tracking-tight">Attachment Viewer</Text>
-            <TouchableOpacity onPress={() => setViewerVisible(false)} className="bg-[#123131]/80 px-4 py-1.5 rounded-full border border-[#66b9b9]/30">
+            <Text
+              numberOfLines={1}
+              ellipsizeMode="middle"
+              className="text-[#E8F4F4] text-lg font-black tracking-tight flex-1 pr-3"
+            >
+              {currentFile.name || "Attachment Viewer"}
+            </Text>
+            <TouchableOpacity
+              onPress={() => setViewerVisible(false)}
+              className="bg-[#123131]/80 px-4 py-1.5 rounded-full border border-[#66b9b9]/30"
+            >
               <Text className="text-[#66b9b9] font-bold text-xs uppercase tracking-widest">Close</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Content */}
           <View className="flex-1">
             {currentFile.type === "image" ? (
               <Image
                 source={{ uri: currentFile.uri }}
                 className="flex-1"
                 resizeMode="contain"
+                onError={() => {
+                  setCurrentFile((prev) => ({
+                    ...prev,
+                    type: "error",
+                    message: "This file could not be opened on this device.",
+                  }));
+                }}
               />
+            ) : currentFile.type === "text" ? (
+              <ScrollView className="flex-1 p-4">
+                <View className="bg-[#0B1F1F] border border-[#337a7a]/30 rounded-2xl p-4">
+                  <Text className="text-[#E8F4F4] text-sm leading-6">
+                    {currentFile.content || ""}
+                  </Text>
+                </View>
+              </ScrollView>
             ) : (
-              <WebView
-                source={{ uri: currentFile.uri }}
-                className="flex-1 bg-[#061414]"
-                originWhitelist={["*"]}
-              />
+              <View className="flex-1 items-center justify-center px-6">
+                <View className="w-full bg-[#0B1F1F] border border-[#337a7a]/30 rounded-2xl p-5">
+                  <View className="flex-row items-center mb-3">
+                    <Feather name="file-text" size={18} color={COLORS.accent} />
+                    <Text
+                      numberOfLines={1}
+                      ellipsizeMode="middle"
+                      className="text-[#E8F4F4] text-sm font-black ml-2 flex-1"
+                    >
+                      {currentFile.name || "Attachment"}
+                    </Text>
+                  </View>
+                  <Text className="text-[#9FB5B5] text-sm leading-5">
+                    {currentFile.message ||
+                      "Open this file using another app, or save a copy."}
+                  </Text>
+                  {currentFile.attachment ? (
+                    <View className="flex-row flex-wrap mt-4">
+                      <TouchableOpacity
+                        activeOpacity={0.84}
+                        onPress={() => {
+                          setViewerVisible(false);
+                          void handleOpenAttachment(currentFile.attachment);
+                        }}
+                        className="bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                      >
+                        <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                          Open
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        activeOpacity={0.84}
+                        onPress={() => {
+                          void handleDownloadAttachment(currentFile.attachment);
+                        }}
+                        className="bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                      >
+                        <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                          Download
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
             )}
           </View>
         </View>
