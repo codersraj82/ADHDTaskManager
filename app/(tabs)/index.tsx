@@ -139,6 +139,7 @@ import {
   downloadTaskAttachment,
   getAttachmentFileUri,
   getAttachmentIcon,
+  getAttachmentTypeLabel,
   getDisplayFileName,
   getFileExtension,
   getPrimaryAttachmentUri,
@@ -8469,7 +8470,7 @@ export default function Home() {
     }
 
     if (attachErrorCount > 0) {
-      Alert.alert("Attachments", "Could not attach one of the selected files.");
+      Alert.alert("Attachments", "This file could not be attached.");
     }
   };
 
@@ -8498,19 +8499,17 @@ export default function Home() {
       });
 
       if (!result?.success) {
-        Alert.alert(
-          "Attachments",
-          result?.message || "This file could not be opened on this device.",
-          [
-            { text: "Close", style: "cancel" },
-            {
-              text: "Download",
-              onPress: () => {
-                void handleDownloadAttachment(attachment);
-              },
-            },
-          ]
-        );
+        setCurrentFile({
+          uri: getAttachmentFileUri(attachment),
+          type: "document",
+          name: getDisplayFileName(attachment),
+          typeLabel: getAttachmentTypeLabel(attachment),
+          message:
+            result?.message ||
+            "This attachment could not be opened. It may be missing or damaged.",
+          attachment,
+        });
+        setViewerVisible(true);
       }
     },
     [handleDownloadAttachment]
@@ -14821,10 +14820,28 @@ export default function Home() {
                       {currentFile.name || "Attachment"}
                     </Text>
                   </View>
-                  <Text className="text-[#9FB5B5] text-sm leading-5">
-                    {currentFile.message ||
-                      "Open this file using another app, or save a copy."}
-                  </Text>
+                  <View className="border-t border-[#337a7a]/25 pt-3">
+                    <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                      File
+                    </Text>
+                    <Text
+                      numberOfLines={2}
+                      ellipsizeMode="middle"
+                      className="text-[#E8F4F4] text-sm font-bold mt-1"
+                    >
+                      {currentFile.name || "Attachment"}
+                    </Text>
+                    <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mt-3">
+                      Type
+                    </Text>
+                    <Text className="text-[#E8F4F4] text-sm font-bold mt-1">
+                      {currentFile.typeLabel || "Document"}
+                    </Text>
+                    <Text className="text-[#9FB5B5] text-sm leading-5 mt-4">
+                      {currentFile.message ||
+                        "This file opens best in another app."}
+                    </Text>
+                  </View>
                   {currentFile.attachment ? (
                     <View className="flex-row flex-wrap mt-4">
                       <TouchableOpacity
@@ -14848,6 +14865,15 @@ export default function Home() {
                       >
                         <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
                           Download
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        activeOpacity={0.84}
+                        onPress={() => setViewerVisible(false)}
+                        className="bg-[#123131]/80 border border-[#66b9b9]/35 rounded-full px-3 py-2 mr-2 mb-2"
+                      >
+                        <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                          Close
                         </Text>
                       </TouchableOpacity>
                     </View>

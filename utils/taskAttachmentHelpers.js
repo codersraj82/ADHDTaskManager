@@ -1,11 +1,36 @@
-import { Linking, Platform, Share } from "react-native";
+import { Linking, Platform } from "react-native";
 import { Directory, File, Paths } from "expo-file-system";
 import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 
 export const MAX_TASK_ATTACHMENTS = 10;
 
 const ATTACHMENT_DIR_NAME = "task-attachments";
 const SAVED_ATTACHMENT_DIR_NAME = "saved-attachments";
+
+const EXTENSION_MIME_MAP = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  csv: "text/csv",
+  txt: "text/plain",
+  md: "text/markdown",
+  json: "application/json",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  heic: "image/heic",
+  heif: "image/heif",
+  rtf: "application/rtf",
+  zip: "application/zip",
+  bin: "application/octet-stream",
+};
 
 const MIME_EXTENSION_MAP = {
   "application/pdf": "pdf",
@@ -14,6 +39,8 @@ const MIME_EXTENSION_MAP = {
   "image/png": "png",
   "image/gif": "gif",
   "image/webp": "webp",
+  "image/heic": "heic",
+  "image/heif": "heif",
   "text/plain": "txt",
   "text/markdown": "md",
   "text/csv": "csv",
@@ -24,7 +51,17 @@ const MIME_EXTENSION_MAP = {
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
   "application/vnd.ms-powerpoint": "ppt",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "application/rtf": "rtf",
+  "application/zip": "zip",
+  "application/octet-stream": "bin",
 };
+
+const GENERIC_MIME_TYPES = new Set([
+  "application/octet-stream",
+  "application/unknown",
+  "binary/octet-stream",
+  "*/*",
+]);
 
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "heic", "heif"]);
 const SPREADSHEET_EXTENSIONS = new Set(["xls", "xlsx", "csv", "ods"]);
@@ -39,6 +76,71 @@ const nowId = () =>
 
 const getSafeString = (value) =>
   typeof value === "string" ? value.trim() : "";
+
+const normalizeExtension = (extension = "") =>
+  getSafeString(extension).replace(/^\.+/, "").toLowerCase();
+
+const getExtensionFromMimeType = (mimeType = "") =>
+  MIME_EXTENSION_MAP[getSafeString(mimeType).toLowerCase()] || "";
+
+const isUsableMimeType = (mimeType = "") => {
+  const normalizedMime = getSafeString(mimeType).toLowerCase();
+  return Boolean(
+    normalizedMime &&
+      normalizedMime.includes("/") &&
+      !GENERIC_MIME_TYPES.has(normalizedMime)
+  );
+};
+
+export const getMimeTypeFromExtension = (extension = "") =>
+  EXTENSION_MIME_MAP[normalizeExtension(extension)] || "application/octet-stream";
+
+const getBestMimeType = (extension = "", providedMimeType = "") => {
+  const normalizedExtension = normalizeExtension(extension);
+  const normalizedMime = getSafeString(providedMimeType).toLowerCase();
+  const mimeExtension = getExtensionFromMimeType(normalizedMime);
+
+  if (
+    isUsableMimeType(normalizedMime) &&
+    (!normalizedExtension || !mimeExtension || mimeExtension === normalizedExtension)
+  ) {
+    return normalizedMime;
+  }
+
+  return getMimeTypeFromExtension(normalizedExtension);
+};
+
+const stripInternalAttachmentPrefix = (fileName = "") => {
+  const name = getSafeString(fileName);
+  const stripped = name.replace(/^att-\d+(?:-[a-z0-9]+)?-/i, "");
+  return stripped || name;
+};
+
+const ensureFileNameHasExtension = (
+  fileName = "",
+  extension = "",
+  fallbackBase = "attachment"
+) => {
+  const normalizedExtension = normalizeExtension(extension);
+  const rawName = stripInternalAttachmentPrefix(fileName) || fallbackBase;
+  const currentExtension = getFileExtension(rawName);
+
+  if (!normalizedExtension || currentExtension) return rawName;
+  return `${rawName}.${normalizedExtension}`;
+};
+
+const isAppOwnedAttachmentUri = (uri = "") => {
+  const safeUri = getSafeString(uri);
+  const documentDirectory = FileSystem.documentDirectory || "";
+
+  return Boolean(
+    safeUri &&
+      documentDirectory &&
+      safeUri.startsWith(documentDirectory) &&
+      (safeUri.includes(`/${ATTACHMENT_DIR_NAME}/`) ||
+        safeUri.includes(`/${SAVED_ATTACHMENT_DIR_NAME}/`))
+  );
+};
 
 const parseAttachmentJson = (value) => {
   if (Array.isArray(value)) return value;
@@ -70,11 +172,10 @@ export const getFileExtension = (fileName = "", mimeType = "") => {
   const cleanName = getSafeString(fileName).split("?")[0].split("#")[0];
   const lastDot = cleanName.lastIndexOf(".");
   if (lastDot > 0 && lastDot < cleanName.length - 1) {
-    return cleanName.slice(lastDot + 1).toLowerCase();
+    return normalizeExtension(cleanName.slice(lastDot + 1));
   }
 
-  const normalizedMime = getSafeString(mimeType).toLowerCase();
-  return MIME_EXTENSION_MAP[normalizedMime] || "";
+  return getExtensionFromMimeType(mimeType);
 };
 
 export const sanitizeFileNameForStorage = (fileName = "attachment_file") => {
@@ -110,60 +211,87 @@ export const ensureUniqueFileName = (fileName, existingNames = []) => {
   return nextName;
 };
 
+export const getSafeInternalFileName = (originalName = "", idOrTimestamp = nowId()) => {
+  const displayName = getDisplayFileName({ name: originalName });
+  const extension = getFileExtension(displayName) || "bin";
+  const dotIndex = displayName.lastIndexOf(".");
+  const baseName = dotIndex > 0 ? displayName.slice(0, dotIndex) : displayName;
+  const safeBase = sanitizeFileNameForStorage(baseName)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `${sanitizeFileNameForStorage(idOrTimestamp)}-${safeBase || "attachment"}.${extension}`;
+};
+
 export const getDisplayFileName = (attachment = {}) => {
   const rawName =
     getSafeString(attachment.name) ||
     getSafeString(attachment.fileName) ||
     getSafeString(attachment.attachmentName) ||
     getNameFromUri(attachment.originalUri || attachment.localUri || attachment.uri);
-  const extension = getFileExtension(rawName, attachment.mimeType || attachment.type);
+  const displayName = stripInternalAttachmentPrefix(rawName);
+  const extension =
+    getFileExtension(displayName) ||
+    normalizeExtension(attachment.extension) ||
+    getExtensionFromMimeType(attachment.mimeType || attachment.type);
 
-  if (rawName) {
-    if (extension && !rawName.toLowerCase().endsWith(`.${extension}`)) {
-      return `${rawName}.${extension}`;
-    }
-    return rawName;
+  if (displayName) {
+    return ensureFileNameHasExtension(displayName, extension);
   }
 
-  return extension ? `attachment.${extension}` : "attachment_file";
+  return extension ? `attachment.${extension}` : "attachment.bin";
 };
 
 const normalizeAttachment = (attachment = {}, fallback = {}) => {
+  const localUri = getSafeString(attachment.localUri || fallback.localUri);
   const uri =
+    localUri ||
     getSafeString(attachment.uri) ||
-    getSafeString(attachment.localUri) ||
     getSafeString(attachment.originalUri) ||
     getSafeString(fallback.uri);
 
   if (!uri) return null;
 
-  const name = getDisplayFileName({
+  const rawDisplayName = getDisplayFileName({
     ...fallback,
     ...attachment,
     uri,
   });
   const extension = getFileExtension(
-    attachment.extension ? `file.${attachment.extension}` : name,
+    rawDisplayName,
     attachment.mimeType || fallback.mimeType
+  ) ||
+    normalizeExtension(attachment.extension || fallback.extension) ||
+    getExtensionFromMimeType(
+      attachment.mimeType || fallback.mimeType || attachment.type || fallback.type
+    ) ||
+    "bin";
+  const name = ensureFileNameHasExtension(rawDisplayName, extension);
+  const mimeType = getBestMimeType(
+    extension,
+    attachment.mimeType || fallback.mimeType || attachment.type || fallback.type
   );
-  const localUri = getSafeString(attachment.localUri);
   const isAppOwned =
-    attachment.isAppOwned === true ||
-    Boolean(localUri && FileSystem.documentDirectory && localUri.startsWith(FileSystem.documentDirectory));
+    (attachment.isAppOwned === true && isAppOwnedAttachmentUri(uri)) ||
+    isAppOwnedAttachmentUri(localUri) ||
+    isAppOwnedAttachmentUri(uri);
 
   return {
     id: getSafeString(attachment.id) || nowId(),
     name,
     uri,
-    mimeType: getSafeString(attachment.mimeType || fallback.mimeType) || undefined,
+    mimeType,
     size: Number.isFinite(Number(attachment.size ?? fallback.size))
       ? Number(attachment.size ?? fallback.size)
       : undefined,
     extension: extension || undefined,
     addedAt: getSafeString(attachment.addedAt) || new Date().toISOString(),
     isAppOwned,
-    localUri: localUri || undefined,
-    originalUri: getSafeString(attachment.originalUri || fallback.originalUri) || undefined,
+    localUri: localUri || (isAppOwned ? uri : undefined),
+    originalUri:
+      getSafeString(attachment.originalUri || fallback.originalUri) ||
+      (!isAppOwned ? uri : undefined),
   };
 };
 
@@ -234,6 +362,7 @@ export const getAttachmentKind = (attachment = {}) => {
 
   if (mimeType.startsWith("image/") || IMAGE_EXTENSIONS.has(extension)) return "image";
   if (extension === "pdf" || mimeType === "application/pdf") return "pdf";
+  if (extension === "csv" || mimeType === "text/csv") return "text";
   if (SPREADSHEET_EXTENSIONS.has(extension)) return "spreadsheet";
   if (WORD_EXTENSIONS.has(extension)) return "word";
   if (PRESENTATION_EXTENSIONS.has(extension)) return "presentation";
@@ -243,20 +372,35 @@ export const getAttachmentKind = (attachment = {}) => {
 };
 
 export const getAttachmentMimeType = (attachment = {}) => {
-  const mimeType = getSafeString(attachment.mimeType);
-  if (mimeType) return mimeType;
-
-  const extension = getFileExtension(getDisplayFileName(attachment));
-  const matchedMime = Object.entries(MIME_EXTENSION_MAP).find(
-    ([, mappedExtension]) => mappedExtension === extension
-  );
-
-  return matchedMime?.[0] || "application/octet-stream";
+  const extension =
+    getFileExtension(getDisplayFileName(attachment)) ||
+    normalizeExtension(attachment.extension);
+  return getBestMimeType(extension, attachment.mimeType || attachment.type);
 };
 
 export const getAttachmentViewerType = (attachment = {}) => {
   if (getAttachmentKind(attachment) === "image") return "image";
   return null;
+};
+
+export const getAttachmentTypeLabel = (attachment = {}) => {
+  const kind = getAttachmentKind(attachment);
+  const extension = getFileExtension(
+    getDisplayFileName(attachment),
+    attachment.mimeType
+  );
+
+  if (kind === "image") return "Image";
+  if (kind === "pdf") return "PDF document";
+  if (kind === "word") return "Word document";
+  if (extension === "csv") return "CSV file";
+  if (kind === "spreadsheet") {
+    return "Spreadsheet";
+  }
+  if (kind === "presentation") return "Presentation";
+  if (kind === "text") return "Text file";
+  if (kind === "archive") return "Archive";
+  return extension ? `${extension.toUpperCase()} file` : "Unknown file";
 };
 
 export const isDuplicateAttachment = (attachments = [], candidate = {}) => {
@@ -286,11 +430,24 @@ export const copyAttachmentToAppStorage = async (fileAsset = {}) => {
   }
 
   const id = nowId();
-  const displayName = getDisplayFileName(fileAsset);
-  const extension = getFileExtension(displayName, fileAsset.mimeType);
-  const storageName = ensureUniqueFileName(
-    `${id}-${sanitizeFileNameForStorage(displayName)}`
+  const sourceName =
+    getSafeString(fileAsset.name) ||
+    getSafeString(fileAsset.fileName) ||
+    getNameFromUri(sourceUri);
+  const sourceExtension =
+    getFileExtension(sourceName) ||
+    getExtensionFromMimeType(fileAsset.mimeType || fileAsset.type) ||
+    "bin";
+  const mimeType = getBestMimeType(
+    sourceExtension,
+    fileAsset.mimeType || fileAsset.type
   );
+  const displayName = ensureFileNameHasExtension(
+    sourceName || `attachment-${Date.now()}`,
+    sourceExtension,
+    `attachment-${Date.now()}`
+  );
+  const storageName = ensureUniqueFileName(getSafeInternalFileName(displayName, id));
   const attachmentDir = new Directory(Paths.document, ATTACHMENT_DIR_NAME);
   attachmentDir.create({ intermediates: true, idempotent: true });
 
@@ -303,11 +460,26 @@ export const copyAttachmentToAppStorage = async (fileAsset = {}) => {
   let copiedSize = Number(fileAsset.size || 0) || undefined;
   try {
     const info = await FileSystem.getInfoAsync(destinationFile.uri);
-    if (info?.exists && Number.isFinite(Number(info.size))) {
+    if (!info?.exists) {
+      throw new Error("ATTACHMENT_COPY_MISSING");
+    }
+
+    if (Number.isFinite(Number(info.size))) {
       copiedSize = Number(info.size);
     }
-  } catch {
-    // Size is optional.
+
+    if (!copiedSize || copiedSize <= 0) {
+      await FileSystem.deleteAsync(destinationFile.uri, { idempotent: true });
+      throw new Error("ATTACHMENT_EMPTY_FILE");
+    }
+  } catch (error) {
+    if (error?.message === "ATTACHMENT_EMPTY_FILE") {
+      throw error;
+    }
+    await FileSystem.deleteAsync(destinationFile.uri, { idempotent: true }).catch(
+      () => null
+    );
+    throw new Error("ATTACHMENT_COPY_FAILED");
   }
 
   return normalizeAttachment({
@@ -316,9 +488,9 @@ export const copyAttachmentToAppStorage = async (fileAsset = {}) => {
     uri: destinationFile.uri,
     localUri: destinationFile.uri,
     originalUri: sourceUri,
-    mimeType: fileAsset.mimeType,
+    mimeType,
     size: copiedSize,
-    extension,
+    extension: sourceExtension,
     addedAt: new Date().toISOString(),
     isAppOwned: true,
   });
@@ -326,10 +498,7 @@ export const copyAttachmentToAppStorage = async (fileAsset = {}) => {
 
 export const removeAttachmentFileIfAppOwned = async (attachment = {}) => {
   const uri = getAttachmentFileUri(attachment);
-  const documentDirectory = FileSystem.documentDirectory || "";
-  const isOwned =
-    attachment.isAppOwned === true ||
-    Boolean(uri && documentDirectory && uri.startsWith(documentDirectory));
+  const isOwned = isAppOwnedAttachmentUri(uri);
 
   if (!uri || !isOwned) {
     return { success: true, fileDeleted: false };
@@ -361,69 +530,167 @@ export const removeAttachmentFromTask = (task = {}, attachmentId = "") => {
 
 const getOpenFailureMessage = (kind) => {
   if (kind === "pdf") {
-    return "Could not open this PDF on this device. You can try Download.";
+    return "No app found to open this file. You can try Download.";
   }
 
   if (["word", "spreadsheet", "presentation"].includes(kind)) {
     return "No app found to open this file. You can try Download.";
   }
 
-  return "This file could not be opened on this device.";
+  return "This attachment could not be opened. It may be missing or damaged.";
 };
 
-export const ensureAttachmentAccessible = async (attachment = {}) => {
-  const uri = getAttachmentFileUri(attachment);
+export const validateAttachmentFile = async (attachment = {}) => {
+  const normalizedAttachment = normalizeAttachment(attachment);
+  const uri = normalizedAttachment ? getAttachmentFileUri(normalizedAttachment) : "";
   if (!uri) {
     return {
       success: false,
-      errorCode: "ATTACHMENT_NOT_FOUND",
-      message: "This attachment file is missing. It may have been moved or removed.",
+      errorCode: "FILE_NOT_FOUND",
+      message: "This attachment could not be opened. It may be missing or damaged.",
     };
   }
 
+  const displayName = getDisplayFileName(normalizedAttachment);
+  const extension =
+    getFileExtension(displayName, normalizedAttachment.mimeType) ||
+    normalizeExtension(normalizedAttachment.extension) ||
+    "bin";
+  const mimeType = getBestMimeType(extension, normalizedAttachment.mimeType);
+
   try {
-    const info = await FileSystem.getInfoAsync(uri);
+    const info = uri.startsWith("file://")
+      ? await FileSystem.getInfoAsync(uri)
+      : null;
+
     if (uri.startsWith("file://") && info?.exists === false) {
       return {
         success: false,
         errorCode: "FILE_NOT_FOUND",
-        message: "This attachment file is missing. It may have been moved or removed.",
+        message: "This attachment could not be opened. It may be missing or damaged.",
+      };
+    }
+
+    const resolvedSize = Number.isFinite(Number(info?.size))
+      ? Number(info.size)
+      : Number(normalizedAttachment.size || 0);
+
+    if (uri.startsWith("file://") && (!resolvedSize || resolvedSize <= 0)) {
+      return {
+        success: false,
+        errorCode: "EMPTY_FILE",
+        message: "This attachment could not be opened. It may be missing or damaged.",
       };
     }
 
     return {
       success: true,
-      attachment,
+      attachment: {
+        ...normalizedAttachment,
+        name: displayName,
+        extension,
+        mimeType,
+        size: resolvedSize || normalizedAttachment.size,
+      },
       uri,
-      size: Number.isFinite(Number(info?.size)) ? Number(info.size) : attachment.size,
+      name: displayName,
+      extension,
+      mimeType,
+      size: resolvedSize || normalizedAttachment.size,
     };
   } catch (error) {
     if (uri.startsWith("content://") || uri.startsWith("http://") || uri.startsWith("https://")) {
-      return { success: true, attachment, uri, size: attachment.size };
+      return {
+        success: true,
+        attachment: {
+          ...normalizedAttachment,
+          name: displayName,
+          extension,
+          mimeType,
+        },
+        uri,
+        name: displayName,
+        extension,
+        mimeType,
+        size: normalizedAttachment.size,
+      };
     }
 
     return {
       success: false,
-      errorCode: "FILE_NOT_ACCESSIBLE",
-      message: "This file is no longer accessible. Try adding it again.",
+      errorCode: "INVALID_FILE",
+      message: "This attachment could not be opened. It may be missing or damaged.",
       error,
     };
   }
 };
 
-export const openAttachmentExternally = async (attachment = {}) => {
+export const ensureAttachmentAccessible = validateAttachmentFile;
+
+const openUriWithLinking = async (uri = "") => {
+  if (Platform.OS === "android" && uri.startsWith("file://")) {
+    const contentUri = await FileSystem.getContentUriAsync(uri);
+    await Linking.openURL(contentUri);
+    return;
+  }
+
+  await Linking.openURL(uri);
+};
+
+const copyAttachmentToShareCache = async (accessible = {}) => {
+  const shareDir = new Directory(Paths.cache, "share-attachments");
+  shareDir.create({ intermediates: true, idempotent: true });
+
+  const targetFile = new File(
+    shareDir,
+    ensureUniqueFileName(accessible.name || "attachment.bin")
+  );
+
+  await FileSystem.deleteAsync(targetFile.uri, { idempotent: true }).catch(
+    () => null
+  );
+  await FileSystem.copyAsync({
+    from: accessible.uri,
+    to: targetFile.uri,
+  });
+
+  const info = await FileSystem.getInfoAsync(targetFile.uri);
+  if (!info?.exists || !Number(info.size)) {
+    await FileSystem.deleteAsync(targetFile.uri, { idempotent: true }).catch(
+      () => null
+    );
+    throw new Error("SHARE_COPY_FAILED");
+  }
+
+  return targetFile.uri;
+};
+
+export const openDocumentExternally = async (attachment = {}) => {
   const kind = getAttachmentKind(attachment);
-  const accessible = await ensureAttachmentAccessible(attachment);
+  const accessible = await validateAttachmentFile(attachment);
   if (!accessible.success) return accessible;
 
-  const uri = accessible.uri;
+  const { uri, mimeType, name } = accessible;
   try {
-    let openUri = uri;
-    if (Platform.OS === "android" && uri.startsWith("file://")) {
-      openUri = await FileSystem.getContentUriAsync(uri);
+    if (uri.startsWith("file://")) {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) {
+        return {
+          success: false,
+          errorCode: "NO_VIEWER_AVAILABLE",
+          message: getOpenFailureMessage(kind),
+        };
+      }
+
+      const shareUri = await copyAttachmentToShareCache(accessible);
+      await Sharing.shareAsync(shareUri, {
+        mimeType,
+        dialogTitle: `Open ${name}`,
+      });
+      return { success: true, shared: true, copied: true };
     }
 
-    await Linking.openURL(openUri);
+    await openUriWithLinking(uri);
     return { success: true, opened: true };
   } catch (error) {
     return {
@@ -435,28 +702,38 @@ export const openAttachmentExternally = async (attachment = {}) => {
   }
 };
 
+export const openAttachmentExternally = openDocumentExternally;
+
 export const shareAttachment = async (attachment = {}) => {
-  const accessible = await ensureAttachmentAccessible(attachment);
+  const accessible = await validateAttachmentFile(attachment);
   if (!accessible.success) return accessible;
 
   try {
-    let shareUrl = accessible.uri;
-    if (Platform.OS === "android" && shareUrl.startsWith("file://")) {
-      shareUrl = await FileSystem.getContentUriAsync(shareUrl);
+    if (accessible.uri.startsWith("file://")) {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) {
+        return {
+          success: false,
+          errorCode: "NO_VIEWER_AVAILABLE",
+          message: "No app found to open this file. You can try Download.",
+        };
+      }
+
+      const shareUri = await copyAttachmentToShareCache(accessible);
+      await Sharing.shareAsync(shareUri, {
+        mimeType: accessible.mimeType,
+        dialogTitle: `Open ${accessible.name}`,
+      });
+      return { success: true, shared: true, copied: true };
     }
 
-    await Share.share({
-      title: getDisplayFileName(attachment),
-      message: getDisplayFileName(attachment),
-      url: shareUrl,
-    });
-
-    return { success: true, shared: true };
+    await openUriWithLinking(accessible.uri);
+    return { success: true, opened: true };
   } catch (error) {
     return {
       success: false,
       errorCode: "SHARE_FAILED",
-      message: "This file could not be opened on this device.",
+      message: "No app found to open this file. You can try Download.",
       error,
     };
   }
@@ -467,20 +744,20 @@ export const openTaskAttachment = async (attachment = {}, options = {}) => {
   const viewerType = getAttachmentViewerType(attachment);
 
   if (viewerType && typeof options.openViewer === "function") {
-    const accessible = await ensureAttachmentAccessible(attachment);
+    const accessible = await validateAttachmentFile(attachment);
     if (!accessible.success) return accessible;
 
     options.openViewer({
       uri: accessible.uri,
       type: viewerType,
-      name: getDisplayFileName(attachment),
-      attachment,
+      name: accessible.name,
+      attachment: accessible.attachment,
     });
     return { success: true, opened: true };
   }
 
   if (kind === "text" && typeof options.openTextViewer === "function") {
-    const accessible = await ensureAttachmentAccessible(attachment);
+    const accessible = await validateAttachmentFile(attachment);
     if (!accessible.success) return accessible;
 
     const size = Number(accessible.size || attachment.size || 0);
@@ -492,9 +769,9 @@ export const openTaskAttachment = async (attachment = {}, options = {}) => {
         options.openTextViewer({
           uri: accessible.uri,
           type: "text",
-          name: getDisplayFileName(attachment),
+          name: accessible.name,
           content: text,
-          attachment,
+          attachment: accessible.attachment,
         });
         return { success: true, opened: true };
       } catch {
@@ -503,7 +780,7 @@ export const openTaskAttachment = async (attachment = {}, options = {}) => {
     }
   }
 
-  const externalResult = await openAttachmentExternally(attachment);
+  const externalResult = await openDocumentExternally(attachment);
   if (externalResult.success) return externalResult;
 
   const shareResult = await shareAttachment(attachment);
@@ -516,8 +793,13 @@ const getDownloadMimeType = (attachment = {}) =>
   getAttachmentMimeType(attachment);
 
 const copyAttachmentToAppSavedFolder = async (attachment = {}) => {
-  const sourceUri = getAttachmentFileUri(attachment);
-  const displayName = getDisplayFileName(attachment);
+  const accessible = await validateAttachmentFile(attachment);
+  if (!accessible.success) {
+    throw new Error(accessible.errorCode || "ATTACHMENT_NOT_ACCESSIBLE");
+  }
+
+  const sourceUri = accessible.uri;
+  const displayName = accessible.name;
   const savedDir = new Directory(Paths.document, SAVED_ATTACHMENT_DIR_NAME);
   savedDir.create({ intermediates: true, idempotent: true });
 
@@ -526,34 +808,31 @@ const copyAttachmentToAppSavedFolder = async (attachment = {}) => {
     from: sourceUri,
     to: targetFile.uri,
   });
+
+  const info = await FileSystem.getInfoAsync(targetFile.uri);
+  if (!info?.exists || !Number(info.size)) {
+    await FileSystem.deleteAsync(targetFile.uri, { idempotent: true }).catch(
+      () => null
+    );
+    throw new Error("SAVE_EMPTY_FILE");
+  }
+
   return targetFile.uri;
 };
 
 export const downloadTaskAttachment = async (attachment = {}) => {
-  const sourceUri = getAttachmentFileUri(attachment);
-  if (!sourceUri) {
+  const accessible = await validateAttachmentFile(attachment);
+  if (!accessible.success) {
     return {
       success: false,
-      errorCode: "ATTACHMENT_NOT_FOUND",
+      errorCode: accessible.errorCode || "FILE_NOT_FOUND",
       message: "Could not save this attachment on this device.",
     };
   }
 
-  try {
-    const info = await FileSystem.getInfoAsync(sourceUri);
-    if (sourceUri.startsWith("file://") && info && info.exists === false) {
-      return {
-        success: false,
-        errorCode: "ATTACHMENT_NOT_FOUND",
-        message: "Could not save this attachment on this device.",
-      };
-    }
-  } catch {
-    // Content URIs may not expose normal file info; try the copy path below.
-  }
-
-  const displayName = getDisplayFileName(attachment);
-  const mimeType = getDownloadMimeType(attachment);
+  const sourceUri = accessible.uri;
+  const displayName = accessible.name;
+  const mimeType = accessible.mimeType || getDownloadMimeType(accessible.attachment);
 
   if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
     try {
