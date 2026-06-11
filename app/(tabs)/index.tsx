@@ -96,6 +96,18 @@ import {
   scheduleStrongAlarmForTask,
 } from "../../services/androidClockAlarm";
 import {
+  createAutoBackupIfNeeded,
+  createBackup,
+  exportBackup,
+  getBackupSettings,
+  getBackupSummaryText,
+  importBackup,
+  restoreBackup,
+  saveBackupSettings,
+  validateBackupEmail,
+  validateBackupEmailPair,
+} from "../../services/backupService";
+import {
   speakEncouragement,
   stopEncouragement,
 } from "../../services/speechService";
@@ -1084,6 +1096,27 @@ export default function Home() {
   const [expandedAttachmentTasks, setExpandedAttachmentTasks] = useState({});
   const [viewerVisible, setViewerVisible] = useState(false);
   const [currentFile, setCurrentFile] = useState({ uri: null, type: null });
+  const [backupSettings, setBackupSettings] = useState({
+    autoEnabled: false,
+    autoType: "minimum",
+    lastAutoBackupAt: "",
+    lastAutoBackupDate: "",
+  });
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupEmailModal, setBackupEmailModal] = useState({
+    visible: false,
+    purpose: null,
+    type: "minimum",
+    mode: "manual",
+  });
+  const [backupEmail, setBackupEmail] = useState("");
+  const [backupConfirmEmail, setBackupConfirmEmail] = useState("");
+  const [backupImportUri, setBackupImportUri] = useState("");
+  const [backupImported, setBackupImported] = useState(null);
+  const [restoreSummaryVisible, setRestoreSummaryVisible] = useState(false);
+  const autoBackupEmailRef = useRef("");
+  const backupImportEmailRef = useRef("");
+  const autoBackupRunningRef = useRef(false);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [profileDraftName, setProfileDraftName] = useState("");
   const [profileDraftVibe, setProfileDraftVibe] = useState(DEFAULT_PROFILE.vibe);
@@ -3701,6 +3734,8 @@ export default function Home() {
         setOnboardingVisible(!nextProfile.onboardingComplete);
 
         const appSettings = getSettingsMap();
+        const restoredBackupSettings = await getBackupSettings();
+        setBackupSettings(restoredBackupSettings);
         setLastTodayPlanPromptDate(
           appSettings[LAST_TODAY_PLAN_PROMPT_DATE_KEY] || ""
         );
@@ -4888,6 +4923,38 @@ export default function Home() {
     isTimerRunning,
     persistFocusTimerState,
     refreshSectionAffirmations,
+  ]);
+
+  useEffect(() => {
+    const runAutoBackup = async () => {
+      if (!tasksHydrated || !backupSettings.autoEnabled) return;
+      if (!autoBackupEmailRef.current || autoBackupRunningRef.current) return;
+
+      autoBackupRunningRef.current = true;
+      const result = await createAutoBackupIfNeeded({
+        email: autoBackupEmailRef.current,
+      });
+      const nextSettings = await getBackupSettings();
+      setBackupSettings(nextSettings);
+      autoBackupRunningRef.current = false;
+
+      if (result?.success) {
+        console.log("Auto backup created:", result.fileName);
+      }
+    };
+
+    void runAutoBackup();
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        void runAutoBackup();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [
+    backupSettings.autoEnabled,
+    backupSettings.lastAutoBackupDate,
+    tasksHydrated,
   ]);
 
   useEffect(() => {
@@ -8652,6 +8719,375 @@ export default function Home() {
     }));
   }, []);
 
+  const getLoadedTasksFromDatabase = () => {
+    const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
+    return taskResult.map((t) => {
+      const normalizedAttachments = normalizeTaskAttachments(t);
+
+      return {
+        ...t,
+        attachment: t.attachment || getPrimaryAttachmentUri(normalizedAttachments),
+        attachments: normalizedAttachments,
+        completed: t.completed === 1 || t.completed === true,
+        completedAt: t.completedAt || null,
+        createdAt: t.createdAt || null,
+        moodType: t.moodType || "",
+        firstAction: t.firstAction || "",
+        minimumVersion: t.minimumVersion || "",
+        energyRequired: normalizeEnergyRequiredValue(t.energyRequired),
+        focusRequired: normalizeFocusRequiredValue(t.focusRequired),
+        taskContext: normalizeTaskContextValue(t.taskContext),
+        estimatedMinutes: normalizeEstimatedMinutesValue(t.estimatedMinutes),
+        startAssistUsedCount: Number(t.startAssistUsedCount || 0),
+        lastStartAssistAt: t.lastStartAssistAt || "",
+        stuckCount: Number(t.stuckCount || 0),
+        lastStuckAt: t.lastStuckAt || "",
+        reminderOpenCount: Number(t.reminderOpenCount || 0),
+        reminderStartNowCount: Number(t.reminderStartNowCount || 0),
+        reminderSnoozeCount: Number(t.reminderSnoozeCount || 0),
+        reminderMoveGentlyCount: Number(t.reminderMoveGentlyCount || 0),
+        reminderMakeSmallerCount: Number(t.reminderMakeSmallerCount || 0),
+        lastReminderActionAt: toIsoStringOrEmpty(t.lastReminderActionAt),
+        lastReminderAction:
+          typeof t.lastReminderAction === "string" ? t.lastReminderAction : "",
+        reminderActionHistory: parseReminderActionHistory(t.reminderActionHistory),
+        snoozeCount: Number(t.snoozeCount || 0),
+        lastSnoozedAt: toIsoStringOrEmpty(t.lastSnoozedAt),
+        rescheduleCount: Number(t.rescheduleCount || 0),
+        lastRescheduledAt: toIsoStringOrEmpty(t.lastRescheduledAt),
+        repeatType: normalizeRepeatType(t.repeatType),
+        repeatDays: parseRepeatDays(t.repeatDays),
+        repeatMonthlyType: t.repeatMonthlyType || "",
+        repeatCustomDate: t.repeatCustomDate || "",
+        repeatYearlyDate: t.repeatYearlyDate || "",
+        repeatGroupId: t.repeatGroupId || "",
+        subtasks: Array.isArray(t.subtasks)
+          ? t.subtasks
+          : JSON.parse(t.subtasks || "[]"),
+        notificationId: [],
+        usePhoneAlarm: Number(t.usePhoneAlarm || 0) === 1,
+        useStrongAlarm: Number(t.usePhoneAlarm || 0) === 1,
+        strongAlarmId: "",
+        strongAlarmScheduledAt: "",
+        lastStrongAlarmResult: parseLastStrongAlarmResult(t.lastStrongAlarmResult),
+        strongAlarmSnoozeMinutes: Number(t.strongAlarmSnoozeMinutes || 5),
+        isPinned: t.isPinned === 1 || t.isPinned === true,
+      };
+    });
+  };
+
+  const refreshAppStateAfterRestore = async () => {
+    const restoredTasks = getLoadedTasksFromDatabase();
+    setTasks(restoredTasks);
+    loadDailyMoodEntries();
+    refreshSpecialTasks();
+
+    const settings = getSettingsMap();
+    const nextBackupSettings = await getBackupSettings();
+    setBackupSettings(nextBackupSettings);
+    setLastTodayPlanPromptDate(settings[LAST_TODAY_PLAN_PROMPT_DATE_KEY] || "");
+    setIsVoiceMuted(settings.voiceMuted === "true");
+    setStartAssistReadAloudEnabled(
+      settings.startAssistReadAloudEnabled === "true"
+    );
+    setProductivityStats((prev) => ({
+      ...prev,
+      currentStreak: Number(settings.currentStreak || 0),
+      bestStreak: Number(settings.bestStreak || 0),
+      lifetimeFocusTime: Number(settings.lifetimeFocusTime || 0),
+      lifetimeCompletedTasks: Number(
+        settings.lifetimeCompletedTasks ||
+          restoredTasks.filter((task) => task.completed).length
+      ),
+      lastActiveDate: settings.lastActiveDate || getDateKey(),
+      lastQualifiedDate: settings.lastQualifiedDate || "",
+      showStreak: settings.showStreak !== "false",
+    }));
+
+    const sectionRows = db.getAllSync("SELECT * FROM section_settings") || [];
+    setSectionTimes((prev) => {
+      const next = { ...prev };
+      sectionRows.forEach((row) => {
+        next[row.section_name] = {
+          start: row.start_time || "",
+          end: row.end_time || "",
+        };
+      });
+      return next;
+    });
+
+    const profileRows = db.getAllSync("SELECT * FROM app_profile WHERE id = 1") || [];
+    const profileRow = profileRows[0];
+    if (profileRow) {
+      const nextProfile = {
+        name: profileRow.name || "",
+        profileImage: profileRow.profileImage || "",
+        vibe: profileRow.vibe || DEFAULT_PROFILE.vibe,
+        onboardingComplete: profileRow.onboardingComplete === 1,
+      };
+      setProfile(nextProfile);
+      setProfileDraftName(nextProfile.name);
+      setProfileDraftVibe(nextProfile.vibe);
+    }
+
+    return restoredTasks;
+  };
+
+  const rescheduleRestoredTaskReminders = async (restoredTasks = []) => {
+    for (const task of restoredTasks) {
+      if (!task?.scheduledTime || task.completed) continue;
+      const taskDate = parseStoredDateTime(task.scheduledTime);
+      if (!taskDate || taskDate <= new Date()) continue;
+
+      try {
+        const notificationIds = await scheduleProReminders(task, {
+          source: "restore",
+        });
+        db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
+          JSON.stringify(notificationIds),
+          task.id,
+        ]);
+        task.notificationId = notificationIds;
+      } catch (error) {
+        console.log("Restore reminder schedule error:", error);
+      }
+    }
+
+    setTasks((prev) =>
+      prev.map((task) => {
+        const restoredTask = restoredTasks.find(
+          (candidate) => String(candidate.id) === String(task.id)
+        );
+        return restoredTask || task;
+      })
+    );
+  };
+
+  const openBackupEmailModal = ({
+    purpose,
+    type = "minimum",
+    mode = "manual",
+  }) => {
+    setBackupEmail("");
+    setBackupConfirmEmail("");
+    setBackupEmailModal({
+      visible: true,
+      purpose,
+      type,
+      mode,
+    });
+  };
+
+  const closeBackupEmailModal = () => {
+    setBackupEmailModal((prev) => ({ ...prev, visible: false }));
+    setBackupEmail("");
+    setBackupConfirmEmail("");
+  };
+
+  const handleCreateBackupRequest = (type, mode = "manual") => {
+    openBackupEmailModal({ purpose: "create", type, mode });
+  };
+
+  const handleEnableAutoBackup = () => {
+    openBackupEmailModal({
+      purpose: "enable-auto",
+      type: backupSettings.autoType || "minimum",
+      mode: "auto",
+    });
+  };
+
+  const handleDisableAutoBackup = async () => {
+    const nextSettings = await saveBackupSettings({ autoEnabled: false });
+    autoBackupEmailRef.current = "";
+    setBackupSettings(nextSettings);
+    Alert.alert("Backup & Restore", "Daily auto backup is off.");
+  };
+
+  const handleAutoBackupTypeChange = async (type) => {
+    const nextSettings = await saveBackupSettings({ autoType: type });
+    setBackupSettings(nextSettings);
+  };
+
+  const handleImportBackupRequest = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "*/*",
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled) return;
+      const asset = Array.isArray(result.assets) ? result.assets[0] : null;
+      if (!asset?.uri) return;
+
+      setBackupImportUri(asset.uri);
+      openBackupEmailModal({ purpose: "import", type: "minimum", mode: "restore" });
+    } catch {
+      Alert.alert("Backup & Restore", "Could not import backup on this device.");
+    }
+  };
+
+  const handleBackupEmailContinue = async () => {
+    if (backupBusy) return;
+
+    const purpose = backupEmailModal.purpose;
+    if (purpose === "import") {
+      const normalizedEmail = backupEmail.trim().toLowerCase();
+      if (!validateBackupEmail(normalizedEmail)) {
+        Alert.alert(
+          "Backup & Restore",
+          "Enter a valid email ID for backup encryption."
+        );
+        return;
+      }
+
+      setBackupBusy(true);
+      try {
+        const result = await importBackup(backupImportUri, normalizedEmail);
+
+        if (!result?.success) {
+          Alert.alert(
+            "Backup & Restore",
+            result?.message ||
+              "Could not unlock this backup. Please check the email ID used for backup."
+          );
+          return;
+        }
+
+        backupImportEmailRef.current = normalizedEmail;
+        setBackupImported(result);
+        setRestoreSummaryVisible(true);
+        closeBackupEmailModal();
+      } catch {
+        Alert.alert(
+          "Backup & Restore",
+          "Could not unlock this backup. Please check the email ID used for backup."
+        );
+      } finally {
+        setBackupBusy(false);
+      }
+      return;
+    }
+
+    const validation = validateBackupEmailPair(backupEmail, backupConfirmEmail);
+    if (!validation.success) {
+      Alert.alert("Backup & Restore", validation.message);
+      return;
+    }
+
+    setBackupBusy(true);
+
+    try {
+      if (purpose === "enable-auto") {
+        const nextSettings = await saveBackupSettings({
+          autoEnabled: true,
+          autoType: backupEmailModal.type,
+        });
+        setBackupSettings(nextSettings);
+        autoBackupEmailRef.current = validation.email;
+        const autoResult = await createAutoBackupIfNeeded({
+          email: validation.email,
+        });
+        const refreshedSettings = await getBackupSettings();
+        setBackupSettings(refreshedSettings);
+        closeBackupEmailModal();
+        Alert.alert(
+          "Backup & Restore",
+          autoResult?.success
+            ? "Daily auto backup is on. Today's encrypted backup was created."
+            : "Daily auto backup is on. For security, this app will ask for your email again after a full app restart."
+        );
+        return;
+      }
+
+      const backupResult = await createBackup({
+        type: backupEmailModal.type,
+        mode: backupEmailModal.mode,
+        email: validation.email,
+      });
+
+      if (!backupResult?.success) {
+        Alert.alert(
+          "Backup & Restore",
+          backupResult?.message || "Could not create backup on this device."
+        );
+        return;
+      }
+
+      const exportResult = await exportBackup(
+        backupResult.path,
+        backupResult.fileName
+      );
+      closeBackupEmailModal();
+      Alert.alert(
+        "Backup & Restore",
+        exportResult?.message ||
+          (exportResult?.success
+            ? "Backup exported."
+            : "Could not export backup on this device.")
+      );
+    } catch {
+      Alert.alert("Backup & Restore", "Could not complete backup on this device.");
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleRestoreImportedBackup = async () => {
+    if (!backupImported || backupBusy) return;
+
+    Alert.alert(
+      "Restore backup?",
+      "This can replace your current app data. A safety backup will be created first.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Restore",
+          style: "destructive",
+          onPress: async () => {
+            setBackupBusy(true);
+            try {
+              const currentTasks = Array.isArray(tasks) ? tasks : [];
+              for (const task of currentTasks) {
+                await cancelTaskReminders(task.notificationId);
+                if (task?.strongAlarmId) {
+                  await cancelStrongAlarmForTask(task.strongAlarmId).catch(
+                    () => null
+                  );
+                }
+              }
+              await Notifications.cancelAllScheduledNotificationsAsync().catch(
+                () => null
+              );
+              const restoreResult = await restoreBackup(backupImported, {
+                mode: "replace",
+                email: backupImportEmailRef.current,
+              });
+
+              if (!restoreResult?.success) {
+                Alert.alert(
+                  "Backup & Restore",
+                  restoreResult?.message || "Could not restore this backup."
+                );
+                return;
+              }
+
+              const restoredTasks = await refreshAppStateAfterRestore();
+              await rescheduleRestoredTaskReminders(restoredTasks);
+              setRestoreSummaryVisible(false);
+              setBackupImported(null);
+              backupImportEmailRef.current = "";
+              Alert.alert("Backup & Restore", "Backup restored.");
+            } catch {
+              Alert.alert("Backup & Restore", "Could not restore this backup.");
+            } finally {
+              setBackupBusy(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const saveOnboardingProfile = () => {
     const name = profileDraftName.trim();
     if (!name) return;
@@ -11320,18 +11756,205 @@ export default function Home() {
     if (activePage === "settings") {
       return (
         <>
-          {[
-            "Theme presets placeholder",
-            "Notification settings placeholder",
-            "Backup progress placeholder",
-            "Restore progress placeholder",
-            "Export focus history placeholder",
-            "Reset app placeholder",
-          ].map((item) => (
-            <View key={item} className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
-              <Text className="text-[#E8F4F4] font-bold">{item}</Text>
+          <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#66b9b9]/25 mb-3">
+            <Text className="text-[#E8F4F4] text-lg font-black">
+              Backup & Restore
+            </Text>
+            <Text className="text-[#9FB5B5] text-xs mt-1 leading-5">
+              Save a private copy of your tasks and attachments.
+            </Text>
+          </View>
+
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            <Text className="text-[#E8F4F4] font-black">Create backup</Text>
+            <Text className="text-[#9FB5B5] text-xs mt-1">
+              Choose what to include, then export one encrypted file.
+            </Text>
+            <View className="mt-3">
+              <TouchableOpacity
+                activeOpacity={0.84}
+                disabled={backupBusy}
+                onPress={() => handleCreateBackupRequest("minimum", "manual")}
+                className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-2xl p-3 mb-2"
+              >
+                <Text className="text-[#66b9b9] text-xs font-black uppercase tracking-widest">
+                  Minimum backup
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1">
+                  Tasks and app data only. Attachments are not included.
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.84}
+                disabled={backupBusy}
+                onPress={() => handleCreateBackupRequest("full", "manual")}
+                className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-2xl p-3"
+              >
+                <Text className="text-[#66b9b9] text-xs font-black uppercase tracking-widest">
+                  Full backup
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1">
+                  Tasks, app data, and attached files.
+                </Text>
+              </TouchableOpacity>
             </View>
-          ))}
+          </View>
+
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1 pr-3">
+                <Text className="text-[#E8F4F4] font-black">Auto backup</Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1">
+                  Only the latest 2 automatic backups are kept.
+                </Text>
+              </View>
+              <Switch
+                value={backupSettings.autoEnabled}
+                onValueChange={(value) => {
+                  if (value) {
+                    handleEnableAutoBackup();
+                  } else {
+                    void handleDisableAutoBackup();
+                  }
+                }}
+                trackColor={{ false: "#337a7a", true: "#66b9b9" }}
+                thumbColor={backupSettings.autoEnabled ? "#E8F4F4" : "#9FB5B5"}
+              />
+            </View>
+            <View className="flex-row flex-wrap mt-3">
+              {[
+                { key: "minimum", label: "Minimum" },
+                { key: "full", label: "Full" },
+              ].map((option) => (
+                <TouchableOpacity
+                  key={`auto-backup-${option.key}`}
+                  activeOpacity={0.82}
+                  onPress={() => void handleAutoBackupTypeChange(option.key)}
+                  className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+                    backupSettings.autoType === option.key
+                      ? "bg-[#66b9b9] border-[#66b9b9]"
+                      : "bg-[#123131]/75 border-[#337a7a]/35"
+                  }`}
+                >
+                  <Text
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      backupSettings.autoType === option.key
+                        ? "text-[#061414]"
+                        : "text-[#9FB5B5]"
+                    }`}
+                  >
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text className="text-[#9FB5B5] text-[11px] mt-1">
+              Last backup:{" "}
+              {backupSettings.lastAutoBackupAt
+                ? formatDateTimeForDisplay(backupSettings.lastAutoBackupAt)
+                : "Not yet"}
+            </Text>
+            <Text className="text-[#9FB5B5] text-[11px] mt-2 leading-5">
+              For security, the email is kept only for this app session. After a
+              full app restart, enable auto backup again to create encrypted
+              automatic backups.
+            </Text>
+          </View>
+
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            <Text className="text-[#E8F4F4] font-black">Import / Restore</Text>
+            <Text className="text-[#9FB5B5] text-xs mt-1">
+              Select an exported .adhtmbak file and unlock it with the same email ID.
+            </Text>
+            <TouchableOpacity
+              activeOpacity={0.84}
+              disabled={backupBusy}
+              onPress={handleImportBackupRequest}
+              className="bg-[#66b9b9] p-3 rounded-2xl border border-[#99bdbd]/60 mt-3"
+            >
+              <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-xs">
+                Import backup
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            <Text className="text-[#E8F4F4] font-black">Manual archive</Text>
+            <Text className="text-[#9FB5B5] text-xs mt-1">
+              Create a monthly or yearly encrypted archive.
+            </Text>
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest mt-3 mb-2">
+              Monthly backup
+            </Text>
+            <View className="flex-row flex-wrap">
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={backupBusy}
+                onPress={() => handleCreateBackupRequest("minimum", "monthly")}
+                className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-full px-3 py-2 mr-2 mb-2"
+              >
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  Minimum
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={backupBusy}
+                onPress={() => handleCreateBackupRequest("full", "monthly")}
+                className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-full px-3 py-2 mr-2 mb-2"
+              >
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  Full
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest mt-2 mb-2">
+              Yearly backup
+            </Text>
+            <View className="flex-row flex-wrap">
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={backupBusy}
+                onPress={() => handleCreateBackupRequest("minimum", "yearly")}
+                className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-full px-3 py-2 mr-2 mb-2"
+              >
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  Minimum
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={backupBusy}
+                onPress={() => handleCreateBackupRequest("full", "yearly")}
+                className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-full px-3 py-2 mr-2 mb-2"
+              >
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  Full
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View className="bg-[#061414]/65 rounded-2xl p-4 border border-[#66b9b9]/25 mb-3">
+            <Text className="text-[#E8F4F4] font-black">Recovery help</Text>
+            <Text className="text-[#9FB5B5] text-xs leading-5 mt-2">
+              To recover on another phone, export your backup file first. Then
+              install this app on the new phone, open Import Backup, select the
+              backup file, and enter the same email ID.
+            </Text>
+          </View>
+
+          {backupBusy ? (
+            <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+              <Text className="text-[#66b9b9] font-black">
+                Working on backup...
+              </Text>
+              <Text className="text-[#9FB5B5] text-xs mt-1">
+                Keep the app open for a moment.
+              </Text>
+            </View>
+          ) : null}
+
           <TouchableOpacity onPress={toggleStreakVisibility} className="bg-[#123131]/70 p-4 rounded-2xl border border-[#66b9b9]/25 mb-3">
             <Text className="text-[#66b9b9] font-black">
               {productivityStats.showStreak ? "Hide streak badge" : "Show streak badge"}
@@ -14416,6 +15039,149 @@ export default function Home() {
                 Cancel
               </Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={backupEmailModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeBackupEmailModal}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          className="flex-1 bg-[#061414]/95 justify-center px-6"
+        >
+          <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/15">
+            <Text className="text-[#66b9b9] text-xl font-black mb-2 uppercase tracking-tight">
+              {backupEmailModal.purpose === "import"
+                ? "Unlock Backup"
+                : backupEmailModal.purpose === "enable-auto"
+                  ? "Auto Backup"
+                  : "Encrypt Backup"}
+            </Text>
+            <Text className="text-[#9FB5B5] text-xs leading-5 mb-4">
+              {backupEmailModal.purpose === "import"
+                ? "Enter the same email ID used to create this backup."
+                : "Enter your email ID twice. It becomes the backup key, and the app will not save the raw email."}
+            </Text>
+
+            <TextInput
+              value={backupEmail}
+              onChangeText={setBackupEmail}
+              placeholder="Email ID"
+              placeholderTextColor={COLORS.muted}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!backupBusy}
+              className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-3 border border-[#66b9b9]/25 font-semibold"
+            />
+
+            {backupEmailModal.purpose !== "import" ? (
+              <TextInput
+                value={backupConfirmEmail}
+                onChangeText={setBackupConfirmEmail}
+                placeholder="Confirm email ID"
+                placeholderTextColor={COLORS.muted}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!backupBusy}
+                className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-3 border border-[#66b9b9]/25 font-semibold"
+              />
+            ) : null}
+
+            <Text className="text-[#9FB5B5] text-[11px] leading-5 mb-5">
+              Lose this exact email ID and the encrypted backup cannot be restored.
+            </Text>
+
+            <View className="flex-row justify-between space-x-3">
+              <TouchableOpacity
+                disabled={backupBusy}
+                onPress={closeBackupEmailModal}
+                className="flex-1 p-4 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"
+              >
+                <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-xs">
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                disabled={backupBusy}
+                onPress={() => void handleBackupEmailContinue()}
+                className="flex-1 p-4 rounded-2xl bg-[#66b9b9] shadow-md shadow-[#66b9b9]/25 border border-[#99bdbd]/60"
+              >
+                <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-xs">
+                  {backupBusy
+                    ? "Please wait"
+                    : backupEmailModal.purpose === "import"
+                      ? "Unlock"
+                      : "Continue"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={restoreSummaryVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!backupBusy) setRestoreSummaryVisible(false);
+        }}
+      >
+        <View className="flex-1 bg-[#061414]/95 justify-center px-6">
+          <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/15">
+            <Text className="text-[#66b9b9] text-xl font-black mb-2 uppercase tracking-tight">
+              Restore Summary
+            </Text>
+            <Text className="text-[#9FB5B5] text-xs leading-5 mb-4">
+              Review this backup before replacing the current app data.
+            </Text>
+
+            <ScrollView
+              style={{ maxHeight: 260 }}
+              className="bg-[#061414]/45 border border-[#337a7a]/30 rounded-2xl p-4 mb-4"
+            >
+              <Text className="text-[#E8F4F4] text-sm leading-6">
+                {getBackupSummaryText(backupImported?.summary || {})}
+              </Text>
+            </ScrollView>
+
+            <Text className="text-[#FFCF7A] text-[11px] leading-5 mb-5">
+              Restore creates a safety backup first, clears old notification IDs,
+              and reschedules future task reminders.
+            </Text>
+
+            <View className="flex-row justify-between space-x-3">
+              <TouchableOpacity
+                disabled={backupBusy}
+                onPress={() => {
+                  setRestoreSummaryVisible(false);
+                  setBackupImported(null);
+                  backupImportEmailRef.current = "";
+                }}
+                className="flex-1 p-4 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"
+              >
+                <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-xs">
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                disabled={backupBusy}
+                onPress={() => void handleRestoreImportedBackup()}
+                className="flex-1 p-4 rounded-2xl bg-[#FF7B7B] shadow-md shadow-[#FF7B7B]/25"
+              >
+                <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-xs">
+                  {backupBusy ? "Restoring" : "Restore"}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
