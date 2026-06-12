@@ -314,6 +314,11 @@ const TASK_NAVIGATION_MAX_RETRIES = 5;
 const TASK_NAVIGATION_RETRY_DELAY_MS = 130;
 const LAST_COMPLETED_TASK_BUTTON_DURATION_MS = 20000;
 const CURRENT_TASK_FAB_BREATH_MS = 2600;
+const FOCUS_VISIBILITY_TOP_BUFFER = 80;
+const FOCUS_VISIBILITY_BOTTOM_BUFFER = 120;
+const FOCUS_VISIBILITY_SCROLL_STEP = 16;
+const FOCUS_SCROLL_RETRY_DELAY_MS = 120;
+const FOCUS_SCROLL_MAX_RETRIES = 6;
 const START_ASSIST_SHORT_FOCUS_SECONDS = 120;
 const HEAVY_SUPPORT_MINIMUM_FOCUS_SECONDS = 300;
 const REMINDER_ACTION_HISTORY_LIMIT = 30;
@@ -1176,6 +1181,10 @@ export default function Home() {
   });
   const [isOverwhelmModeVisible, setIsOverwhelmModeVisible] = useState(false);
   const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
+  const [focusSectionLayout, setFocusSectionLayout] = useState(null);
+  const [isFocusSectionVisible, setIsFocusSectionVisible] = useState(false);
+  const [showReturnToFocusButton, setShowReturnToFocusButton] = useState(false);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
   const [headerAffirmationViewportWidth, setHeaderAffirmationViewportWidth] =
     useState(0);
@@ -1210,13 +1219,17 @@ export default function Home() {
   const footerHeight = 36;
   const recoveryFabSize = 44;
   const addTaskFabApproxHeight = 56;
+  const returnToFocusFabApproxHeight = 44;
   const floatingBaseBottom = footerSafeBottom + footerHeight + 14;
   const recoveryFabBottom = floatingBaseBottom;
   const addTaskFabBottom = recoveryFabBottom + recoveryFabSize + 8;
   const focusFabBottom = addTaskFabBottom + addTaskFabApproxHeight + 10;
+  const returnToFocusFabReservedBottom = focusFabBottom + 112;
   const recoveryPromptBottom = recoveryFabBottom + 2;
   const maxFloatingStackBottom = Math.max(
-    focusFabBottom + 48,
+    showReturnToFocusButton
+      ? returnToFocusFabReservedBottom + returnToFocusFabApproxHeight
+      : focusFabBottom + 48,
     addTaskFabBottom + addTaskFabApproxHeight,
     recoveryFabBottom + recoveryFabSize
   );
@@ -2015,11 +2028,23 @@ export default function Home() {
   const headerTranslateY = useSharedValue(0);
   const floatingMenuOpacity = useSharedValue(0);
   const lastHomeScrollY = useSharedValue(0);
+  const lastFocusVisibilityCheckY = useSharedValue(0);
+  const lastFocusVisibilityViewportHeight = useSharedValue(0);
   const headerAffirmationTranslateX = useSharedValue(0);
   const smartTaskBorderPhase = useSharedValue(0);
   const smartTaskShimmerPhase = useSharedValue(0);
   const smartTaskEmojiPulse = useSharedValue(0);
   const currentTaskFabPulse = useSharedValue(0);
+  const activeFocusY = useRef(0);
+  const focusSectionLayoutRef = useRef(null);
+  const focusSectionVisibleRef = useRef(false);
+  const showReturnToFocusButtonRef = useRef(false);
+  const homeScrollYRef = useRef(0);
+  const homeViewportHeightRef = useRef(Dimensions.get("window").height);
+  const hasBlockingOverlayRef = useRef(false);
+  const isKeyboardVisibleRef = useRef(false);
+  const focusAutoScrollTimeoutRef = useRef(null);
+  const lastAutoScrolledFocusTaskIdRef = useRef(null);
   const recoveryBackdropStyle = useAnimatedStyle(() => ({
     opacity: recoverySheetProgress.value * 0.96,
   }));
@@ -2118,10 +2143,197 @@ export default function Home() {
     marginBottom: 12,
   }));
 
+  const setReturnToFocusButtonVisible = useCallback((visible) => {
+    if (showReturnToFocusButtonRef.current === visible) return;
+    showReturnToFocusButtonRef.current = visible;
+    setShowReturnToFocusButton(visible);
+  }, []);
+
+  const syncFocusVisibilityFromScroll = useCallback(
+    (scrollY = 0, viewportHeight = 0) => {
+      const safeScrollY = Math.max(0, Number(scrollY) || 0);
+      const safeViewportHeight = Math.max(0, Number(viewportHeight) || 0);
+      homeScrollYRef.current = safeScrollY;
+      if (safeViewportHeight > 0) {
+        homeViewportHeightRef.current = safeViewportHeight;
+      }
+
+      const layout = focusSectionLayoutRef.current;
+      const hasActiveFocusSession = Boolean(activeTaskId) && !isFocusCompleted;
+      if (!hasActiveFocusSession || !layout?.height) {
+        if (focusSectionVisibleRef.current) {
+          focusSectionVisibleRef.current = false;
+          setIsFocusSectionVisible(false);
+        }
+        setReturnToFocusButtonVisible(false);
+        return;
+      }
+
+      const viewport =
+        homeViewportHeightRef.current || Dimensions.get("window").height;
+      const visibleTop = safeScrollY + FOCUS_VISIBILITY_TOP_BUFFER;
+      const visibleBottom =
+        safeScrollY + viewport - FOCUS_VISIBILITY_BOTTOM_BUFFER;
+      const focusTop = layout.y;
+      const focusBottom = layout.y + layout.height;
+      const nextIsVisible = focusBottom > visibleTop && focusTop < visibleBottom;
+
+      if (focusSectionVisibleRef.current !== nextIsVisible) {
+        focusSectionVisibleRef.current = nextIsVisible;
+        setIsFocusSectionVisible(nextIsVisible);
+      }
+
+      setReturnToFocusButtonVisible(
+        !nextIsVisible &&
+          !isKeyboardVisibleRef.current &&
+          !hasBlockingOverlayRef.current
+      );
+    },
+    [activeTaskId, isFocusCompleted, setReturnToFocusButtonVisible]
+  );
+
+  const handleFocusSectionLayout = useCallback(
+    (event) => {
+      const { y = 0, height = 0 } = event?.nativeEvent?.layout || {};
+      const nextLayout = {
+        y: Math.max(0, Math.round(y)),
+        height: Math.max(0, Math.round(height)),
+      };
+
+      activeFocusY.current = nextLayout.y;
+      focusSectionLayoutRef.current = nextLayout;
+      setFocusSectionLayout((prev) => {
+        if (
+          prev &&
+          Math.abs(prev.y - nextLayout.y) < 1 &&
+          Math.abs(prev.height - nextLayout.height) < 1
+        ) {
+          return prev;
+        }
+        return nextLayout;
+      });
+      syncFocusVisibilityFromScroll(
+        homeScrollYRef.current,
+        homeViewportHeightRef.current
+      );
+    },
+    [syncFocusVisibilityFromScroll]
+  );
+
+  const scrollToFocusSection = useCallback(() => {
+    const layout = focusSectionLayoutRef.current;
+    if (!layout?.height || !scrollRef.current?.scrollTo) return false;
+
+    const viewport =
+      homeViewportHeightRef.current || Dimensions.get("window").height;
+    const centeredY = layout.y - Math.max(0, (viewport - layout.height) / 2);
+    const targetY = Math.max(0, Math.round(centeredY));
+
+    setReturnToFocusButtonVisible(false);
+    scrollRef.current.scrollTo({
+      y: targetY,
+      animated: true,
+    });
+    syncFocusVisibilityFromScroll(targetY, viewport);
+    return true;
+  }, [setReturnToFocusButtonVisible, syncFocusVisibilityFromScroll]);
+
+  const scheduleScrollToFocusSection = useCallback(
+    (attempt = 0) => {
+      if (focusAutoScrollTimeoutRef.current) {
+        clearTimeout(focusAutoScrollTimeoutRef.current);
+      }
+
+      focusAutoScrollTimeoutRef.current = setTimeout(() => {
+        focusAutoScrollTimeoutRef.current = null;
+        if (scrollToFocusSection()) return;
+        if (attempt < FOCUS_SCROLL_MAX_RETRIES) {
+          scheduleScrollToFocusSection(attempt + 1);
+        }
+      }, FOCUS_SCROLL_RETRY_DELAY_MS);
+    },
+    [scrollToFocusSection]
+  );
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener("keyboardDidShow", () => {
+      isKeyboardVisibleRef.current = true;
+      setIsKeyboardVisible(true);
+      setReturnToFocusButtonVisible(false);
+    });
+    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
+      isKeyboardVisibleRef.current = false;
+      setIsKeyboardVisible(false);
+      syncFocusVisibilityFromScroll(
+        homeScrollYRef.current,
+        homeViewportHeightRef.current
+      );
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [setReturnToFocusButtonVisible, syncFocusVisibilityFromScroll]);
+
+  useEffect(() => {
+    if (activeTaskId && !isFocusCompleted) {
+      syncFocusVisibilityFromScroll(
+        homeScrollYRef.current,
+        homeViewportHeightRef.current
+      );
+      return;
+    }
+
+    if (focusAutoScrollTimeoutRef.current) {
+      clearTimeout(focusAutoScrollTimeoutRef.current);
+      focusAutoScrollTimeoutRef.current = null;
+    }
+    if (focusSectionVisibleRef.current) {
+      focusSectionVisibleRef.current = false;
+      setIsFocusSectionVisible(false);
+    }
+    setReturnToFocusButtonVisible(false);
+
+    if (!activeTaskId) {
+      activeFocusY.current = 0;
+      focusSectionLayoutRef.current = null;
+      setFocusSectionLayout(null);
+    }
+  }, [
+    activeTaskId,
+    isFocusCompleted,
+    setReturnToFocusButtonVisible,
+    syncFocusVisibilityFromScroll,
+  ]);
+
+  useEffect(() => {
+    if (!activeTaskId || isFocusCompleted) {
+      lastAutoScrolledFocusTaskIdRef.current = null;
+      return;
+    }
+    if (lastAutoScrolledFocusTaskIdRef.current === activeTaskId) return;
+    lastAutoScrolledFocusTaskIdRef.current = activeTaskId;
+    scheduleScrollToFocusSection();
+  }, [activeTaskId, isFocusCompleted, scheduleScrollToFocusSection]);
+
   const homeScrollHandler = useAnimatedScrollHandler(
     {
       onScroll: (event) => {
         const y = Math.max(0, event.contentOffset.y || 0);
+        const viewportHeight = Math.max(0, event.layoutMeasurement?.height || 0);
+        if (
+          Math.abs(y - lastFocusVisibilityCheckY.value) >=
+            FOCUS_VISIBILITY_SCROLL_STEP ||
+          Math.abs(
+            viewportHeight - lastFocusVisibilityViewportHeight.value
+          ) >= 2
+        ) {
+          lastFocusVisibilityCheckY.value = y;
+          lastFocusVisibilityViewportHeight.value = viewportHeight;
+          runOnJS(syncFocusVisibilityFromScroll)(y, viewportHeight);
+        }
+
         const delta = y - lastHomeScrollY.value;
         lastHomeScrollY.value = y;
 
@@ -2180,7 +2392,13 @@ export default function Home() {
         }
       },
     },
-    [headerContainerHeight, syncHeaderCollapsedState]
+    [
+      headerContainerHeight,
+      lastFocusVisibilityCheckY,
+      lastFocusVisibilityViewportHeight,
+      syncFocusVisibilityFromScroll,
+      syncHeaderCollapsedState,
+    ]
   );
 
   useEffect(() => {
@@ -2295,7 +2513,6 @@ export default function Home() {
   const recoveryTargetScrollTimeoutRef = useRef(null);
   const recoveryTargetScrollRetryTimeoutRef = useRef(null);
   const recoveryHighlightTimeoutRef = useRef(null);
-  const activeFocusY = useRef(0);
   const fabScale = useRef(new Animated.Value(1)).current;
   const taskPositions = useRef({});
   const sectionPositions = useRef({});
@@ -4693,6 +4910,10 @@ export default function Home() {
         clearTimeout(todayPlanCelebrationTimeoutRef.current);
         todayPlanCelebrationTimeoutRef.current = null;
       }
+      if (focusAutoScrollTimeoutRef.current) {
+        clearTimeout(focusAutoScrollTimeoutRef.current);
+        focusAutoScrollTimeoutRef.current = null;
+      }
       if (lastCompletedTaskTimeoutRef.current) {
         clearTimeout(lastCompletedTaskTimeoutRef.current);
         lastCompletedTaskTimeoutRef.current = null;
@@ -5044,6 +5265,59 @@ export default function Home() {
   const [editRepeatScopeModalVisible, setEditRepeatScopeModalVisible] =
     useState(false);
   const [pendingEditPayload, setPendingEditPayload] = useState(null);
+
+  useEffect(() => {
+    const hasBlockingOverlay = Boolean(
+      modalVisible ||
+        deleteModalVisible ||
+        sectionTimeModalVisible ||
+        datePickerModal.visible ||
+        snoozeAffirmationModal.visible ||
+        isStartAssistVisible ||
+        energySuggestionSheetVisible ||
+        viewerVisible ||
+        backupEmailModal.visible ||
+        restoreSummaryVisible ||
+        onboardingVisible ||
+        drawerVisible ||
+        activePage ||
+        progressTaskSheet.visible ||
+        taskMoodPromptVisible ||
+        recoveryModalVisible ||
+        todayPlanSheetVisible ||
+        isOverwhelmModeVisible ||
+        editRepeatScopeModalVisible ||
+        celebration.visible
+    );
+
+    hasBlockingOverlayRef.current = hasBlockingOverlay;
+    syncFocusVisibilityFromScroll(
+      homeScrollYRef.current,
+      homeViewportHeightRef.current
+    );
+  }, [
+    activePage,
+    backupEmailModal.visible,
+    celebration.visible,
+    datePickerModal.visible,
+    deleteModalVisible,
+    drawerVisible,
+    editRepeatScopeModalVisible,
+    energySuggestionSheetVisible,
+    isOverwhelmModeVisible,
+    isStartAssistVisible,
+    modalVisible,
+    onboardingVisible,
+    progressTaskSheet.visible,
+    recoveryModalVisible,
+    restoreSummaryVisible,
+    sectionTimeModalVisible,
+    snoozeAffirmationModal.visible,
+    syncFocusVisibilityFromScroll,
+    taskMoodPromptVisible,
+    todayPlanSheetVisible,
+    viewerVisible,
+  ]);
 
   const refreshStrongAlarmCapability = useCallback(async () => {
     if (Platform.OS !== "android") {
@@ -5771,6 +6045,12 @@ export default function Home() {
       recordFocusSession(focusTime);
     }
 
+    activeFocusY.current = 0;
+    focusSectionLayoutRef.current = null;
+    focusSectionVisibleRef.current = false;
+    setFocusSectionLayout(null);
+    setIsFocusSectionVisible(false);
+    setReturnToFocusButtonVisible(false);
     focusSessionRecordedRef.current = false;
     timerCompletionStampRef.current = null;
     setIsFocusCompleted(false);
@@ -5800,12 +6080,7 @@ export default function Home() {
     void scheduleFocusCompletionReminder(taskId, session.endTimestamp);
     void stopEncouragement();
 
-    setTimeout(() => {
-      scrollRef.current?.scrollTo({
-        y: activeFocusY.current,
-        animated: true,
-      });
-    }, 100);
+    scheduleScrollToFocusSection();
   };
   startFocusActionRef.current = startFocus;
 
@@ -13508,6 +13783,18 @@ export default function Home() {
     );
   };
 
+  const shouldShowReturnToFocusButton = Boolean(
+    showReturnToFocusButton &&
+      !isFocusSectionVisible &&
+      focusSectionLayout &&
+      !isKeyboardVisible
+  );
+  const returnToFocusButtonBottom =
+    focusFabBottom +
+    (currentTaskQuickTask ? 56 : 0) +
+    (lastCompletedTaskId ? 56 : 0) +
+    8;
+
   return (
     <>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
@@ -13524,6 +13811,12 @@ export default function Home() {
         className="flex-1 bg-[#061414]"
         scrollEnabled={!isSubtaskReordering}
         onScroll={homeScrollHandler}
+        onLayout={(event) => {
+          syncFocusVisibilityFromScroll(
+            homeScrollYRef.current,
+            event.nativeEvent.layout.height
+          );
+        }}
         scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
@@ -13916,60 +14209,11 @@ export default function Home() {
           </View>
         </View>
 
-        <View className="mx-4 mb-4">
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel="Find a task that fits me now"
-            accessibilityHint="Opens energy-based task suggestions"
-            accessibilityState={{ expanded: energyDropdownVisible }}
-            activeOpacity={0.86}
-            onPress={toggleEnergyDropdown}
-            className="rounded-2xl border border-[#337a7a]/35 bg-[#123131]/72 px-3.5 py-3 flex-row items-center justify-between"
-          >
-            <View className="flex-1 pr-3">
-              <Text className="text-[#E8F4F4] text-sm font-black">
-                Find a task that fits me now
-              </Text>
-              <Text className="text-[#9FB5B5] text-[11px] font-semibold mt-0.5">
-                {energyMatchMoodSuggestion}
-              </Text>
-            </View>
-            <Feather
-              name={energyDropdownVisible ? "chevron-up" : "chevron-down"}
-              size={18}
-              color={COLORS.accent}
-            />
-          </TouchableOpacity>
-
-          {energyDropdownVisible ? (
-            <View className="mt-2 rounded-2xl border border-[#337a7a]/30 bg-[#0B1F1F] overflow-hidden">
-              {ENERGY_TASK_FILTERS.map((filterOption, index) => (
-                <TouchableOpacity
-                  key={filterOption.key}
-                  accessibilityRole="button"
-                  accessibilityLabel={filterOption.label}
-                  activeOpacity={0.84}
-                  onPress={() => handleEnergyMatchSelect(filterOption.key)}
-                  className={`px-3.5 py-3 flex-row items-center justify-between ${
-                    index === ENERGY_TASK_FILTERS.length - 1
-                      ? ""
-                      : "border-b border-[#337a7a]/20"
-                  }`}
-                >
-                  <Text className="text-[#E8F4F4] text-xs font-black uppercase tracking-widest">
-                    {filterOption.label}
-                  </Text>
-                  <Feather name="arrow-up-right" size={14} color={COLORS.accent} />
-                </TouchableOpacity>
-              ))}
-            </View>
-          ) : null}
-        </View>
-
-        {renderSection("📌 Pinned Tasks", "Pinned")}
-
         {activeTaskId && (
-          <View className="bg-[#0B1F1F] mx-4 p-5 rounded-[32px] border border-[#5EEAD4]/35 shadow-2xl shadow-[#5EEAD4]/15 mb-4">
+          <View
+            onLayout={handleFocusSectionLayout}
+            className="bg-[#0B1F1F] mx-4 p-5 rounded-[32px] border border-[#5EEAD4]/35 shadow-2xl shadow-[#5EEAD4]/15 mb-4"
+          >
             <Text className="text-[#5EEAD4] font-black text-xs uppercase tracking-widest mb-4">
               Active Focus 🎯
             </Text>
@@ -14057,6 +14301,58 @@ export default function Home() {
             )}
           </View>
         )}
+
+        <View className="mx-4 mb-4">
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Find a task that fits me now"
+            accessibilityHint="Opens energy-based task suggestions"
+            accessibilityState={{ expanded: energyDropdownVisible }}
+            activeOpacity={0.86}
+            onPress={toggleEnergyDropdown}
+            className="rounded-2xl border border-[#337a7a]/35 bg-[#123131]/72 px-3.5 py-3 flex-row items-center justify-between"
+          >
+            <View className="flex-1 pr-3">
+              <Text className="text-[#E8F4F4] text-sm font-black">
+                Find a task that fits me now
+              </Text>
+              <Text className="text-[#9FB5B5] text-[11px] font-semibold mt-0.5">
+                {energyMatchMoodSuggestion}
+              </Text>
+            </View>
+            <Feather
+              name={energyDropdownVisible ? "chevron-up" : "chevron-down"}
+              size={18}
+              color={COLORS.accent}
+            />
+          </TouchableOpacity>
+
+          {energyDropdownVisible ? (
+            <View className="mt-2 rounded-2xl border border-[#337a7a]/30 bg-[#0B1F1F] overflow-hidden">
+              {ENERGY_TASK_FILTERS.map((filterOption, index) => (
+                <TouchableOpacity
+                  key={filterOption.key}
+                  accessibilityRole="button"
+                  accessibilityLabel={filterOption.label}
+                  activeOpacity={0.84}
+                  onPress={() => handleEnergyMatchSelect(filterOption.key)}
+                  className={`px-3.5 py-3 flex-row items-center justify-between ${
+                    index === ENERGY_TASK_FILTERS.length - 1
+                      ? ""
+                      : "border-b border-[#337a7a]/20"
+                  }`}
+                >
+                  <Text className="text-[#E8F4F4] text-xs font-black uppercase tracking-widest">
+                    {filterOption.label}
+                  </Text>
+                  <Feather name="arrow-up-right" size={14} color={COLORS.accent} />
+                </TouchableOpacity>
+              ))}
+            </View>
+          ) : null}
+        </View>
+
+        {renderSection("📌 Pinned Tasks", "Pinned")}
 
         {renderSection("Morning ☀️", "Morning")}
         {renderSection("Work 💼", "Work")}
@@ -15376,6 +15672,23 @@ export default function Home() {
         >
           <Text className="text-[#061414] font-black uppercase tracking-widest text-xs">
             ✅ Last Completed
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+
+      {shouldShowReturnToFocusButton ? (
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Return to focus"
+          accessibilityHint="Scroll back to the active focus session"
+          activeOpacity={0.86}
+          onPress={scrollToFocusSection}
+          style={{ bottom: returnToFocusButtonBottom }}
+          className="absolute right-6 flex-row items-center bg-[#123131] py-3 px-4 rounded-full shadow-xl shadow-[#66b9b9]/25 border border-[#66b9b9]/55"
+        >
+          <Feather name="target" size={14} color={COLORS.accent} />
+          <Text className="ml-2 text-[#66b9b9] font-black uppercase tracking-widest text-[11px]">
+            Return to Focus
           </Text>
         </TouchableOpacity>
       ) : null}
