@@ -80,6 +80,7 @@ import {
   parseRepeatDays,
   serializeRepeatDays,
 } from "../../utils/repeatTaskHelpers";
+import { createTaskDuplicateFromCompleted } from "../../utils/taskDuplicateHelpers";
 import { formatRepeatLabel } from "../../utils/repeatLabelFormatter";
 import {
   cancelNotificationById,
@@ -311,6 +312,7 @@ const TASK_HIGHLIGHT_PULSE_IN_MS = 900;
 const TASK_HIGHLIGHT_PULSE_OUT_MS = 1000;
 const TASK_NAVIGATION_MAX_RETRIES = 5;
 const TASK_NAVIGATION_RETRY_DELAY_MS = 130;
+const LAST_COMPLETED_TASK_BUTTON_DURATION_MS = 20000;
 const CURRENT_TASK_FAB_BREATH_MS = 2600;
 const START_ASSIST_SHORT_FOCUS_SECONDS = 120;
 const HEAVY_SUPPORT_MINIMUM_FOCUS_SECONDS = 300;
@@ -1128,6 +1130,8 @@ export default function Home() {
   const [tasksMenuSelectedMonthKey, setTasksMenuSelectedMonthKey] = useState("");
   const [tasksMenuSelectedTaskId, setTasksMenuSelectedTaskId] = useState(null);
   const [tasksMenuActionTaskId, setTasksMenuActionTaskId] = useState(null);
+  const [duplicatingCompletedTaskId, setDuplicatingCompletedTaskId] =
+    useState(null);
   const [progressTaskSheet, setProgressTaskSheet] = useState({
     visible: false,
     type: null,
@@ -2321,6 +2325,7 @@ export default function Home() {
   const taskHighlightLoopRef = useRef(null);
   const taskHighlightTimeoutRef = useRef(null);
   const taskNavigationTimeoutRef = useRef(null);
+  const lastCompletedTaskTimeoutRef = useRef(null);
   const handledNotificationResponseKeysRef = useRef(new Set());
   const handledNotificationResponseKeyOrderRef = useRef([]);
   const notificationActionContextRef = useRef(null);
@@ -4688,6 +4693,10 @@ export default function Home() {
         clearTimeout(todayPlanCelebrationTimeoutRef.current);
         todayPlanCelebrationTimeoutRef.current = null;
       }
+      if (lastCompletedTaskTimeoutRef.current) {
+        clearTimeout(lastCompletedTaskTimeoutRef.current);
+        lastCompletedTaskTimeoutRef.current = null;
+      }
       void cancelFocusCompletionReminder();
       void stopEncouragement();
     },
@@ -5365,7 +5374,7 @@ export default function Home() {
           (isRepeatingTask(task) ? createRepeatGroupId() : "");
 
         if (updated) {
-          setLastCompletedTaskId(task.id);
+          showLastCompletedTaskButton(task.id);
           recordDailyCompletion();
           showCelebration("Task completed! Keep going", "OK");
           cancelTaskReminders(task.notificationId);
@@ -5389,6 +5398,8 @@ export default function Home() {
             setTaskMoodPromptTaskId(task.id);
             setTaskMoodPromptVisible(true);
           }
+        } else {
+          hideLastCompletedTaskButton(task.id);
         }
 
         if (task.id === activeTaskId && updated) {
@@ -5489,29 +5500,56 @@ export default function Home() {
     );
   }, []);
 
+  const clearLastCompletedTaskButtonTimer = useCallback(() => {
+    if (!lastCompletedTaskTimeoutRef.current) return;
+    clearTimeout(lastCompletedTaskTimeoutRef.current);
+    lastCompletedTaskTimeoutRef.current = null;
+  }, []);
+
+  const hideLastCompletedTaskButton = useCallback(
+    (taskId = null) => {
+      clearLastCompletedTaskButtonTimer();
+      setLastCompletedTaskId((prev) => {
+        if (taskId === null || Number(prev) === Number(taskId)) return null;
+        return prev;
+      });
+    },
+    [clearLastCompletedTaskButtonTimer]
+  );
+
+  const showLastCompletedTaskButton = useCallback(
+    (taskId) => {
+      clearLastCompletedTaskButtonTimer();
+      setLastCompletedTaskId(taskId);
+
+      lastCompletedTaskTimeoutRef.current = setTimeout(() => {
+        setLastCompletedTaskId((prev) =>
+          Number(prev) === Number(taskId) ? null : prev
+        );
+        lastCompletedTaskTimeoutRef.current = null;
+      }, LAST_COMPLETED_TASK_BUTTON_DURATION_MS);
+    },
+    [clearLastCompletedTaskButtonTimer]
+  );
+
   const recreateCompletedTask = async (task, options = {}) => {
     if (!task || !task.completed) return null;
 
     try {
-      const preferredScheduleRaw = options?.scheduledTime;
-      const preferredScheduleDate =
-        parseStoredDateTime(preferredScheduleRaw) || new Date();
-      const newScheduledTime = formatSqliteDateTime(preferredScheduleDate);
       const createdAt = formatSqliteDateTime(new Date());
-      const normalizedRepeat = normalizeTaskRepeatSettings(task);
-      const repeatGroupId =
-        normalizedRepeat.repeatGroupId ||
-        (isRepeatingTask(task) ? createRepeatGroupId() : "");
-      const sourceSubtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
-      const recreatedSubtasks = sourceSubtasks.map((subtask) => ({
-        id: Date.now() + Math.floor(Math.random() * 100000),
-        title: subtask.title,
-        completed: false,
-      }));
       const taskAttachments = normalizeTaskAttachments(task);
       const taskAttachmentUri = getPrimaryAttachmentUri(taskAttachments);
-      const shouldCopyNotifications =
-        Array.isArray(task.notificationId) && task.notificationId.length > 0;
+      const duplicateDraft = createTaskDuplicateFromCompleted(task, {
+        createdAt,
+        scheduledTime:
+          typeof options?.scheduledTime === "string" ? options.scheduledTime : "",
+        attachments: taskAttachments,
+        primaryAttachmentUri: taskAttachmentUri,
+        generateSubtaskId: (index) =>
+          Date.now() + index + Math.floor(Math.random() * 100000),
+      });
+
+      if (!duplicateDraft) return null;
 
       const result = db.runSync(
         `INSERT INTO tasks (
@@ -5548,72 +5586,53 @@ export default function Home() {
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
-          task.title || "Task",
-          task.section || "Morning",
+          duplicateDraft.title || "Task",
+          duplicateDraft.section || "Morning",
           0,
           null,
           createdAt,
-          normalizedRepeat.repeatType,
-          serializeRepeatDays(normalizedRepeat.repeatDays),
-          normalizedRepeat.repeatMonthlyType || "",
-          normalizedRepeat.repeatCustomDate || "",
-          normalizedRepeat.repeatYearlyDate || "",
-          repeatGroupId,
-          newScheduledTime,
-          task.details || "",
+          duplicateDraft.repeatType,
+          serializeRepeatDays(duplicateDraft.repeatDays),
+          duplicateDraft.repeatMonthlyType || "",
+          duplicateDraft.repeatCustomDate || "",
+          duplicateDraft.repeatYearlyDate || "",
+          duplicateDraft.repeatGroupId || "",
+          duplicateDraft.scheduledTime || "",
+          duplicateDraft.details || "",
           taskAttachmentUri,
           serializeTaskAttachments(taskAttachments),
-          JSON.stringify(recreatedSubtasks),
+          JSON.stringify(duplicateDraft.subtasks || []),
           JSON.stringify([]),
           0,
-          task.usePhoneAlarm ? 1 : 0,
-          "",
-          task.firstAction || "",
-          task.minimumVersion || "",
-          normalizeEnergyRequiredValue(task.energyRequired),
-          normalizeFocusRequiredValue(task.focusRequired),
-          normalizeTaskContextValue(task.taskContext),
-          normalizeEstimatedMinutesValue(task.estimatedMinutes),
-          Number(task.startAssistUsedCount || 0),
-          task.lastStartAssistAt || null,
-          Number(task.stuckCount || 0),
-          task.lastStuckAt || null,
+          0,
+          duplicateDraft.moodType || "",
+          duplicateDraft.firstAction || "",
+          duplicateDraft.minimumVersion || "",
+          normalizeEnergyRequiredValue(duplicateDraft.energyRequired),
+          normalizeFocusRequiredValue(duplicateDraft.focusRequired),
+          normalizeTaskContextValue(duplicateDraft.taskContext),
+          normalizeEstimatedMinutesValue(duplicateDraft.estimatedMinutes),
+          0,
+          null,
+          0,
+          null,
         ]
       );
 
       const newTaskId = result.lastInsertRowId;
-      const recreatedNotificationIds = shouldCopyNotifications
-        ? await scheduleProReminders({
-            ...task,
-            id: newTaskId,
-            scheduledTime: newScheduledTime,
-          }, { source: "recurring" })
-        : [];
-      db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
-        JSON.stringify(recreatedNotificationIds),
-        newTaskId,
-      ]);
-
       const recreatedTask = {
-        ...task,
+        ...duplicateDraft,
         id: newTaskId,
         completed: false,
         completedAt: null,
-        repeatType: normalizedRepeat.repeatType,
         attachment: taskAttachmentUri,
         attachments: taskAttachments,
-        repeatDays: normalizedRepeat.repeatDays,
-        repeatMonthlyType: normalizedRepeat.repeatMonthlyType,
-        repeatCustomDate: normalizedRepeat.repeatCustomDate,
-        repeatYearlyDate: normalizedRepeat.repeatYearlyDate,
-        repeatGroupId,
         createdAt,
-        scheduledTime: newScheduledTime,
-        subtasks: recreatedSubtasks,
-        notificationId: recreatedNotificationIds,
+        scheduledTime: duplicateDraft.scheduledTime || "",
+        notificationId: [],
         isPinned: false,
-        usePhoneAlarm: Boolean(task.usePhoneAlarm),
-        useStrongAlarm: Boolean(task.usePhoneAlarm),
+        usePhoneAlarm: false,
+        useStrongAlarm: false,
         strongAlarmId: "",
         strongAlarmScheduledAt: "",
         strongAlarmSnoozeMinutes:
@@ -5627,10 +5646,10 @@ export default function Home() {
         focusRequired: normalizeFocusRequiredValue(task.focusRequired),
         taskContext: normalizeTaskContextValue(task.taskContext),
         estimatedMinutes: normalizeEstimatedMinutesValue(task.estimatedMinutes),
-        startAssistUsedCount: Number(task.startAssistUsedCount || 0),
-        lastStartAssistAt: task.lastStartAssistAt || "",
-        stuckCount: Number(task.stuckCount || 0),
-        lastStuckAt: task.lastStuckAt || "",
+        startAssistUsedCount: 0,
+        lastStartAssistAt: "",
+        stuckCount: 0,
+        lastStuckAt: "",
         reminderOpenCount: 0,
         reminderStartNowCount: 0,
         reminderSnoozeCount: 0,
@@ -5655,7 +5674,7 @@ export default function Home() {
       }
       return recreatedTask;
     } catch (error) {
-      console.log("Repeat task error:", error);
+      console.log("Duplicate completed task error:", error);
       return null;
     }
   };
@@ -6548,6 +6567,51 @@ export default function Home() {
     },
     []
   );
+
+  const duplicateCompletedTaskAndOpenEditor = async (task, options = {}) => {
+    if (!task?.id || !task.completed) return null;
+    if (Number(duplicatingCompletedTaskId) === Number(task.id)) return null;
+
+    setDuplicatingCompletedTaskId(task.id);
+
+    try {
+      const duplicatedTask = await recreateCompletedTask(task, {
+        scheduledTime:
+          typeof options.scheduledTime === "string" ? options.scheduledTime : "",
+      });
+
+      if (!duplicatedTask) {
+        showCelebration("Could not duplicate this task.", "OK");
+        return null;
+      }
+
+      const openEditorAction = () => {
+        openTaskEditor(
+          duplicatedTask,
+          options.editorHint || "The completed task stays completed."
+        );
+      };
+
+      showCelebration(
+        options.successMessage || "Copy created. You can adjust it now.",
+        "OK"
+      );
+
+      if (typeof options.openEditor === "function") {
+        options.openEditor(openEditorAction, duplicatedTask);
+      } else {
+        openEditorAction();
+      }
+
+      return duplicatedTask;
+    } catch (error) {
+      console.log("Duplicate completed task action error:", error);
+      showCelebration("Could not duplicate this task.", "OK");
+      return null;
+    } finally {
+      setDuplicatingCompletedTaskId(null);
+    }
+  };
 
   const clearStartAssistVoiceHint = useCallback(() => {
     if (startAssistVoiceHintTimeoutRef.current) {
@@ -9542,45 +9606,53 @@ export default function Home() {
   const handleTasksMenuDuplicateCompletedTask = async (task) => {
     if (!task?.id || !task.completed) return;
     if (Number(tasksMenuActionTaskId) === Number(task.id)) return;
+
     setTasksMenuActionTaskId(task.id);
-    const targetDate = tasksMenuVisibleDate || tasksMenuTodayDate;
-    const nextSchedule = buildScheduledDateTimeForDay(
-      targetDate,
-      task.scheduledTime || task.completedAt
-    );
-    const duplicatedTask = await recreateCompletedTask(task, {
-      scheduledTime: nextSchedule,
-    });
-    setTasksMenuActionTaskId(null);
 
-    if (!duplicatedTask) return;
+    try {
+      const targetDate = tasksMenuVisibleDate || tasksMenuTodayDate;
+      const nextSchedule = buildScheduledDateTimeForDay(
+        targetDate,
+        task.scheduledTime || task.completedAt
+      );
 
-    setTasksMenuSelectedTaskId(null);
-    showCelebration("Duplicated gently. A fresh copy is ready.");
+      await duplicateCompletedTaskAndOpenEditor(task, {
+        scheduledTime: nextSchedule,
+        openEditor: (openEditorAction) => {
+          setTasksMenuSelectedTaskId(null);
+          launchFromTasksMenu(openEditorAction);
+        },
+      });
+    } finally {
+      setTasksMenuActionTaskId(null);
+    }
   };
 
   const handleTasksMenuScheduleCompletedTask = async (task) => {
     if (!task?.id || !task.completed) return;
     if (Number(tasksMenuActionTaskId) === Number(task.id)) return;
+
     setTasksMenuActionTaskId(task.id);
 
-    const targetDate = tasksMenuVisibleDate || tasksMenuTodayDate;
-    const nextSchedule = buildScheduledDateTimeForDay(
-      targetDate,
-      task.scheduledTime || task.completedAt
-    );
-    const duplicatedTask = await recreateCompletedTask(task, {
-      scheduledTime: nextSchedule,
-    });
-    setTasksMenuActionTaskId(null);
+    try {
+      const targetDate = tasksMenuVisibleDate || tasksMenuTodayDate;
+      const nextSchedule = buildScheduledDateTimeForDay(
+        targetDate,
+        task.scheduledTime || task.completedAt
+      );
 
-    if (!duplicatedTask) return;
-
-    setTasksMenuSelectedTaskId(null);
-    showCelebration("Scheduled again. The original win stays saved.");
-    launchFromTasksMenu(() => {
-      openTaskEditor(duplicatedTask, "Adjust date or time gently if needed.");
-    });
+      await duplicateCompletedTaskAndOpenEditor(task, {
+        scheduledTime: nextSchedule,
+        successMessage: "Scheduled again. The original win stays saved.",
+        editorHint: "Adjust date or time gently if needed.",
+        openEditor: (openEditorAction) => {
+          setTasksMenuSelectedTaskId(null);
+          launchFromTasksMenu(openEditorAction);
+        },
+      });
+    } finally {
+      setTasksMenuActionTaskId(null);
+    }
   };
 
   const handleTasksMenuMarkCompletedTaskPending = async (task) => {
@@ -12609,6 +12681,8 @@ export default function Home() {
             );
             const isStrongAlarmToggleBusy =
               Number(togglingStrongAlarmTaskId) === Number(task.id);
+            const isDuplicateTaskBusy =
+              Number(duplicatingCompletedTaskId) === Number(task.id);
             const showTaskSupportHint =
               isTaskExpanded &&
               !task.completed &&
@@ -12856,6 +12930,35 @@ export default function Home() {
                             />
                           </TouchableOpacity>
                         )}
+                        {task.completed ? (
+                          <TouchableOpacity
+                            activeOpacity={0.7}
+                            disabled={isDuplicateTaskBusy}
+                            accessibilityRole="button"
+                            accessibilityLabel="Duplicate task"
+                            accessibilityHint="Create a new editable copy of this completed task"
+                            accessibilityState={
+                              isDuplicateTaskBusy ? { disabled: true } : undefined
+                            }
+                            onPress={(event) => {
+                              event.stopPropagation?.();
+                              duplicateCompletedTaskAndOpenEditor(task);
+                            }}
+                            className={`p-1.5 mr-2 rounded-xl border ${
+                              isDuplicateTaskBusy
+                                ? "bg-[#123131]/50 border-[#337a7a]/25"
+                                : "bg-[#66b9b9]/15 border-[#66b9b9]/25"
+                            }`}
+                          >
+                            <Feather
+                              name={isDuplicateTaskBusy ? "loader" : "copy"}
+                              size={14}
+                              color={
+                                isDuplicateTaskBusy ? COLORS.muted : COLORS.accent
+                              }
+                            />
+                          </TouchableOpacity>
+                        ) : null}
                         <TouchableOpacity
                           activeOpacity={0.7}
                           onPress={(event) => {
@@ -15253,10 +15356,22 @@ export default function Home() {
             ) : null}
           </TouchableOpacity>
         </Reanimated.View>
-      ) : lastCompletedTaskId ? (
+      ) : null}
+
+      {lastCompletedTaskId ? (
         <TouchableOpacity
-          onPress={() => scrollToTask(lastCompletedTaskId)}
-          style={{ bottom: focusFabBottom }}
+          accessibilityRole="button"
+          accessibilityLabel="Go to last completed task"
+          accessibilityHint="Scrolls to the task you just completed"
+          onPress={() =>
+            scrollToTask(lastCompletedTaskId, {
+              highlight: true,
+              allowCompleted: true,
+            })
+          }
+          style={{
+            bottom: currentTaskQuickTask ? focusFabBottom + 56 : focusFabBottom,
+          }}
           className="absolute right-6 bg-[#7DFFB3] py-3 px-5 rounded-full shadow-2xl shadow-[#7DFFB3]/35 border border-[#7DFFB3]"
         >
           <Text className="text-[#061414] font-black uppercase tracking-widest text-xs">
