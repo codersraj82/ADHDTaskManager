@@ -1,6 +1,14 @@
-import { Modal, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { Modal } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  Pressable,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
+} from "../common/ThemedPrimitives";
+import { useAppTheme } from "../../utils/appTheme";
 
 const hasStartSmallSupport = (task) =>
   (typeof task?.minimumVersion === "string" && task.minimumVersion.trim().length > 0) ||
@@ -18,6 +26,7 @@ export default function OverwhelmModeSheet({
   moodMessage = "",
 }) {
   const insets = useSafeAreaInsets();
+  const { colors } = useAppTheme();
   const safeSuggestions = Array.isArray(suggestions) ? suggestions.slice(0, 3) : [];
   const hasSuggestions = safeSuggestions.length > 0;
 
@@ -117,7 +126,7 @@ export default function OverwhelmModeSheet({
                       <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
                         {suggestion.label}
                       </Text>
-                      <Feather name="chevron-right" size={14} color="#66b9b9" />
+                      <Feather name="chevron-right" size={14} color={colors.accent} />
                     </View>
 
                     <Text className="text-[#E8F4F4] text-sm font-black mt-1" numberOfLines={2}>

@@ -1,27 +1,24 @@
 import {
-  View,
-  Text,
-  ScrollView,
-  FlatList,
-  TouchableOpacity,
   Modal,
-  TextInput,
   Animated,
   Alert,
-  Pressable,
   Dimensions,
-  Image,
   Linking,
   StatusBar,
   LayoutAnimation,
   Platform,
   UIManager,
   AppState,
-  KeyboardAvoidingView,
   Keyboard,
   Switch,
 } from "react-native";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import { db, initDB } from "../../database/db";
 import Svg, { Circle } from "react-native-svg";
 import * as DocumentPicker from "expo-document-picker";
@@ -31,6 +28,17 @@ import { Feather } from "@expo/vector-icons";
 
 import * as Notifications from "expo-notifications";
 import DatePickerModal from "../../components/DatePickerModal";
+import {
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "../../components/common/ThemedPrimitives";
 import {
   formatDateTimeForDisplay,
   formatSqliteDateTime,
@@ -168,6 +176,14 @@ import {
   ENERGY_TASK_SUGGESTION_COPY,
   getEnergyTaskSuggestions,
 } from "../../utils/energyTaskMatching";
+import {
+  AppThemeContext,
+  THEME_MODES,
+  THEME_STORAGE_KEY,
+  getAppTheme,
+  getThemeClassName,
+  normalizeThemeMode,
+} from "../../utils/appTheme";
 import OverwhelmModeSheet from "../../components/task/OverwhelmModeSheet";
 import Reanimated, {
   cancelAnimation,
@@ -1119,6 +1135,11 @@ export default function Home() {
   const headerTopPadding = Math.max(insets.top, 8) + APP_HEADER_SAFE_TOP_GAP;
   const headerContainerHeight = headerTopPadding + APP_HEADER_CONTENT_HEIGHT;
   const floatingControlTop = Math.max(insets.top, 8) + 6;
+  const [themeMode, setThemeModeState] = useState(THEME_MODES.DARK);
+  const appTheme = useMemo(() => getAppTheme(themeMode), [themeMode]);
+  const isLightTheme = themeMode === THEME_MODES.LIGHT;
+  const isDarkTheme = !isLightTheme;
+  Object.assign(COLORS, appTheme.colors);
   const [tasks, setTasks] = useState([
     {
       id: 1,
@@ -2742,12 +2763,18 @@ export default function Home() {
     currentFocusedTaskIdRef.current = currentFocusedTaskId;
   }, [currentFocusedTaskId]);
 
-  const saveSetting = (key, value) => {
+  const saveSetting = useCallback((key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
       key,
       String(value),
     ]);
-  };
+  }, []);
+
+  const updateThemeMode = useCallback((nextMode) => {
+    const normalizedMode = normalizeThemeMode(nextMode);
+    setThemeModeState(normalizedMode);
+    saveSetting(THEME_STORAGE_KEY, normalizedMode);
+  }, [saveSetting]);
 
   const getSettingsMap = () => {
     const rows = db.getAllSync("SELECT key, value FROM app_settings") || [];
@@ -2841,7 +2868,7 @@ export default function Home() {
 
   const persistFocusTimerState = useCallback((timerState) => {
     saveSetting(FOCUS_TIMER_STATE_KEY, serializeTimerState(timerState));
-  }, []);
+  }, [saveSetting]);
 
   const clearPersistedFocusTimerState = useCallback(() => {
     persistFocusTimerState({
@@ -3297,7 +3324,7 @@ export default function Home() {
       }
       return next;
     });
-  }, []);
+  }, [saveSetting]);
 
   const toggleStartAssistReadAloud = useCallback(() => {
     setStartAssistReadAloudEnabled((prev) => {
@@ -3305,7 +3332,7 @@ export default function Home() {
       saveSetting("startAssistReadAloudEnabled", next ? "true" : "false");
       return next;
     });
-  }, []);
+  }, [saveSetting]);
 
   const pastPendingTaskCount = todayPlanPastPendingTasks.length;
 
@@ -3477,7 +3504,7 @@ export default function Home() {
   const markTodayPlanPromptShown = useCallback((dateKey = getLocalDateKey()) => {
     setLastTodayPlanPromptDate((prev) => (prev === dateKey ? prev : dateKey));
     saveSetting(LAST_TODAY_PLAN_PROMPT_DATE_KEY, dateKey);
-  }, []);
+  }, [saveSetting]);
 
   const openTodayPlanSheet = useCallback((section = null) => {
     const normalizedSection = normalizeTodayPlanSection(section);
@@ -3590,7 +3617,7 @@ export default function Home() {
     } catch (error) {
       console.log("Today plan notification schedule error:", error);
     }
-  }, []);
+  }, [saveSetting]);
 
   const openRecoveryModal = useCallback(() => {
     todayPlanRescheduleTaskIdRef.current = null;
@@ -4118,6 +4145,7 @@ export default function Home() {
         setOnboardingVisible(!nextProfile.onboardingComplete);
 
         const appSettings = getSettingsMap();
+        setThemeModeState(normalizeThemeMode(appSettings[THEME_STORAGE_KEY]));
         const restoredBackupSettings = await getBackupSettings();
         setBackupSettings(restoredBackupSettings);
         setLastTodayPlanPromptDate(
@@ -4223,7 +4251,7 @@ export default function Home() {
     };
 
     initializeApp();
-  }, [clearPersistedFocusTimerState, loadDailyMoodEntries]);
+  }, [clearPersistedFocusTimerState, loadDailyMoodEntries, saveSetting]);
 
   const hasHandledNotificationResponse = useCallback((dedupeKey = "") => {
     if (!dedupeKey) return false;
@@ -9385,6 +9413,7 @@ export default function Home() {
     refreshSpecialTasks();
 
     const settings = getSettingsMap();
+    setThemeModeState(normalizeThemeMode(settings[THEME_STORAGE_KEY]));
     const nextBackupSettings = await getBackupSettings();
     setBackupSettings(nextBackupSettings);
     setLastTodayPlanPromptDate(settings[LAST_TODAY_PLAN_PROMPT_DATE_KEY] || "");
@@ -12368,6 +12397,52 @@ export default function Home() {
         <>
           <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#66b9b9]/25 mb-3">
             <Text className="text-[#E8F4F4] text-lg font-black">
+              Appearance
+            </Text>
+            <Text className="text-[#9FB5B5] text-xs mt-1 leading-5">
+              Dark is the default. Light keeps the same calm style with brighter contrast.
+            </Text>
+
+            <View className="mt-3 bg-[#061414]/45 border border-[#337a7a]/25 rounded-2xl p-2">
+              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
+                Theme
+              </Text>
+              <View className="flex-row">
+                {[
+                  { key: THEME_MODES.DARK, label: "Dark" },
+                  { key: THEME_MODES.LIGHT, label: "Light" },
+                ].map((option) => {
+                  const selected = themeMode === option.key;
+
+                  return (
+                    <TouchableOpacity
+                      key={`theme-mode-${option.key}`}
+                      activeOpacity={0.84}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      onPress={() => updateThemeMode(option.key)}
+                      className={`flex-1 rounded-xl border px-3 py-2 ${
+                        selected
+                          ? "bg-[#66b9b9] border-[#66b9b9]"
+                          : "bg-[#123131]/70 border-[#337a7a]/35"
+                      } ${option.key === THEME_MODES.DARK ? "mr-2" : ""}`}
+                    >
+                      <Text
+                        className={`text-center text-xs font-black uppercase tracking-widest ${
+                          selected ? "text-[#061414]" : "text-[#9FB5B5]"
+                        }`}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+
+          <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#66b9b9]/25 mb-3">
+            <Text className="text-[#E8F4F4] text-lg font-black">
               Backup & Restore
             </Text>
             <Text className="text-[#9FB5B5] text-xs mt-1 leading-5">
@@ -14055,10 +14130,23 @@ export default function Home() {
     ...(pendingEnergyEffortDraft || {}),
     ...energyEffortDraftValues,
   });
+  const themeContextValue = useMemo(
+    () => ({
+      themeMode,
+      colors: appTheme.colors,
+      setThemeMode: updateThemeMode,
+      isDark: isDarkTheme,
+      isLight: isLightTheme,
+    }),
+    [appTheme.colors, isDarkTheme, isLightTheme, themeMode, updateThemeMode]
+  );
 
   return (
-    <>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
+    <AppThemeContext.Provider value={themeContextValue}>
+      <StatusBar
+        barStyle={isLightTheme ? "dark-content" : "light-content"}
+        backgroundColor={COLORS.bg}
+      />
       {renderFloatingMenuShortcut()}
       <Reanimated.View
         pointerEvents="box-none"
@@ -14069,7 +14157,7 @@ export default function Home() {
       </Reanimated.View>
       <Reanimated.ScrollView
         ref={scrollRef}
-        className="flex-1 bg-[#061414]"
+        className={getThemeClassName("flex-1 bg-[#061414]", themeMode)}
         scrollEnabled={!isSubtaskReordering}
         onScroll={homeScrollHandler}
         onLayout={(event) => {
@@ -16372,6 +16460,6 @@ export default function Home() {
           </View>
         </View>
       </Modal>
-    </>
+    </AppThemeContext.Provider>
   );
 }

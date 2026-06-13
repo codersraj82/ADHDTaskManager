@@ -1,18 +1,21 @@
 import React, { memo, useCallback, useEffect, useState } from "react";
 import {
   Keyboard,
-  KeyboardAvoidingView,
   Modal,
   Platform,
+} from "react-native";
+import {
+  KeyboardAvoidingView,
   Text,
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
-} from "react-native";
+} from "./common/ThemedPrimitives";
 import DateTimePicker, {
   DateTimePickerAndroid,
 } from "@react-native-community/datetimepicker";
 import TimeInput from "./TimeInput";
+import { useAppTheme } from "../utils/appTheme";
 import {
   formatDateForPickerLabel,
   formatSqliteDateTime,
@@ -27,6 +30,7 @@ function DatePickerModal({
   onCancel,
   onConfirm,
 }) {
+  const { isLight } = useAppTheme();
   const [draftDate, setDraftDate] = useState(() =>
     parseStoredDateTime(value) || new Date()
   );
@@ -129,7 +133,7 @@ function DatePickerModal({
                       value={draftDate}
                       mode="date"
                       display={Platform.OS === "ios" ? "inline" : "default"}
-                      themeVariant="dark"
+                      themeVariant={isLight ? "light" : "dark"}
                       onChange={handleInlineDateChange}
                     />
                   </View>

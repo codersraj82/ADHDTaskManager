@@ -7,12 +7,14 @@ import React, {
 } from "react";
 import {
   Keyboard,
+} from "react-native";
+import {
   Pressable,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-} from "react-native";
+} from "./common/ThemedPrimitives";
 import {
   applyTimePartsToDate,
   pad2,
