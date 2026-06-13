@@ -299,9 +299,9 @@ const HEADER_HIDE_SCROLL_THRESHOLD = 48;
 const HEADER_SHOW_SCROLL_THRESHOLD = 12;
 const HEADER_HIDE_OFFSET_FALLBACK = 184;
 const HEADER_AFFIRMATION_MARQUEE_GAP = 56;
-const HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC = 24;
-const HEADER_AFFIRMATION_MIN_DURATION_MS = 12000;
-const HEADER_AFFIRMATION_MAX_DURATION_MS = 32000;
+const HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC = 18;
+const HEADER_AFFIRMATION_MIN_DURATION_MS = 14000;
+const HEADER_AFFIRMATION_MAX_DURATION_MS = 42000;
 const WELCOME_VOICE_DELAY_MS = 900;
 const NOTIFICATION_SPEECH_MIN_GAP_MS = 6000;
 const SMART_TASK_BORDER_CYCLE_MS = 3600;
@@ -1407,7 +1407,7 @@ export default function Home() {
     if (!headerAffirmationViewportWidth || !headerAffirmationTextWidth) {
       return false;
     }
-    return headerAffirmationTextWidth > headerAffirmationViewportWidth * 1.9;
+    return headerAffirmationTextWidth > headerAffirmationViewportWidth - 6;
   }, [headerAffirmationTextWidth, headerAffirmationViewportWidth]);
 
   const handleHeaderAffirmationViewportLayout = useCallback((event) => {
@@ -10735,9 +10735,9 @@ export default function Home() {
             </Reanimated.View>
           ) : (
             <Text
-              numberOfLines={2}
+              numberOfLines={1}
               ellipsizeMode="tail"
-              className="text-[#E8F4F4] text-sm font-bold leading-5 flex-shrink"
+              className="text-[#E8F4F4] text-sm font-bold leading-5"
             >
               {currentAffirmation}
             </Text>
@@ -13433,23 +13433,17 @@ export default function Home() {
                             }}
                             className={`w-8 h-8 mr-2 rounded-xl border items-center justify-center ${
                               isStrongAlarmEnabled
-                                ? "bg-[#66b9b9]/15 border-[#66b9b9]/40"
+                                ? "bg-[#D9A441]/20 border-[#D9A441]/65"
                                 : "bg-[#123131]/45 border-[#337a7a]/35"
                             }`}
                           >
-                            <Feather
-                              name={
-                                isStrongAlarmToggleBusy
-                                  ? "loader"
-                                  : isStrongAlarmEnabled
-                                    ? "bell"
-                                    : "bell-off"
-                              }
-                              size={14}
-                              color={
-                                isStrongAlarmEnabled ? COLORS.accent : COLORS.muted
-                              }
-                            />
+                            {isStrongAlarmToggleBusy ? (
+                              <Feather name="loader" size={14} color={COLORS.muted} />
+                            ) : isStrongAlarmEnabled ? (
+                              <Text className="text-[14px]">⏰</Text>
+                            ) : (
+                              <Feather name="bell-off" size={14} color={COLORS.muted} />
+                            )}
                           </TouchableOpacity>
                         )}
                         {!task.completed && (
@@ -13534,7 +13528,7 @@ export default function Home() {
                       </Text>
                     )}
                     {hasPendingNotification ? (
-                      <Feather name="bell" size={13} color={COLORS.success} />
+                      <Text className="text-[13px]">⏰</Text>
                     ) : null}
                   </View>
                 </Pressable>
@@ -14017,7 +14011,7 @@ export default function Home() {
                               key={idx}
                               className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35 flex-row items-center"
                             >
-                              <Feather name="bell" size={10} color={COLORS.success} />
+                              <Text className="text-[10px]">⏰</Text>
                               <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide ml-1">
                                 {time}
                               </Text>

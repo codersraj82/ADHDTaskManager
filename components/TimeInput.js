@@ -6,6 +6,7 @@ import React, {
   useState,
 } from "react";
 import {
+  Keyboard,
   Pressable,
   Text,
   TextInput,
@@ -141,6 +142,11 @@ function TimeInput({
     [updateParts]
   );
 
+  const togglePeriodDropdown = useCallback(() => {
+    Keyboard.dismiss();
+    setPeriodOpen((current) => !current);
+  }, []);
+
   const inputBase =
     "h-16 bg-[#101416] text-[#F7EEDC] rounded-xl border text-center text-2xl font-black";
   const inactiveBorder = "border-[#3A3426]";
@@ -192,7 +198,7 @@ function TimeInput({
           <TouchableOpacity
             disabled={disabled}
             activeOpacity={0.82}
-            onPress={() => setPeriodOpen((current) => !current)}
+            onPress={togglePeriodDropdown}
             className={`h-16 w-[86px] rounded-xl border ${
               periodOpen ? activeBorder : inactiveBorder
             } bg-[#101416] items-center justify-center`}
