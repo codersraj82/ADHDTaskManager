@@ -419,6 +419,13 @@ const TASK_CONTEXT_OPTIONS = Object.freeze([
 
 const ESTIMATED_MINUTES_OPTIONS = Object.freeze([2, 5, 10, 15, 25]);
 
+const ENERGY_EFFORT_EMPTY_VALUES = Object.freeze({
+  energyRequired: "",
+  focusRequired: "",
+  taskContext: "",
+  estimatedMinutes: null,
+});
+
 const ENERGY_REQUIRED_META_LABELS = Object.freeze({
   low: "Low energy",
   medium: "Medium energy",
@@ -645,6 +652,161 @@ const normalizeEstimatedMinutesValue = (value) => {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue) || numericValue <= 0) return null;
   return Math.round(numericValue);
+};
+
+const getNormalizedEnergyEffortValues = (taskDraft = {}) => {
+  const draft = Object(taskDraft);
+
+  return {
+    energyRequired: normalizeEnergyRequiredValue(draft.energyRequired),
+    focusRequired: normalizeFocusRequiredValue(draft.focusRequired),
+    taskContext: normalizeTaskContextValue(draft.taskContext),
+    estimatedMinutes: normalizeEstimatedMinutesValue(
+      draft.estimatedMinutes ?? draft.estimateMinutes
+    ),
+  };
+};
+
+const hasUsefulEnergyEffort = (taskDraft = {}) => {
+  const {
+    energyRequired,
+    focusRequired,
+    taskContext,
+    estimatedMinutes,
+  } = getNormalizedEnergyEffortValues(taskDraft);
+  const hasEnergy = Boolean(energyRequired);
+  const hasFocus = Boolean(focusRequired);
+  const hasContext = Boolean(taskContext);
+  const hasEstimate = estimatedMinutes !== null;
+  const filledCount = [hasEnergy, hasFocus, hasContext, hasEstimate].filter(
+    Boolean
+  ).length;
+
+  return (
+    (hasEnergy && hasEstimate) ||
+    (hasEnergy && hasFocus) ||
+    (hasEstimate && hasContext) ||
+    filledCount >= 3
+  );
+};
+
+const isEnergyEffortIncomplete = (taskDraft = {}) =>
+  !hasUsefulEnergyEffort(taskDraft);
+
+const EnergyEffortChoiceGroup = ({
+  energyRequired,
+  focusRequired,
+  taskContext,
+  estimatedMinutes,
+  onEnergyRequiredChange,
+  onFocusRequiredChange,
+  onTaskContextChange,
+  onEstimatedMinutesChange,
+  optionKeyPrefix = "energy-effort",
+}) => {
+  const normalizedEnergyRequired = normalizeEnergyRequiredValue(energyRequired);
+  const normalizedFocusRequired = normalizeFocusRequiredValue(focusRequired);
+  const normalizedTaskContext = normalizeTaskContextValue(taskContext);
+  const normalizedEstimatedMinutes = normalizeEstimatedMinutesValue(
+    estimatedMinutes
+  );
+
+  const renderChoice = ({
+    optionKey,
+    isSelected,
+    onPress,
+    label,
+  }) => (
+    <TouchableOpacity
+      key={optionKey}
+      onPress={onPress}
+      className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
+        isSelected
+          ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+          : "bg-[#123131]/70 border-[#337a7a]/35"
+      }`}
+    >
+      <Text
+        className={`text-[10px] font-black uppercase tracking-wider ${
+          isSelected ? "text-[#66b9b9]" : "text-[#9FB5B5]"
+        }`}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  return (
+    <View>
+      <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
+        Energy required
+      </Text>
+      <View className="flex-row flex-wrap mb-2">
+        {ENERGY_REQUIRED_OPTIONS.map((option) =>
+          renderChoice({
+            optionKey: `${optionKeyPrefix}-energy-required-${option.value}`,
+            isSelected: normalizedEnergyRequired === option.value,
+            label: option.label,
+            onPress: () =>
+              onEnergyRequiredChange(
+                normalizedEnergyRequired === option.value ? "" : option.value
+              ),
+          })
+        )}
+      </View>
+
+      <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
+        Focus needed
+      </Text>
+      <View className="flex-row flex-wrap mb-2">
+        {FOCUS_REQUIRED_OPTIONS.map((option) =>
+          renderChoice({
+            optionKey: `${optionKeyPrefix}-focus-required-${option.value}`,
+            isSelected: normalizedFocusRequired === option.value,
+            label: option.label,
+            onPress: () =>
+              onFocusRequiredChange(
+                normalizedFocusRequired === option.value ? "" : option.value
+              ),
+          })
+        )}
+      </View>
+
+      <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
+        Can be done at
+      </Text>
+      <View className="flex-row flex-wrap mb-2">
+        {TASK_CONTEXT_OPTIONS.map((option) =>
+          renderChoice({
+            optionKey: `${optionKeyPrefix}-task-context-${option.value}`,
+            isSelected: normalizedTaskContext === option.value,
+            label: option.label,
+            onPress: () =>
+              onTaskContextChange(
+                normalizedTaskContext === option.value ? "" : option.value
+              ),
+          })
+        )}
+      </View>
+
+      <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
+        Estimated time
+      </Text>
+      <View className="flex-row flex-wrap">
+        {ESTIMATED_MINUTES_OPTIONS.map((minutes) =>
+          renderChoice({
+            optionKey: `${optionKeyPrefix}-estimated-minutes-${minutes}`,
+            isSelected: normalizedEstimatedMinutes === minutes,
+            label: `${minutes} min`,
+            onPress: () =>
+              onEstimatedMinutesChange(
+                normalizedEstimatedMinutes === minutes ? null : minutes
+              ),
+          })
+        )}
+      </View>
+    </View>
+  );
 };
 
 const getTaskEnergyMetadataPills = (task) => {
@@ -5242,6 +5404,17 @@ export default function Home() {
   const [taskContext, setTaskContext] = useState("");
   const [taskEstimatedMinutes, setTaskEstimatedMinutes] = useState(null);
   const [isEnergyEffortExpanded, setIsEnergyEffortExpanded] = useState(false);
+  const [showEnergyEffortPrompt, setShowEnergyEffortPrompt] = useState(false);
+  const [pendingEnergyEffortDraft, setPendingEnergyEffortDraft] = useState(null);
+  const [
+    hasSkippedEnergyPromptForThisAttempt,
+    setHasSkippedEnergyPromptForThisAttempt,
+  ] = useState(false);
+  const [energyEffortDraftValues, setEnergyEffortDraftValues] = useState(
+    ENERGY_EFFORT_EMPTY_VALUES
+  );
+  const [isTaskSaving, setIsTaskSaving] = useState(false);
+  const taskSaveInFlightRef = useRef(false);
   const [isRepeatTaskExpanded, setIsRepeatTaskExpanded] = useState(false);
   const [selectedSection, setSelectedSection] = useState("Morning");
   const [repeatType, setRepeatType] = useState(REPEAT_TYPES.NONE);
@@ -5274,6 +5447,7 @@ export default function Home() {
         datePickerModal.visible ||
         snoozeAffirmationModal.visible ||
         isStartAssistVisible ||
+        showEnergyEffortPrompt ||
         energySuggestionSheetVisible ||
         viewerVisible ||
         backupEmailModal.visible ||
@@ -5312,12 +5486,20 @@ export default function Home() {
     recoveryModalVisible,
     restoreSummaryVisible,
     sectionTimeModalVisible,
+    showEnergyEffortPrompt,
     snoozeAffirmationModal.visible,
     syncFocusVisibilityFromScroll,
     taskMoodPromptVisible,
     todayPlanSheetVisible,
     viewerVisible,
   ]);
+
+  const resetEnergyEffortPromptState = useCallback(() => {
+    setShowEnergyEffortPrompt(false);
+    setPendingEnergyEffortDraft(null);
+    setHasSkippedEnergyPromptForThisAttempt(false);
+    setEnergyEffortDraftValues(ENERGY_EFFORT_EMPTY_VALUES);
+  }, []);
 
   const refreshStrongAlarmCapability = useCallback(async () => {
     if (Platform.OS !== "android") {
@@ -5977,6 +6159,7 @@ export default function Home() {
     setTimeError(false);
     setDetailsHeight(80);
     setStartAssistEditHint("");
+    resetEnergyEffortPromptState();
 
     setEditingTask(null);
     setIsEditMode(false);
@@ -6013,17 +6196,19 @@ export default function Home() {
     setTimeAdjusted(false);
     setTimeError(false);
     setStartAssistEditHint("");
+    resetEnergyEffortPromptState();
 
     setDetailsHeight(80);
     setTodayPlanCreateContextActive(false);
 
     setModalVisible(true);
-  }, []);
+  }, [resetEnergyEffortPromptState]);
 
   const closeTaskModal = useCallback(() => {
     setModalVisible(false);
     setTodayPlanCreateContextActive(false);
-  }, []);
+    resetEnergyEffortPromptState();
+  }, [resetEnergyEffortPromptState]);
 
   const openModalFromTodayPlan = useCallback(() => {
     const now = new Date();
@@ -6838,9 +7023,10 @@ export default function Home() {
       setUsePhoneAlarm(Boolean(task.usePhoneAlarm ?? task.useStrongAlarm));
       setTaskAttachments(normalizeTaskAttachments(task));
       setStartAssistEditHint(assistHint || "");
+      resetEnergyEffortPromptState();
       setModalVisible(true);
     },
-    []
+    [resetEnergyEffortPromptState]
   );
 
   const duplicateCompletedTaskAndOpenEditor = async (task, options = {}) => {
@@ -8277,52 +8463,22 @@ export default function Home() {
     };
   };
 
-  const applyEditScopeAndSave = async (scope) => {
-    if (!pendingEditPayload) return;
+  const runTaskSave = async (draft, { scope = "single", source } = {}) => {
+    if (taskSaveInFlightRef.current) return null;
+
+    taskSaveInFlightRef.current = true;
+    setIsTaskSaving(true);
+
     try {
-      const saveResult = await executeTaskSave(scope, pendingEditPayload);
+      const saveResult = await executeTaskSave(scope, draft);
       const savedTasks = Array.isArray(saveResult?.tasks) ? saveResult.tasks : [];
       await launchOptionalPhoneAlarmForTasks({
         tasksToCheck: savedTasks,
-        source: "editTask",
+        source,
         scope,
         primaryTaskId: editingTask?.id ?? null,
       });
-    } catch (error) {
-      console.log("Task Save Error:", error);
-      alert("Task Save Error:\n" + error.message);
-    } finally {
-      setPendingEditPayload(null);
-      setEditRepeatScopeModalVisible(false);
-    }
-  };
-
-  const handleSaveTask = async () => {
-    if (!taskName.trim()) return;
-
-    const draft = buildTaskDraftPayload();
-
-    if (
-      isEditMode &&
-      editingTask &&
-      isRepeatingTask(editingTask) &&
-      editingTask.repeatGroupId
-    ) {
-      setPendingEditPayload(draft);
-      setEditRepeatScopeModalVisible(true);
-      return;
-    }
-
-  try {
-      const saveResult = await executeTaskSave("single", draft);
-      const savedTasks = Array.isArray(saveResult?.tasks) ? saveResult.tasks : [];
-      await launchOptionalPhoneAlarmForTasks({
-        tasksToCheck: savedTasks,
-        source: isEditMode ? "editTask" : "taskReminder",
-        scope: "single",
-        primaryTaskId: editingTask?.id ?? null,
-      });
-      if (todayPlanCreateContextActive) {
+      if (todayPlanCreateContextActive && source === "taskReminder") {
         const { start, end } = getDayBounds(new Date());
         const hasTodayTask = savedTasks.some((task) => {
           const scheduledTimestamp = toTaskTimestamp(task?.scheduledTime);
@@ -8337,10 +8493,117 @@ export default function Home() {
           showTodayPlanCelebration("create");
         }
       }
+      return saveResult;
     } catch (error) {
       console.log("Task Save Error:", error);
       alert("Task Save Error:\n" + error.message);
+    } finally {
+      taskSaveInFlightRef.current = false;
+      setIsTaskSaving(false);
+      setHasSkippedEnergyPromptForThisAttempt(false);
     }
+
+    return null;
+  };
+
+  const continueTaskSave = async (draft) => {
+    if (taskSaveInFlightRef.current) return;
+
+    if (
+      isEditMode &&
+      editingTask &&
+      isRepeatingTask(editingTask) &&
+      editingTask.repeatGroupId
+    ) {
+      setPendingEditPayload(draft);
+      setEditRepeatScopeModalVisible(true);
+      setHasSkippedEnergyPromptForThisAttempt(false);
+      return;
+    }
+
+    await runTaskSave(draft, {
+      scope: "single",
+      source: isEditMode ? "editTask" : "taskReminder",
+    });
+  };
+
+  const applyEditScopeAndSave = async (scope) => {
+    if (!pendingEditPayload || taskSaveInFlightRef.current) return;
+
+    try {
+      await runTaskSave(pendingEditPayload, {
+        scope,
+        source: "editTask",
+      });
+    } finally {
+      setPendingEditPayload(null);
+      setEditRepeatScopeModalVisible(false);
+    }
+  };
+
+  const applyEnergyEffortDraftToForm = (values) => {
+    const normalizedValues = getNormalizedEnergyEffortValues(values);
+    setTaskEnergyRequired(normalizedValues.energyRequired);
+    setTaskFocusRequired(normalizedValues.focusRequired);
+    setTaskContext(normalizedValues.taskContext);
+    setTaskEstimatedMinutes(normalizedValues.estimatedMinutes);
+    setIsEnergyEffortExpanded(true);
+
+    return normalizedValues;
+  };
+
+  const handleEnergyEffortPromptSave = async () => {
+    if (!pendingEnergyEffortDraft || taskSaveInFlightRef.current) return;
+
+    const normalizedValues = getNormalizedEnergyEffortValues(
+      energyEffortDraftValues
+    );
+    const draftWithEnergyInfo = {
+      ...pendingEnergyEffortDraft,
+      ...normalizedValues,
+    };
+
+    if (!hasUsefulEnergyEffort(draftWithEnergyInfo)) return;
+
+    applyEnergyEffortDraftToForm(normalizedValues);
+    setShowEnergyEffortPrompt(false);
+    setPendingEnergyEffortDraft(null);
+    setHasSkippedEnergyPromptForThisAttempt(false);
+    await continueTaskSave(draftWithEnergyInfo);
+  };
+
+  const handleEnergyEffortPromptSkip = async () => {
+    if (taskSaveInFlightRef.current) return;
+
+    const draft = pendingEnergyEffortDraft || buildTaskDraftPayload();
+    setHasSkippedEnergyPromptForThisAttempt(true);
+    setShowEnergyEffortPrompt(false);
+    setPendingEnergyEffortDraft(null);
+    await continueTaskSave(draft);
+  };
+
+  const handleEnergyEffortPromptBack = () => {
+    setShowEnergyEffortPrompt(false);
+    setPendingEnergyEffortDraft(null);
+    setHasSkippedEnergyPromptForThisAttempt(false);
+  };
+
+  const handleSaveTask = async () => {
+    if (!taskName.trim() || taskSaveInFlightRef.current) return;
+
+    const draft = buildTaskDraftPayload();
+
+    if (
+      !hasSkippedEnergyPromptForThisAttempt &&
+      isEnergyEffortIncomplete(draft)
+    ) {
+      setEnergyEffortDraftValues(getNormalizedEnergyEffortValues(draft));
+      setPendingEnergyEffortDraft(draft);
+      setShowEnergyEffortPrompt(true);
+      return;
+    }
+
+    await continueTaskSave(draft);
   };
 
   const confirmDeleteTask = async (scope = "single") => {
@@ -13794,6 +14057,10 @@ export default function Home() {
     (currentTaskQuickTask ? 56 : 0) +
     (lastCompletedTaskId ? 56 : 0) +
     8;
+  const canSaveEnergyEffortPrompt = hasUsefulEnergyEffort({
+    ...(pendingEnergyEffortDraft || {}),
+    ...energyEffortDraftValues,
+  });
 
   return (
     <>
@@ -15159,129 +15426,17 @@ export default function Home() {
 
               {isEnergyEffortExpanded ? (
                 <View className="mt-2">
-                  <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
-                    Energy required
-                  </Text>
-                  <View className="flex-row flex-wrap mb-2">
-                    {ENERGY_REQUIRED_OPTIONS.map((option) => (
-                      <TouchableOpacity
-                        key={`energy-required-${option.value}`}
-                        onPress={() =>
-                          setTaskEnergyRequired((prev) =>
-                            prev === option.value ? "" : option.value
-                          )
-                        }
-                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
-                          taskEnergyRequired === option.value
-                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
-                            : "bg-[#123131]/70 border-[#337a7a]/35"
-                        }`}
-                      >
-                        <Text
-                          className={`text-[10px] font-black uppercase tracking-wider ${
-                            taskEnergyRequired === option.value
-                              ? "text-[#66b9b9]"
-                              : "text-[#9FB5B5]"
-                          }`}
-                        >
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
-                    Focus needed
-                  </Text>
-                  <View className="flex-row flex-wrap mb-2">
-                    {FOCUS_REQUIRED_OPTIONS.map((option) => (
-                      <TouchableOpacity
-                        key={`focus-required-${option.value}`}
-                        onPress={() =>
-                          setTaskFocusRequired((prev) =>
-                            prev === option.value ? "" : option.value
-                          )
-                        }
-                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
-                          taskFocusRequired === option.value
-                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
-                            : "bg-[#123131]/70 border-[#337a7a]/35"
-                        }`}
-                      >
-                        <Text
-                          className={`text-[10px] font-black uppercase tracking-wider ${
-                            taskFocusRequired === option.value
-                              ? "text-[#66b9b9]"
-                              : "text-[#9FB5B5]"
-                          }`}
-                        >
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
-                    Can be done at
-                  </Text>
-                  <View className="flex-row flex-wrap mb-2">
-                    {TASK_CONTEXT_OPTIONS.map((option) => (
-                      <TouchableOpacity
-                        key={`task-context-${option.value}`}
-                        onPress={() =>
-                          setTaskContext((prev) =>
-                            prev === option.value ? "" : option.value
-                          )
-                        }
-                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
-                          taskContext === option.value
-                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
-                            : "bg-[#123131]/70 border-[#337a7a]/35"
-                        }`}
-                      >
-                        <Text
-                          className={`text-[10px] font-black uppercase tracking-wider ${
-                            taskContext === option.value
-                              ? "text-[#66b9b9]"
-                              : "text-[#9FB5B5]"
-                          }`}
-                        >
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <Text className="text-[#9FB5B5] text-[10px] font-black mb-1">
-                    Estimated time
-                  </Text>
-                  <View className="flex-row flex-wrap">
-                    {ESTIMATED_MINUTES_OPTIONS.map((minutes) => (
-                      <TouchableOpacity
-                        key={`estimated-minutes-${minutes}`}
-                        onPress={() =>
-                          setTaskEstimatedMinutes((prev) =>
-                            prev === minutes ? null : minutes
-                          )
-                        }
-                        className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
-                          taskEstimatedMinutes === minutes
-                            ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
-                            : "bg-[#123131]/70 border-[#337a7a]/35"
-                        }`}
-                      >
-                        <Text
-                          className={`text-[10px] font-black uppercase tracking-wider ${
-                            taskEstimatedMinutes === minutes
-                              ? "text-[#66b9b9]"
-                              : "text-[#9FB5B5]"
-                          }`}
-                        >
-                          {minutes} min
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                  <EnergyEffortChoiceGroup
+                    optionKeyPrefix="task-form-energy-effort"
+                    energyRequired={taskEnergyRequired}
+                    focusRequired={taskFocusRequired}
+                    taskContext={taskContext}
+                    estimatedMinutes={taskEstimatedMinutes}
+                    onEnergyRequiredChange={setTaskEnergyRequired}
+                    onFocusRequiredChange={setTaskFocusRequired}
+                    onTaskContextChange={setTaskContext}
+                    onEstimatedMinutesChange={setTaskEstimatedMinutes}
+                  />
                 </View>
               ) : null}
             </View>
@@ -15366,11 +15521,24 @@ export default function Home() {
               <TouchableOpacity
                 accessibilityRole="button"
                 accessibilityLabel={isEditMode ? "Update task" : "Save task"}
+                disabled={isTaskSaving}
                 onPress={handleSaveTask}
-                className="bg-[#66b9b9] p-4 rounded-2xl shadow-lg shadow-[#66b9b9]/30 border border-[#99bdbd]/60"
+                className={`p-4 rounded-2xl shadow-lg shadow-[#66b9b9]/30 border ${
+                  isTaskSaving
+                    ? "bg-[#123131]/80 border-[#337a7a]/40"
+                    : "bg-[#66b9b9] border-[#99bdbd]/60"
+                }`}
               >
-                <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-base">
-                  {isEditMode ? "Update Task" : "Save Task"}
+                <Text
+                  className={`text-center font-black uppercase tracking-widest text-base ${
+                    isTaskSaving ? "text-[#9FB5B5]" : "text-[#061414]"
+                  }`}
+                >
+                  {isTaskSaving
+                    ? "Saving..."
+                    : isEditMode
+                      ? "Update Task"
+                      : "Save Task"}
                 </Text>
               </TouchableOpacity>
 
@@ -15390,6 +15558,134 @@ export default function Home() {
         </KeyboardAvoidingView>
       </Modal>
 
+      <Modal
+        visible={showEnergyEffortPrompt}
+        transparent
+        animationType="fade"
+        onRequestClose={handleEnergyEffortPromptBack}
+      >
+        <View className="flex-1 bg-[#061414]/95 justify-end px-4 pb-8">
+          <View className="max-h-[84%] bg-[#0B1F1F] rounded-[28px] border border-[#66b9b9]/30 p-5 shadow-2xl shadow-[#66b9b9]/15">
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 8) }}
+            >
+              <View className="flex-row items-start justify-between">
+                <View className="flex-1 pr-3">
+                  <Text className="text-[#E8F4F4] text-lg font-black">
+                    Add Energy & Effort?
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-xs leading-5 mt-2">
+                    This helps the app suggest the right task when you feel overwhelmed or low on energy.
+                  </Text>
+                  <Text className="text-[#66b9b9] text-[11px] font-semibold mt-2">
+                    Just a few quick choices. You can skip this for now.
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back to task"
+                  onPress={handleEnergyEffortPromptBack}
+                  className="w-8 h-8 rounded-full border border-[#337a7a]/35 bg-[#123131]/70 items-center justify-center"
+                >
+                  <Feather name="x" size={14} color={COLORS.muted} />
+                </TouchableOpacity>
+              </View>
+
+              <View className="mt-4 rounded-2xl border border-[#337a7a]/30 bg-[#061414]/45 p-3">
+                <EnergyEffortChoiceGroup
+                  optionKeyPrefix="energy-effort-prompt"
+                  energyRequired={energyEffortDraftValues.energyRequired}
+                  focusRequired={energyEffortDraftValues.focusRequired}
+                  taskContext={energyEffortDraftValues.taskContext}
+                  estimatedMinutes={energyEffortDraftValues.estimatedMinutes}
+                  onEnergyRequiredChange={(value) =>
+                    setEnergyEffortDraftValues((prev) => ({
+                      ...prev,
+                      energyRequired: value,
+                    }))
+                  }
+                  onFocusRequiredChange={(value) =>
+                    setEnergyEffortDraftValues((prev) => ({
+                      ...prev,
+                      focusRequired: value,
+                    }))
+                  }
+                  onTaskContextChange={(value) =>
+                    setEnergyEffortDraftValues((prev) => ({
+                      ...prev,
+                      taskContext: value,
+                    }))
+                  }
+                  onEstimatedMinutesChange={(value) =>
+                    setEnergyEffortDraftValues((prev) => ({
+                      ...prev,
+                      estimatedMinutes: value,
+                    }))
+                  }
+                />
+              </View>
+
+              <Text className="text-[#9FB5B5] text-[11px] leading-5 mt-3">
+                These choices support Overwhelm Mode, Energy Matching, Feeling Heavy support, and better task suggestions.
+              </Text>
+
+              <TouchableOpacity
+                activeOpacity={0.86}
+                accessibilityRole="button"
+                accessibilityLabel="Save with Energy Info"
+                disabled={!canSaveEnergyEffortPrompt || isTaskSaving}
+                onPress={handleEnergyEffortPromptSave}
+                className={`mt-5 p-4 rounded-2xl border shadow-md shadow-[#66b9b9]/20 ${
+                  canSaveEnergyEffortPrompt && !isTaskSaving
+                    ? "bg-[#66b9b9] border-[#99bdbd]/60"
+                    : "bg-[#123131]/80 border-[#337a7a]/40"
+                }`}
+              >
+                <Text
+                  className={`text-center font-black uppercase tracking-widest text-xs ${
+                    canSaveEnergyEffortPrompt && !isTaskSaving
+                      ? "text-[#061414]"
+                      : "text-[#9FB5B5]"
+                  }`}
+                >
+                  {isTaskSaving ? "Saving..." : "Save with Energy Info"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.84}
+                accessibilityRole="button"
+                accessibilityLabel="Skip Energy and Effort for now"
+                disabled={isTaskSaving}
+                onPress={handleEnergyEffortPromptSkip}
+                className="mt-3 p-3 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"
+              >
+                <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-xs">
+                  Skip for now
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.84}
+                accessibilityRole="button"
+                accessibilityLabel="Back to task"
+                disabled={isTaskSaving}
+                onPress={handleEnergyEffortPromptBack}
+                className="mt-2 p-2"
+              >
+                <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-[11px]">
+                  Back to task
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={editRepeatScopeModalVisible} transparent animationType="fade">
         <View className="flex-1 bg-[#061414]/95 justify-center px-6">
           <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/15">
@@ -15401,15 +15697,17 @@ export default function Home() {
             </Text>
 
             <TouchableOpacity
+              disabled={isTaskSaving}
               onPress={() => applyEditScopeAndSave("single")}
               className="p-3 rounded-2xl bg-[#66b9b9]/15 border border-[#66b9b9]/40 mb-2"
             >
               <Text className="text-[#66b9b9] text-center font-black uppercase tracking-widest text-[10px]">
-                Only This Task
+                {isTaskSaving ? "Saving..." : "Only This Task"}
               </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
+              disabled={isTaskSaving}
               onPress={() => applyEditScopeAndSave("future")}
               className="p-3 rounded-2xl bg-[#66b9b9]/15 border border-[#66b9b9]/40 mb-2"
             >
@@ -15419,6 +15717,7 @@ export default function Home() {
             </TouchableOpacity>
 
             <TouchableOpacity
+              disabled={isTaskSaving}
               onPress={() => applyEditScopeAndSave("all")}
               className="p-3 rounded-2xl bg-[#66b9b9]/15 border border-[#66b9b9]/40 mb-3"
             >
@@ -15428,6 +15727,7 @@ export default function Home() {
             </TouchableOpacity>
 
             <TouchableOpacity
+              disabled={isTaskSaving}
               onPress={() => {
                 setEditRepeatScopeModalVisible(false);
                 setPendingEditPayload(null);
