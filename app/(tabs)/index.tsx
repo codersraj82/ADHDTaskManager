@@ -107,11 +107,17 @@ import {
 import {
   createAutoBackupIfNeeded,
   createBackup,
+  deleteBackupById,
   exportBackup,
+  exportBackupFromPath,
   getBackupSettings,
   getBackupSummaryText,
   importBackup,
+  listBackups,
+  refreshBackupIndex,
   restoreBackup,
+  restoreBackupFromPath,
+  saveAutoBackupEmail,
   saveBackupSettings,
   validateBackupEmail,
   validateBackupEmailPair,
@@ -225,6 +231,28 @@ const STANDARD_EMOJI_TEXT_STYLE = {
 const CELEBRATION_EMOJI_TEXT_STYLE = {
   includeFontPadding: true,
   lineHeight: 64,
+};
+
+const BACKUP_SOURCE_LABELS = {
+  auto: "Auto",
+  manual: "Manual",
+  monthly: "Monthly",
+  yearly: "Yearly",
+  preRestore: "Pre-restore",
+};
+
+const formatBackupFileSize = (size = 0) => {
+  const bytes = Number(size || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 102.4) / 10} KB`;
+  return `${Math.round(bytes / (1024 * 102.4)) / 10} MB`;
+};
+
+const getBackupStatusLabel = (status = "ready") => {
+  if (status === "missing") return "Missing";
+  if (status === "error") return "Error";
+  return "Ready";
 };
 
 const DEFAULT_PROFILE = {
@@ -1302,7 +1330,13 @@ export default function Home() {
     autoType: "minimum",
     lastAutoBackupAt: "",
     lastAutoBackupDate: "",
+    lastAutoBackupStatus: "",
+    lastAutoBackupError: "",
+    autoBackupEmailConfigured: false,
   });
+  const [availableBackups, setAvailableBackups] = useState([]);
+  const [backupListLoading, setBackupListLoading] = useState(false);
+  const [selectedListedBackup, setSelectedListedBackup] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupEmailModal, setBackupEmailModal] = useState({
     visible: false,
@@ -1315,9 +1349,7 @@ export default function Home() {
   const [backupImportUri, setBackupImportUri] = useState("");
   const [backupImported, setBackupImported] = useState(null);
   const [restoreSummaryVisible, setRestoreSummaryVisible] = useState(false);
-  const autoBackupEmailRef = useRef("");
   const backupImportEmailRef = useRef("");
-  const autoBackupRunningRef = useRef(false);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [profileDraftName, setProfileDraftName] = useState("");
   const [profileDraftVibe, setProfileDraftVibe] = useState(DEFAULT_PROFILE.vibe);
@@ -5269,6 +5301,18 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [refreshSectionAffirmations]);
 
+  const loadAvailableBackups = useCallback(async ({ showLoading = true } = {}) => {
+    if (showLoading) setBackupListLoading(true);
+    try {
+      const backups = await listBackups();
+      setAvailableBackups(Array.isArray(backups) ? backups : []);
+    } catch {
+      setAvailableBackups([]);
+    } finally {
+      if (showLoading) setBackupListLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
       appStateRef.current = nextState;
@@ -5352,18 +5396,19 @@ export default function Home() {
   useEffect(() => {
     const runAutoBackup = async () => {
       if (!tasksHydrated || !backupSettings.autoEnabled) return;
-      if (!autoBackupEmailRef.current || autoBackupRunningRef.current) return;
-
-      autoBackupRunningRef.current = true;
       const result = await createAutoBackupIfNeeded({
-        email: autoBackupEmailRef.current,
+        dataReady: tasksHydrated,
       });
       const nextSettings = await getBackupSettings();
       setBackupSettings(nextSettings);
-      autoBackupRunningRef.current = false;
 
       if (result?.success) {
-        console.log("Auto backup created:", result.fileName);
+        if (!result.skipped) {
+          void loadAvailableBackups({ showLoading: false });
+        }
+        if (result.backupName) {
+          console.log("Auto backup created:", result.backupName);
+        }
       }
     };
 
@@ -5378,8 +5423,14 @@ export default function Home() {
   }, [
     backupSettings.autoEnabled,
     backupSettings.lastAutoBackupDate,
+    loadAvailableBackups,
     tasksHydrated,
   ]);
+
+  useEffect(() => {
+    if (!tasksHydrated) return;
+    void loadAvailableBackups({ showLoading: false });
+  }, [loadAvailableBackups, tasksHydrated]);
 
   useEffect(() => {
     const getContextAffirmations = () => {
@@ -9513,6 +9564,9 @@ export default function Home() {
   };
 
   const closeBackupEmailModal = () => {
+    if (backupEmailModal.purpose === "restore-list") {
+      setSelectedListedBackup(null);
+    }
     setBackupEmailModal((prev) => ({ ...prev, visible: false }));
     setBackupEmail("");
     setBackupConfirmEmail("");
@@ -9522,7 +9576,26 @@ export default function Home() {
     openBackupEmailModal({ purpose: "create", type, mode });
   };
 
-  const handleEnableAutoBackup = () => {
+  const handleEnableAutoBackup = async () => {
+    if (backupSettings.autoBackupEmailConfigured) {
+      const nextSettings = await saveBackupSettings({
+        autoEnabled: true,
+        autoType: backupSettings.autoType || "minimum",
+      });
+      setBackupSettings(nextSettings);
+      const result = await createAutoBackupIfNeeded({ dataReady: tasksHydrated });
+      const refreshedSettings = await getBackupSettings();
+      setBackupSettings(refreshedSettings);
+      await loadAvailableBackups({ showLoading: false });
+      Alert.alert(
+        "Backup & Restore",
+        result?.success && !result?.skipped
+          ? "Daily auto backup is on. Today's encrypted backup was created."
+          : "Daily auto backup is on."
+      );
+      return;
+    }
+
     openBackupEmailModal({
       purpose: "enable-auto",
       type: backupSettings.autoType || "minimum",
@@ -9532,7 +9605,6 @@ export default function Home() {
 
   const handleDisableAutoBackup = async () => {
     const nextSettings = await saveBackupSettings({ autoEnabled: false });
-    autoBackupEmailRef.current = "";
     setBackupSettings(nextSettings);
     Alert.alert("Backup & Restore", "Daily auto backup is off.");
   };
@@ -9540,6 +9612,87 @@ export default function Home() {
   const handleAutoBackupTypeChange = async (type) => {
     const nextSettings = await saveBackupSettings({ autoType: type });
     setBackupSettings(nextSettings);
+  };
+
+  const handleUpdateAutoBackupEmail = () => {
+    openBackupEmailModal({
+      purpose: "enable-auto",
+      type: backupSettings.autoType || "minimum",
+      mode: "auto",
+    });
+  };
+
+  const handleRefreshBackupList = async () => {
+    setBackupListLoading(true);
+    try {
+      const backups = await refreshBackupIndex();
+      setAvailableBackups(Array.isArray(backups) ? backups : []);
+    } catch {
+      Alert.alert("Backup & Restore", "Could not refresh backup list.");
+    } finally {
+      setBackupListLoading(false);
+    }
+  };
+
+  const handleRestoreListedBackupRequest = (backup) => {
+    if (!backup || backup.status !== "ready") return;
+    setSelectedListedBackup(backup);
+    openBackupEmailModal({
+      purpose: "restore-list",
+      type: backup.backupType || "minimum",
+      mode: "restore",
+    });
+  };
+
+  const handleExportListedBackup = async (backup) => {
+    if (!backup?.path || backupBusy) return;
+    setBackupBusy(true);
+    try {
+      const result = await exportBackupFromPath(backup.path, backup.name);
+      Alert.alert(
+        "Backup & Restore",
+        result?.message ||
+          (result?.success ? "Backup exported." : "Could not export backup.")
+      );
+    } catch {
+      Alert.alert("Backup & Restore", "Could not export backup.");
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleDeleteListedBackup = (backup) => {
+    if (!backup?.id || backupBusy) return;
+
+    Alert.alert(
+      "Delete backup?",
+      "This removes this backup from this app. Exported copies outside the app are not affected.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            setBackupBusy(true);
+            try {
+              const result = await deleteBackupById(backup.id);
+              if (!result?.success) {
+                Alert.alert(
+                  "Backup & Restore",
+                  result?.message || "Could not delete this backup."
+                );
+                return;
+              }
+              await loadAvailableBackups({ showLoading: false });
+            } catch {
+              Alert.alert("Backup & Restore", "Could not delete this backup.");
+            } finally {
+              setBackupBusy(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleImportBackupRequest = async () => {
@@ -9564,7 +9717,7 @@ export default function Home() {
     if (backupBusy) return;
 
     const purpose = backupEmailModal.purpose;
-    if (purpose === "import") {
+    if (purpose === "import" || purpose === "restore-list") {
       const normalizedEmail = backupEmail.trim().toLowerCase();
       if (!validateBackupEmail(normalizedEmail)) {
         Alert.alert(
@@ -9576,7 +9729,13 @@ export default function Home() {
 
       setBackupBusy(true);
       try {
-        const result = await importBackup(backupImportUri, normalizedEmail);
+        const result =
+          purpose === "restore-list"
+            ? await restoreBackupFromPath(
+                selectedListedBackup?.path,
+                normalizedEmail
+              )
+            : await importBackup(backupImportUri, normalizedEmail);
 
         if (!result?.success) {
           Alert.alert(
@@ -9590,6 +9749,8 @@ export default function Home() {
         backupImportEmailRef.current = normalizedEmail;
         setBackupImported(result);
         setRestoreSummaryVisible(true);
+        setBackupImportUri("");
+        await loadAvailableBackups({ showLoading: false });
         closeBackupEmailModal();
       } catch {
         Alert.alert(
@@ -9612,23 +9773,33 @@ export default function Home() {
 
     try {
       if (purpose === "enable-auto") {
+        const emailSaveResult = await saveAutoBackupEmail(validation.email);
+        if (!emailSaveResult?.success) {
+          Alert.alert(
+            "Backup & Restore",
+            emailSaveResult?.message ||
+              "Auto backup needs secure storage for the backup email."
+          );
+          return;
+        }
+
         const nextSettings = await saveBackupSettings({
           autoEnabled: true,
           autoType: backupEmailModal.type,
         });
         setBackupSettings(nextSettings);
-        autoBackupEmailRef.current = validation.email;
         const autoResult = await createAutoBackupIfNeeded({
-          email: validation.email,
+          dataReady: tasksHydrated,
         });
         const refreshedSettings = await getBackupSettings();
         setBackupSettings(refreshedSettings);
+        await loadAvailableBackups({ showLoading: false });
         closeBackupEmailModal();
         Alert.alert(
           "Backup & Restore",
-          autoResult?.success
+          autoResult?.success && !autoResult?.skipped
             ? "Daily auto backup is on. Today's encrypted backup was created."
-            : "Daily auto backup is on. For security, this app will ask for your email again after a full app restart."
+            : autoResult?.message || "Daily auto backup is on."
         );
         return;
       }
@@ -9651,6 +9822,7 @@ export default function Home() {
         backupResult.path,
         backupResult.fileName
       );
+      await loadAvailableBackups({ showLoading: false });
       closeBackupEmailModal();
       Alert.alert(
         "Backup & Restore",
@@ -9707,8 +9879,10 @@ export default function Home() {
 
               const restoredTasks = await refreshAppStateAfterRestore();
               await rescheduleRestoredTaskReminders(restoredTasks);
+              await loadAvailableBackups({ showLoading: false });
               setRestoreSummaryVisible(false);
               setBackupImported(null);
+              setSelectedListedBackup(null);
               backupImportEmailRef.current = "";
               Alert.alert("Backup & Restore", "Backup restored.");
             } catch {
@@ -12526,11 +12700,190 @@ export default function Home() {
                 ? formatDateTimeForDisplay(backupSettings.lastAutoBackupAt)
                 : "Not yet"}
             </Text>
-            <Text className="text-[#9FB5B5] text-[11px] mt-2 leading-5">
-              For security, the email is kept only for this app session. After a
-              full app restart, enable auto backup again to create encrypted
-              automatic backups.
+            <Text className="text-[#9FB5B5] text-[11px] mt-1">
+              Status:{" "}
+              {backupSettings.autoEnabled
+                ? backupSettings.autoBackupEmailConfigured
+                  ? backupSettings.lastAutoBackupStatus === "failed"
+                    ? "Failed"
+                    : backupSettings.lastAutoBackupStatus === "success"
+                      ? "Success"
+                      : "Ready"
+                  : "Needs setup"
+                : "Off"}
             </Text>
+            {backupSettings.lastAutoBackupError ? (
+              <Text className="text-[#FFCF7A] text-[11px] mt-2 leading-5">
+                Last auto backup could not be created.
+              </Text>
+            ) : null}
+            <Text className="text-[#9FB5B5] text-[11px] mt-2 leading-5">
+              {backupSettings.autoBackupEmailConfigured
+                ? "Auto backup email is saved securely on this device."
+                : "Auto backup needs setup before it can create encrypted backups."}
+            </Text>
+            <TouchableOpacity
+              activeOpacity={0.82}
+              disabled={backupBusy}
+              onPress={handleUpdateAutoBackupEmail}
+              className="self-start mt-3 px-3 py-2 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70"
+            >
+              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                {backupSettings.autoBackupEmailConfigured
+                  ? "Update backup email"
+                  : "Set backup email"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
+            <View className="flex-row items-start justify-between">
+              <View className="flex-1 pr-3">
+                <Text className="text-[#E8F4F4] font-black">
+                  Available backups
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1">
+                  Choose a backup to restore.
+                </Text>
+              </View>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={backupListLoading || backupBusy}
+                onPress={() => void handleRefreshBackupList()}
+                className="px-3 py-2 rounded-full border border-[#66b9b9]/35 bg-[#061414]/45"
+              >
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  {backupListLoading ? "Loading" : "Refresh"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {backupListLoading ? (
+              <View className="mt-3 bg-[#061414]/45 border border-[#337a7a]/25 rounded-2xl p-3">
+                <Text className="text-[#9FB5B5] text-xs font-semibold">
+                  Checking saved backups...
+                </Text>
+              </View>
+            ) : availableBackups.length === 0 ? (
+              <View className="mt-3 bg-[#061414]/45 border border-[#337a7a]/25 rounded-2xl p-3">
+                <Text className="text-[#E8F4F4] text-sm font-black">
+                  No backups saved in this app yet.
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs mt-1 leading-5">
+                  Export a backup if you want to move it to another phone.
+                </Text>
+              </View>
+            ) : (
+              <View className="mt-3">
+                {availableBackups.map((backup) => {
+                  const sizeLabel = formatBackupFileSize(backup.size);
+                  const statusLabel = getBackupStatusLabel(backup.status);
+                  const isReady = backup.status === "ready";
+
+                  return (
+                    <View
+                      key={backup.id}
+                      className="bg-[#061414]/45 border border-[#337a7a]/25 rounded-2xl p-3 mb-2"
+                    >
+                      <View className="flex-row items-start justify-between">
+                        <View className="flex-1 pr-3">
+                          <Text
+                            numberOfLines={1}
+                            className="text-[#E8F4F4] text-sm font-black"
+                          >
+                            {backup.backupType === "full"
+                              ? "Full backup"
+                              : "Minimum backup"}
+                          </Text>
+                          <Text className="text-[#9FB5B5] text-[11px] mt-1">
+                            {backup.createdAt
+                              ? formatDateTimeForDisplay(backup.createdAt)
+                              : "Unknown date"}
+                          </Text>
+                        </View>
+                        <Text
+                          className={`text-[10px] font-black uppercase tracking-widest ${
+                            isReady ? "text-[#7DFFB3]" : "text-[#FFCF7A]"
+                          }`}
+                        >
+                          {statusLabel}
+                        </Text>
+                      </View>
+
+                      <Text className="text-[#9FB5B5] text-[11px] mt-2 leading-5">
+                        {BACKUP_SOURCE_LABELS[backup.source] || "Manual"} backup
+                        {" · "}
+                        {backup.taskCount || 0} tasks
+                        {" · "}
+                        {backup.attachmentCount || 0} attachments
+                        {backup.skippedAttachmentCount
+                          ? ` · ${backup.skippedAttachmentCount} skipped`
+                          : ""}
+                        {sizeLabel ? ` · ${sizeLabel}` : ""}
+                      </Text>
+
+                      <Text
+                        numberOfLines={1}
+                        className="text-[#6D8787] text-[10px] mt-1"
+                      >
+                        {backup.name}
+                      </Text>
+
+                      <View className="flex-row flex-wrap mt-3">
+                        <TouchableOpacity
+                          activeOpacity={0.82}
+                          disabled={!isReady || backupBusy}
+                          onPress={() => handleRestoreListedBackupRequest(backup)}
+                          className={`mr-2 mb-2 px-3 py-1.5 rounded-full border ${
+                            isReady
+                              ? "border-[#66b9b9]/40 bg-[#123131]/80"
+                              : "border-[#337a7a]/25 bg-[#123131]/40"
+                          }`}
+                        >
+                          <Text
+                            className={`text-[10px] font-black uppercase tracking-widest ${
+                              isReady ? "text-[#66b9b9]" : "text-[#6D8787]"
+                            }`}
+                          >
+                            Restore
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          activeOpacity={0.82}
+                          disabled={!isReady || backupBusy}
+                          onPress={() => void handleExportListedBackup(backup)}
+                          className={`mr-2 mb-2 px-3 py-1.5 rounded-full border ${
+                            isReady
+                              ? "border-[#66b9b9]/40 bg-[#123131]/80"
+                              : "border-[#337a7a]/25 bg-[#123131]/40"
+                          }`}
+                        >
+                          <Text
+                            className={`text-[10px] font-black uppercase tracking-widest ${
+                              isReady ? "text-[#66b9b9]" : "text-[#6D8787]"
+                            }`}
+                          >
+                            Export
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          activeOpacity={0.82}
+                          disabled={backupBusy}
+                          onPress={() => handleDeleteListedBackup(backup)}
+                          className="mr-2 mb-2 px-3 py-1.5 rounded-full border border-[#FF7B7B]/35 bg-[#FF7B7B]/12"
+                        >
+                          <Text className="text-[#FF7B7B] text-[10px] font-black uppercase tracking-widest">
+                            Delete
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
           </View>
 
           <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
@@ -12545,7 +12898,7 @@ export default function Home() {
               className="bg-[#66b9b9] p-3 rounded-2xl border border-[#99bdbd]/60 mt-3"
             >
               <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-xs">
-                Import backup
+                Import backup file
               </Text>
             </TouchableOpacity>
           </View>
@@ -15842,13 +16195,18 @@ export default function Home() {
             <Text className="text-[#66b9b9] text-xl font-black mb-2 uppercase tracking-tight">
               {backupEmailModal.purpose === "import"
                 ? "Unlock Backup"
+                : backupEmailModal.purpose === "restore-list"
+                  ? "Unlock Backup"
                 : backupEmailModal.purpose === "enable-auto"
-                  ? "Auto Backup"
+                  ? "Set Auto Backup Email"
                   : "Encrypt Backup"}
             </Text>
             <Text className="text-[#9FB5B5] text-xs leading-5 mb-4">
-              {backupEmailModal.purpose === "import"
+              {backupEmailModal.purpose === "import" ||
+              backupEmailModal.purpose === "restore-list"
                 ? "Enter the same email ID used to create this backup."
+                : backupEmailModal.purpose === "enable-auto"
+                  ? "This email protects your automatic backups. You will need the same email to restore."
                 : "Enter your email ID twice. It becomes the backup key, and the app will not save the raw email."}
             </Text>
 
@@ -15864,7 +16222,8 @@ export default function Home() {
               className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-3 border border-[#66b9b9]/25 font-semibold"
             />
 
-            {backupEmailModal.purpose !== "import" ? (
+            {backupEmailModal.purpose !== "import" &&
+            backupEmailModal.purpose !== "restore-list" ? (
               <TextInput
                 value={backupConfirmEmail}
                 onChangeText={setBackupConfirmEmail}
@@ -15901,9 +16260,12 @@ export default function Home() {
                 <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-xs">
                   {backupBusy
                     ? "Please wait"
-                    : backupEmailModal.purpose === "import"
+                    : backupEmailModal.purpose === "import" ||
+                        backupEmailModal.purpose === "restore-list"
                       ? "Unlock"
-                      : "Continue"}
+                      : backupEmailModal.purpose === "enable-auto"
+                        ? "Save"
+                        : "Continue"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -15948,6 +16310,7 @@ export default function Home() {
                 onPress={() => {
                   setRestoreSummaryVisible(false);
                   setBackupImported(null);
+                  setSelectedListedBackup(null);
                   backupImportEmailRef.current = "";
                 }}
                 className="flex-1 p-4 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"

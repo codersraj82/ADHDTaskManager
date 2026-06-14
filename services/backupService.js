@@ -1,6 +1,7 @@
 import { Platform } from "react-native";
 import * as Crypto from "expo-crypto";
 import * as FileSystem from "expo-file-system/legacy";
+import * as SecureStore from "expo-secure-store";
 import * as Sharing from "expo-sharing";
 import { gcm } from "@noble/ciphers/aes.js";
 import { pbkdf2Async } from "@noble/hashes/pbkdf2.js";
@@ -26,6 +27,12 @@ const APP_NAME = "ADHDTaskManager";
 const ATTACHMENT_DIR_NAME = "task-attachments";
 const BACKUP_DIR_NAME = "backups";
 const AUTO_BACKUP_DIR_NAME = "auto";
+const MANUAL_BACKUP_DIR_NAME = "manual";
+const MONTHLY_BACKUP_DIR_NAME = "monthly";
+const YEARLY_BACKUP_DIR_NAME = "yearly";
+const PRE_RESTORE_BACKUP_DIR_NAME = "pre-restore";
+const BACKUP_INDEX_FILE_NAME = "backup-index.json";
+const AUTO_BACKUP_EMAIL_SECURE_KEY = "adhdTaskManager.autoBackupEmail";
 const KDF_ITERATIONS = 210000;
 const KEY_BYTES = 32;
 const SALT_BYTES = 16;
@@ -37,7 +44,11 @@ const BACKUP_SETTING_KEYS = {
   autoType: "backup.autoType",
   lastAutoBackupAt: "backup.lastAutoBackupAt",
   lastAutoBackupDate: "backup.lastAutoBackupDate",
+  lastAutoBackupStatus: "backup.lastAutoBackupStatus",
+  lastAutoBackupError: "backup.lastAutoBackupError",
 };
+
+let autoBackupInProgress = false;
 
 const TABLES = [
   "tasks",
@@ -51,7 +62,14 @@ const TABLES = [
 
 const safeString = (value) => (typeof value === "string" ? value.trim() : "");
 
-const todayKey = () => new Date().toISOString().slice(0, 10);
+const localDateKey = (date = new Date()) => {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const todayKey = () => localDateKey();
 
 const timestampForFile = () =>
   new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
@@ -144,12 +162,34 @@ const ensureDirectoryAsync = async (dir) => {
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => null);
 };
 
+const getBackupBaseDirectory = () => `${FileSystem.documentDirectory}${BACKUP_DIR_NAME}/`;
+
 const getBackupDirectory = (mode = "manual") => {
   const base = `${FileSystem.documentDirectory}${BACKUP_DIR_NAME}/`;
   if (mode === "auto") return `${base}${AUTO_BACKUP_DIR_NAME}/`;
-  if (mode === "preRestore") return `${base}pre-restore/`;
-  return `${base}manual/`;
+  if (mode === "monthly") return `${base}${MONTHLY_BACKUP_DIR_NAME}/`;
+  if (mode === "yearly") return `${base}${YEARLY_BACKUP_DIR_NAME}/`;
+  if (mode === "preRestore") return `${base}${PRE_RESTORE_BACKUP_DIR_NAME}/`;
+  return `${base}${MANUAL_BACKUP_DIR_NAME}/`;
 };
+
+const getBackupIndexPath = () => `${getBackupBaseDirectory()}${BACKUP_INDEX_FILE_NAME}`;
+
+const getBackupSourceFromMode = (mode = "manual") => {
+  if (mode === "auto") return "auto";
+  if (mode === "monthly") return "monthly";
+  if (mode === "yearly") return "yearly";
+  if (mode === "preRestore") return "preRestore";
+  return "manual";
+};
+
+const BACKUP_SOURCE_DIRECTORIES = Object.freeze([
+  { source: "auto", dir: getBackupDirectory("auto") },
+  { source: "manual", dir: getBackupDirectory("manual") },
+  { source: "monthly", dir: getBackupDirectory("monthly") },
+  { source: "yearly", dir: getBackupDirectory("yearly") },
+  { source: "preRestore", dir: getBackupDirectory("preRestore") },
+]);
 
 const getBackupFileName = (type = "minimum", mode = "manual") => {
   const normalizedType = type === "full" ? "full" : "minimum";
@@ -177,6 +217,121 @@ const getBackupFileName = (type = "minimum", mode = "manual") => {
   return `${APP_NAME}_Backup_${year}-${month}-${day}_${normalizedType}.${BACKUP_EXTENSION}`;
 };
 
+const getBackupId = (path = "") =>
+  bytesToHex(sha256(utf8ToBytes(`backup-index:${path}`))).slice(0, 24);
+
+const isAppOwnedBackupPath = (path = "") =>
+  typeof path === "string" && path.startsWith(getBackupBaseDirectory());
+
+const readBackupIndex = async () => {
+  try {
+    const path = getBackupIndexPath();
+    const info = await FileSystem.getInfoAsync(path).catch(() => null);
+    if (!info?.exists) return [];
+
+    const contents = await FileSystem.readAsStringAsync(path, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    const parsed = JSON.parse(contents);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeBackupIndex = async (items = []) => {
+  await ensureDirectoryAsync(getBackupBaseDirectory());
+  await FileSystem.writeAsStringAsync(
+    getBackupIndexPath(),
+    JSON.stringify(items, null, 2),
+    { encoding: FileSystem.EncodingType.UTF8 }
+  );
+};
+
+const normalizeBackupIndexItem = (item = {}) => ({
+  id: safeString(item.id) || getBackupId(item.path || item.name || String(Date.now())),
+  name: safeString(item.name) || "Backup",
+  path: safeString(item.path),
+  backupType: item.backupType === "full" ? "full" : "minimum",
+  source:
+    item.source === "auto" ||
+    item.source === "manual" ||
+    item.source === "monthly" ||
+    item.source === "yearly" ||
+    item.source === "preRestore"
+      ? item.source
+      : "manual",
+  createdAt: safeString(item.createdAt) || "",
+  size: Number(item.size || 0),
+  taskCount: Number(item.taskCount || 0),
+  attachmentCount: Number(item.attachmentCount || 0),
+  skippedAttachmentCount: Number(item.skippedAttachmentCount || 0),
+  encrypted: item.encrypted !== false,
+  status:
+    item.status === "missing" || item.status === "error"
+      ? item.status
+      : "ready",
+});
+
+const buildBackupIndexItem = async ({
+  path,
+  fileName,
+  manifest,
+  source,
+  status = "ready",
+}) => {
+  const info = path ? await FileSystem.getInfoAsync(path).catch(() => null) : null;
+  const counts = manifest?.counts || {};
+
+  return normalizeBackupIndexItem({
+    id: getBackupId(path || fileName || ""),
+    name: safeString(fileName) || path?.split("/").filter(Boolean).pop() || "Backup",
+    path,
+    backupType: manifest?.backupType === "full" ? "full" : "minimum",
+    source,
+    createdAt: manifest?.createdAt || "",
+    size: Number(info?.size || 0),
+    taskCount: Number(counts.tasks || 0),
+    attachmentCount: Number(counts.attachments || 0),
+    skippedAttachmentCount: Number(counts.skippedAttachments || 0),
+    encrypted: manifest?.encrypted !== false,
+    status,
+  });
+};
+
+const readBackupManifestFromPath = async (path) => {
+  try {
+    const contents = await FileSystem.readAsStringAsync(path, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    const envelope = JSON.parse(contents);
+
+    if (
+      envelope?.kind !== BACKUP_KIND ||
+      envelope?.manifest?.appName !== APP_NAME ||
+      envelope?.manifest?.backupVersion !== BACKUP_VERSION
+    ) {
+      return null;
+    }
+
+    return envelope.manifest;
+  } catch {
+    return null;
+  }
+};
+
+const upsertBackupIndexItem = async (item) => {
+  const nextItem = normalizeBackupIndexItem(item);
+  const existing = await readBackupIndex();
+  const merged = [
+    nextItem,
+    ...existing.filter((backup) => backup.id !== nextItem.id),
+  ].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  await writeBackupIndex(merged);
+  return nextItem;
+};
+
 const getSettingsRows = () => {
   try {
     return db.getAllSync("SELECT key, value FROM app_settings") || [];
@@ -198,14 +353,62 @@ const saveSetting = (key, value) => {
   ]);
 };
 
+const removeSetting = (key) => {
+  db.runSync("DELETE FROM app_settings WHERE key = ?", [key]);
+};
+
+const getAutoBackupEmail = async () => {
+  try {
+    const storedEmail = await SecureStore.getItemAsync(AUTO_BACKUP_EMAIL_SECURE_KEY);
+    return normalizeEmail(storedEmail || "");
+  } catch {
+    return "";
+  }
+};
+
+export const saveAutoBackupEmail = async (email = "") => {
+  const normalizedEmail = normalizeEmail(email);
+  if (!validateBackupEmail(normalizedEmail)) {
+    return {
+      success: false,
+      errorCode: "INVALID_EMAIL",
+      message: "Enter a valid email ID.",
+    };
+  }
+
+  try {
+    await SecureStore.setItemAsync(AUTO_BACKUP_EMAIL_SECURE_KEY, normalizedEmail);
+    return { success: true };
+  } catch {
+    return {
+      success: false,
+      errorCode: "ENCRYPTION_UNAVAILABLE",
+      message: "Auto backup needs secure storage for the backup email.",
+    };
+  }
+};
+
+export const clearAutoBackupEmail = async () => {
+  try {
+    await SecureStore.deleteItemAsync(AUTO_BACKUP_EMAIL_SECURE_KEY);
+  } catch {
+    // Removing a remembered email should not block disabling auto backup.
+  }
+};
+
 export const getBackupSettings = async () => {
   const settings = getSettingsMap();
+  const autoBackupEmailConfigured = validateBackupEmail(await getAutoBackupEmail());
   return {
     autoEnabled: settings[BACKUP_SETTING_KEYS.autoEnabled] === "true",
     autoType:
       settings[BACKUP_SETTING_KEYS.autoType] === "full" ? "full" : "minimum",
     lastAutoBackupAt: settings[BACKUP_SETTING_KEYS.lastAutoBackupAt] || "",
     lastAutoBackupDate: settings[BACKUP_SETTING_KEYS.lastAutoBackupDate] || "",
+    lastAutoBackupStatus:
+      settings[BACKUP_SETTING_KEYS.lastAutoBackupStatus] || "",
+    lastAutoBackupError: settings[BACKUP_SETTING_KEYS.lastAutoBackupError] || "",
+    autoBackupEmailConfigured,
   };
 };
 
@@ -221,6 +424,27 @@ export const saveBackupSettings = async (settings = {}) => {
   }
   if (typeof settings.lastAutoBackupDate === "string") {
     saveSetting(BACKUP_SETTING_KEYS.lastAutoBackupDate, settings.lastAutoBackupDate);
+  }
+  if (
+    settings.lastAutoBackupStatus === "success" ||
+    settings.lastAutoBackupStatus === "failed" ||
+    settings.lastAutoBackupStatus === "skipped" ||
+    settings.lastAutoBackupStatus === ""
+  ) {
+    saveSetting(
+      BACKUP_SETTING_KEYS.lastAutoBackupStatus,
+      settings.lastAutoBackupStatus
+    );
+  }
+  if (typeof settings.lastAutoBackupError === "string") {
+    if (settings.lastAutoBackupError) {
+      saveSetting(
+        BACKUP_SETTING_KEYS.lastAutoBackupError,
+        settings.lastAutoBackupError
+      );
+    } else {
+      removeSetting(BACKUP_SETTING_KEYS.lastAutoBackupError);
+    }
   }
 
   return getBackupSettings();
@@ -486,10 +710,25 @@ export const createBackup = async (options = {}) => {
       encoding: FileSystem.EncodingType.UTF8,
     });
 
+    let indexItem = null;
+    try {
+      indexItem = await buildBackupIndexItem({
+        path,
+        fileName,
+        manifest: envelopeManifest,
+        source: getBackupSourceFromMode(mode),
+      });
+      await upsertBackupIndexItem(indexItem);
+    } catch {
+      indexItem = null;
+    }
+
     if (mode === "auto") {
       await saveBackupSettings({
         lastAutoBackupAt: createdAt,
         lastAutoBackupDate: todayKey(),
+        lastAutoBackupStatus: "success",
+        lastAutoBackupError: "",
       });
       await cleanupOldBackups(directory, 2);
     }
@@ -501,6 +740,7 @@ export const createBackup = async (options = {}) => {
       fileName,
       manifest: envelopeManifest,
       counts: backupData.counts,
+      indexItem,
       message: "Backup created.",
     };
   } catch (error) {
@@ -637,10 +877,33 @@ export const importBackup = async (fileUri, email) => {
       };
     }
 
+    let storedPath = isAppOwnedBackupPath(fileUri) ? fileUri : "";
+    if (!storedPath && fileUri.startsWith("file://")) {
+      try {
+        const manualDir = getBackupDirectory("manual");
+        await ensureDirectoryAsync(manualDir);
+        const fileName = `imported-${timestampForFile()}-${
+          decrypted.manifest.backupType === "full" ? "full" : "minimum"
+        }.${BACKUP_EXTENSION}`;
+        storedPath = `${manualDir}${fileName}`;
+        await FileSystem.copyAsync({ from: fileUri, to: storedPath });
+        const indexItem = await buildBackupIndexItem({
+          path: storedPath,
+          fileName,
+          manifest: decrypted.manifest,
+          source: "manual",
+        });
+        await upsertBackupIndexItem(indexItem);
+      } catch {
+        storedPath = "";
+      }
+    }
+
     return {
       success: true,
       manifest: decrypted.manifest,
       payload: decrypted.payload,
+      path: storedPath || fileUri,
       summary: {
         backupType: decrypted.manifest.backupType,
         createdAt: decrypted.manifest.createdAt,
@@ -655,6 +918,95 @@ export const importBackup = async (fileUri, email) => {
       success: false,
       errorCode: "INVALID_BACKUP",
       message: "This backup file is not supported.",
+      error,
+    };
+  }
+};
+
+export const refreshBackupIndex = async () => {
+  const existing = (await readBackupIndex()).map(normalizeBackupIndexItem);
+  const scannedItems = [];
+  const scannedIds = new Set();
+
+  await ensureDirectoryAsync(getBackupBaseDirectory());
+
+  for (const { source, dir } of BACKUP_SOURCE_DIRECTORIES) {
+    await ensureDirectoryAsync(dir);
+    const entries = await FileSystem.readDirectoryAsync(dir).catch(() => []);
+
+    for (const name of entries) {
+      if (!name.endsWith(`.${BACKUP_EXTENSION}`)) continue;
+
+      const path = `${dir}${name}`;
+      const manifest = await readBackupManifestFromPath(path);
+      const item = await buildBackupIndexItem({
+        path,
+        fileName: name,
+        manifest: manifest || {},
+        source,
+        status: manifest ? "ready" : "error",
+      });
+      scannedItems.push(item);
+      scannedIds.add(item.id);
+    }
+  }
+
+  for (const item of existing) {
+    if (!item.path || scannedIds.has(item.id)) continue;
+    if (!isAppOwnedBackupPath(item.path)) continue;
+
+    const info = await FileSystem.getInfoAsync(item.path).catch(() => null);
+    if (!info?.exists) {
+      scannedItems.push(
+        normalizeBackupIndexItem({
+          ...item,
+          status: "missing",
+        })
+      );
+    }
+  }
+
+  const sorted = scannedItems.sort((a, b) => {
+    const byDate = new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    if (byDate !== 0) return byDate;
+    return String(b.name).localeCompare(String(a.name));
+  });
+
+  await writeBackupIndex(sorted);
+  return sorted;
+};
+
+export const listBackups = async () => refreshBackupIndex();
+
+export const exportBackupFromPath = async (backupPath, fileName = "") =>
+  exportBackup(backupPath, fileName);
+
+export const deleteBackupById = async (id) => {
+  const backups = await readBackupIndex();
+  const backup = backups.find((item) => item.id === id);
+
+  if (!backup?.path || !isAppOwnedBackupPath(backup.path)) {
+    return {
+      success: false,
+      errorCode: "FILE_NOT_FOUND",
+      message: "Could not delete this backup.",
+    };
+  }
+
+  try {
+    await FileSystem.deleteAsync(backup.path, { idempotent: true });
+    const nextIndex = backups.filter((item) => item.id !== id);
+    await writeBackupIndex(nextIndex);
+
+    return {
+      success: true,
+      message: "Backup deleted.",
+    };
+  } catch (error) {
+    return {
+      success: false,
+      errorCode: "DELETE_FAILED",
+      message: "Could not delete this backup.",
       error,
     };
   }
@@ -877,35 +1229,165 @@ export const cleanupOldBackups = async (folder, keepCount = 2) => {
       }
     }
 
-    backupFiles
+    const removed = backupFiles
       .sort((a, b) => b.modifiedTime - a.modifiedTime)
-      .slice(Math.max(0, keepCount))
-      .forEach((file) => {
-        void FileSystem.deleteAsync(file.uri, { idempotent: true }).catch(() => null);
-      });
+      .slice(Math.max(0, keepCount));
+
+    for (const file of removed) {
+      await FileSystem.deleteAsync(file.uri, { idempotent: true }).catch(() => null);
+    }
+
+    if (removed.length > 0) {
+      const removedUris = new Set(removed.map((file) => file.uri));
+      const index = await readBackupIndex();
+      await writeBackupIndex(index.filter((item) => !removedUris.has(item.path)));
+    }
   } catch {
     // Cleanup should never block backup creation.
   }
 };
 
-export const createAutoBackupIfNeeded = async (options = {}) => {
-  const settings = await getBackupSettings();
-  if (!settings.autoEnabled) return null;
-  if (settings.lastAutoBackupDate === todayKey()) return null;
+const findAutoBackupForToday = async () => {
+  const folder = getBackupDirectory("auto");
+  await ensureDirectoryAsync(folder);
+  const entries = await FileSystem.readDirectoryAsync(folder).catch(() => []);
+  const today = todayKey();
 
-  if (!validateBackupEmail(options.email)) {
+  return entries.find(
+    (name) =>
+      name.startsWith(`auto-${today}-`) && name.endsWith(`.${BACKUP_EXTENSION}`)
+  );
+};
+
+export const createAutoBackupIfNeeded = async (options = {}) => {
+  if (autoBackupInProgress) {
     return {
       success: false,
-      errorCode: "INVALID_EMAIL",
-      message: "Enter a valid email ID for backup encryption.",
+      skipped: true,
+      reason: "BACKUP_ALREADY_RUNNING",
+      errorCode: "BACKUP_ALREADY_RUNNING",
+      message: "Auto backup is already running.",
     };
   }
 
-  return createBackup({
-    type: settings.autoType,
-    mode: "auto",
-    email: options.email,
-  });
+  const settings = await getBackupSettings();
+  if (!settings.autoEnabled) {
+    return {
+      success: true,
+      skipped: true,
+      reason: "AUTO_BACKUP_DISABLED",
+      errorCode: "AUTO_BACKUP_DISABLED",
+      message: "Daily auto backup is off.",
+    };
+  }
+
+  if (options.dataReady === false) {
+    return {
+      success: false,
+      skipped: true,
+      reason: "DATA_NOT_READY",
+      errorCode: "DATA_NOT_READY",
+      message: "App data is not ready yet.",
+    };
+  }
+
+  const today = todayKey();
+  if (settings.lastAutoBackupDate === today || (await findAutoBackupForToday())) {
+    await saveBackupSettings({
+      lastAutoBackupStatus: "skipped",
+      lastAutoBackupError: "",
+    });
+    return {
+      success: true,
+      skipped: true,
+      reason: "ALREADY_BACKED_UP_TODAY",
+      errorCode: "ALREADY_BACKED_UP_TODAY",
+      message: "Auto backup already exists for today.",
+    };
+  }
+
+  const email = normalizeEmail(options.email || (await getAutoBackupEmail()));
+  if (!validateBackupEmail(email)) {
+    await saveBackupSettings({
+      lastAutoBackupStatus: "failed",
+      lastAutoBackupError: "Auto backup needs setup.",
+    });
+    return {
+      success: false,
+      errorCode: "EMAIL_NOT_CONFIGURED",
+      message: "Auto backup needs setup.",
+    };
+  }
+
+  autoBackupInProgress = true;
+  try {
+    const result = await createBackup({
+      type: settings.autoType,
+      mode: "auto",
+      email,
+    });
+
+    if (!result?.success) {
+      await saveBackupSettings({
+        lastAutoBackupStatus: "failed",
+        lastAutoBackupError:
+          result?.message || "Last auto backup could not be created.",
+      });
+      return {
+        success: false,
+        errorCode: result?.errorCode || "BACKUP_CREATE_FAILED",
+        message: result?.message || "Last auto backup could not be created.",
+      };
+    }
+
+    await refreshBackupIndex();
+    return {
+      success: true,
+      backupPath: result.path,
+      backupName: result.fileName,
+      message: "Auto backup created.",
+    };
+  } catch {
+    await saveBackupSettings({
+      lastAutoBackupStatus: "failed",
+      lastAutoBackupError: "Last auto backup could not be created.",
+    });
+    return {
+      success: false,
+      errorCode: "UNKNOWN_ERROR",
+      message: "Last auto backup could not be created.",
+    };
+  } finally {
+    autoBackupInProgress = false;
+  }
+};
+
+export const restoreBackupFromPath = async (path, email) => {
+  if (!path) {
+    return {
+      success: false,
+      errorCode: "FILE_NOT_FOUND",
+      message: "Could not open this backup.",
+    };
+  }
+
+  const imported = await importBackup(path, email);
+  if (!imported?.success) return imported;
+
+  const index = await readBackupIndex();
+  const indexed = index.find((item) => item.path === path);
+
+  return {
+    ...imported,
+    summary: {
+      ...imported.summary,
+      name:
+        indexed?.name ||
+        path.split("/").filter(Boolean).pop() ||
+        "Backup",
+      source: indexed?.source || "manual",
+    },
+  };
 };
 
 export const getBackupSummaryText = (summary = {}) => {
@@ -914,11 +1396,23 @@ export const getBackupSummaryText = (summary = {}) => {
     : "Unknown";
 
   return [
+    summary.name ? `Name: ${summary.name}` : "",
     `Type: ${summary.backupType === "full" ? "Full backup" : "Minimum backup"}`,
+    summary.source
+      ? `Source: ${
+          summary.source === "preRestore"
+            ? "Pre-restore"
+            : `${String(summary.source).slice(0, 1).toUpperCase()}${String(
+                summary.source
+              ).slice(1)}`
+        }`
+      : "",
     `Created: ${created}`,
     `Tasks: ${summary.tasks || 0}`,
     `Attachments: ${summary.attachments || 0}`,
     `Skipped attachments: ${summary.skippedAttachments || 0}`,
     `Version: ${summary.backupVersion || BACKUP_VERSION}`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 };
