@@ -3359,7 +3359,7 @@ export default function Home() {
   };
 
   const openSupport = () => {
-    Linking.openURL("https://researchzeal.com").catch(() => {
+    Linking.openURL("https://www.researchzeal.com").catch(() => {
       setActivePage("support");
     });
   };
@@ -11117,9 +11117,18 @@ export default function Home() {
         style={{ minHeight: footerHeight }}
       >
         <View className="flex-row items-center justify-between">
-          <Text className="text-[#E8F4F4] text-[10px] font-black uppercase tracking-widest pr-3">
-            {"\u00A9"} researchzeal.com
-          </Text>
+          <TouchableOpacity
+            onPress={openSupport}
+            activeOpacity={0.82}
+            accessibilityRole="link"
+            accessibilityLabel="Open researchzeal.com"
+            accessibilityHint="Opens www.researchzeal.com in your browser"
+            className="pr-3"
+          >
+            <Text className="text-[#E8F4F4] text-[10px] font-black uppercase tracking-widest underline">
+              {"\u00A9"} researchzeal.com
+            </Text>
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={openSupport}
             activeOpacity={0.86}
