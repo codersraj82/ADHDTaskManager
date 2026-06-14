@@ -11,16 +11,22 @@ import {
   TouchableWithoutFeedback,
   View as RNView,
 } from "react-native";
-import { getThemeClassName, useAppTheme } from "../../utils/appTheme";
+import {
+  getThemeClassName,
+  getThemeStyle,
+  useAppTheme,
+} from "../../utils/appTheme";
 
 const createThemeAwareComponent = (Component, displayName) => {
-  const WrappedComponent = forwardRef(({ className, ...props }, ref) => {
+  const WrappedComponent = forwardRef(({ className, style, ...props }, ref) => {
     const { themeMode } = useAppTheme();
+    const themeStyle = getThemeStyle(className, themeMode);
 
     return (
       <Component
         ref={ref}
         className={getThemeClassName(className, themeMode)}
+        style={themeStyle ? [themeStyle, style] : style}
         {...props}
       />
     );

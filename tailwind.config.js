@@ -14,6 +14,7 @@ const lightThemeColors = [
   "#1B8E84",
   "#247F7F",
   "#6A7C7C",
+  "#C7DAD7",
   "#1F8A57",
   "#5F7E7E",
   "#536A6A",
