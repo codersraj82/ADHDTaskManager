@@ -157,6 +157,20 @@ const parseJson = (value, fallback = null) => {
   }
 };
 
+const emitBackupProgress = (onProgress, progress = {}) => {
+  if (typeof onProgress !== "function") return;
+
+  try {
+    onProgress({
+      percent: Math.min(Math.max(Number(progress.percent || 0), 0), 100),
+      label: progress.label || "",
+      detail: progress.detail || "",
+    });
+  } catch {
+    // Progress callbacks are UI-only and should never block backup work.
+  }
+};
+
 const ensureDirectoryAsync = async (dir) => {
   if (!dir) return;
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => null);
@@ -653,6 +667,13 @@ export const createBackup = async (options = {}) => {
   const type = options.type === "full" ? "full" : "minimum";
   const mode = options.mode || "manual";
   const email = normalizeEmail(options.email);
+  const onProgress = options.onProgress;
+
+  emitBackupProgress(onProgress, {
+    percent: 5,
+    label: "Preparing backup",
+    detail: "Checking backup email.",
+  });
 
   if (!validateBackupEmail(email)) {
     return {
@@ -663,6 +684,11 @@ export const createBackup = async (options = {}) => {
   }
 
   try {
+    emitBackupProgress(onProgress, {
+      percent: 18,
+      label: "Preparing backup",
+      detail: "Collecting app data.",
+    });
     const backupData = await buildBackupTables(type);
     const createdAt = new Date().toISOString();
     const manifest = {
@@ -688,6 +714,11 @@ export const createBackup = async (options = {}) => {
         attachments: backupData.attachmentFiles,
       },
     };
+    emitBackupProgress(onProgress, {
+      percent: 50,
+      label: "Encrypting backup",
+      detail: "Protecting the backup file.",
+    });
     const encrypted = await encryptPayload(payload, email);
     if (!encrypted.success) return encrypted;
 
@@ -702,6 +733,11 @@ export const createBackup = async (options = {}) => {
     };
 
     const directory = getBackupDirectory(mode);
+    emitBackupProgress(onProgress, {
+      percent: 72,
+      label: "Saving backup",
+      detail: "Creating app-owned backup file.",
+    });
     await ensureDirectoryAsync(directory);
     const fileName = getBackupFileName(type, mode);
     const path = `${directory}${fileName}`;
@@ -710,6 +746,11 @@ export const createBackup = async (options = {}) => {
       encoding: FileSystem.EncodingType.UTF8,
     });
 
+    emitBackupProgress(onProgress, {
+      percent: 86,
+      label: "Updating backup list",
+      detail: "Saving backup details.",
+    });
     let indexItem = null;
     try {
       indexItem = await buildBackupIndexItem({
@@ -724,6 +765,11 @@ export const createBackup = async (options = {}) => {
     }
 
     if (mode === "auto") {
+      emitBackupProgress(onProgress, {
+        percent: 94,
+        label: "Cleaning old backups",
+        detail: "Keeping the latest automatic backups.",
+      });
       await saveBackupSettings({
         lastAutoBackupAt: createdAt,
         lastAutoBackupDate: todayKey(),
@@ -732,6 +778,12 @@ export const createBackup = async (options = {}) => {
       });
       await cleanupOldBackups(directory, 2);
     }
+
+    emitBackupProgress(onProgress, {
+      percent: 100,
+      label: "Backup ready",
+      detail: "Backup created.",
+    });
 
     return {
       success: true,
@@ -753,7 +805,14 @@ export const createBackup = async (options = {}) => {
   }
 };
 
-export const exportBackup = async (backupPath, fileName = "") => {
+export const exportBackup = async (backupPath, fileName = "", options = {}) => {
+  const onProgress = options.onProgress;
+  emitBackupProgress(onProgress, {
+    percent: 8,
+    label: "Exporting backup",
+    detail: "Checking backup file.",
+  });
+
   if (!backupPath) {
     return {
       success: false,
@@ -774,11 +833,21 @@ export const exportBackup = async (backupPath, fileName = "") => {
 
     const exportName =
       safeString(fileName) || backupPath.split("/").filter(Boolean).pop() || getBackupFileName();
+    emitBackupProgress(onProgress, {
+      percent: 28,
+      label: "Exporting backup",
+      detail: "Reading backup file.",
+    });
     const contents = await FileSystem.readAsStringAsync(backupPath, {
       encoding: FileSystem.EncodingType.UTF8,
     });
 
     if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
+      emitBackupProgress(onProgress, {
+        percent: 48,
+        label: "Exporting backup",
+        detail: "Choose where to save the file.",
+      });
       const permissions =
         await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
 
@@ -796,8 +865,19 @@ export const exportBackup = async (backupPath, fileName = "") => {
         exportName,
         BACKUP_MIME_TYPE
       );
+      emitBackupProgress(onProgress, {
+        percent: 78,
+        label: "Exporting backup",
+        detail: "Writing backup file.",
+      });
       await FileSystem.StorageAccessFramework.writeAsStringAsync(targetUri, contents, {
         encoding: FileSystem.EncodingType.UTF8,
+      });
+
+      emitBackupProgress(onProgress, {
+        percent: 100,
+        label: "Export complete",
+        detail: "Backup exported.",
       });
 
       return {
@@ -809,9 +889,19 @@ export const exportBackup = async (backupPath, fileName = "") => {
     }
 
     if (await Sharing.isAvailableAsync()) {
+      emitBackupProgress(onProgress, {
+        percent: 78,
+        label: "Exporting backup",
+        detail: "Opening share sheet.",
+      });
       await Sharing.shareAsync(backupPath, {
         mimeType: BACKUP_MIME_TYPE,
         dialogTitle: "Export backup",
+      });
+      emitBackupProgress(onProgress, {
+        percent: 100,
+        label: "Export complete",
+        detail: "Backup exported.",
       });
       return {
         success: true,
@@ -836,7 +926,14 @@ export const exportBackup = async (backupPath, fileName = "") => {
   }
 };
 
-export const importBackup = async (fileUri, email) => {
+export const importBackup = async (fileUri, email, options = {}) => {
+  const onProgress = options.onProgress;
+  emitBackupProgress(onProgress, {
+    percent: 8,
+    label: "Importing backup",
+    detail: "Opening backup file.",
+  });
+
   if (!fileUri) {
     return {
       success: false,
@@ -848,6 +945,11 @@ export const importBackup = async (fileUri, email) => {
   try {
     const contents = await FileSystem.readAsStringAsync(fileUri, {
       encoding: FileSystem.EncodingType.UTF8,
+    });
+    emitBackupProgress(onProgress, {
+      percent: 28,
+      label: "Importing backup",
+      detail: "Checking backup format.",
     });
     const envelope = JSON.parse(contents);
 
@@ -865,6 +967,11 @@ export const importBackup = async (fileUri, email) => {
       };
     }
 
+    emitBackupProgress(onProgress, {
+      percent: 52,
+      label: "Unlocking backup",
+      detail: "Checking the backup email.",
+    });
     const decrypted = await decryptPayload(envelope, email);
     if (!decrypted.success) return decrypted;
 
@@ -877,6 +984,11 @@ export const importBackup = async (fileUri, email) => {
       };
     }
 
+    emitBackupProgress(onProgress, {
+      percent: 74,
+      label: "Importing backup",
+      detail: "Preparing restore summary.",
+    });
     let storedPath = isAppOwnedBackupPath(fileUri) ? fileUri : "";
     if (!storedPath && fileUri.startsWith("file://")) {
       try {
@@ -898,6 +1010,12 @@ export const importBackup = async (fileUri, email) => {
         storedPath = "";
       }
     }
+
+    emitBackupProgress(onProgress, {
+      percent: 100,
+      label: "Backup unlocked",
+      detail: "Restore summary is ready.",
+    });
 
     return {
       success: true,
@@ -978,8 +1096,8 @@ export const refreshBackupIndex = async () => {
 
 export const listBackups = async () => refreshBackupIndex();
 
-export const exportBackupFromPath = async (backupPath, fileName = "") =>
-  exportBackup(backupPath, fileName);
+export const exportBackupFromPath = async (backupPath, fileName = "", options = {}) =>
+  exportBackup(backupPath, fileName, options);
 
 export const deleteBackupById = async (id) => {
   const backups = await readBackupIndex();
@@ -1325,6 +1443,7 @@ export const createAutoBackupIfNeeded = async (options = {}) => {
       type: settings.autoType,
       mode: "auto",
       email,
+      onProgress: options.onProgress,
     });
 
     if (!result?.success) {
@@ -1362,7 +1481,7 @@ export const createAutoBackupIfNeeded = async (options = {}) => {
   }
 };
 
-export const restoreBackupFromPath = async (path, email) => {
+export const restoreBackupFromPath = async (path, email, options = {}) => {
   if (!path) {
     return {
       success: false,
@@ -1371,7 +1490,7 @@ export const restoreBackupFromPath = async (path, email) => {
     };
   }
 
-  const imported = await importBackup(path, email);
+  const imported = await importBackup(path, email, options);
   if (!imported?.success) return imported;
 
   const index = await readBackupIndex();

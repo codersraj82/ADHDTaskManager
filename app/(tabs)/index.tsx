@@ -1338,6 +1338,12 @@ export default function Home() {
   const [backupListLoading, setBackupListLoading] = useState(false);
   const [selectedListedBackup, setSelectedListedBackup] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [backupProgress, setBackupProgress] = useState({
+    visible: false,
+    label: "",
+    detail: "",
+    percent: 0,
+  });
   const [backupEmailModal, setBackupEmailModal] = useState({
     visible: false,
     purpose: null,
@@ -5313,6 +5319,34 @@ export default function Home() {
     }
   }, []);
 
+  const updateBackupProgress = useCallback((progress = {}) => {
+    setBackupProgress((prev) => ({
+      visible: true,
+      label: progress.label || prev.label || "Working on backup",
+      detail: progress.detail || prev.detail || "Keep the app open for a moment.",
+      percent:
+        typeof progress.percent === "number"
+          ? Math.min(Math.max(progress.percent, 0), 100)
+          : prev.percent,
+    }));
+  }, []);
+
+  const startBackupProgress = useCallback(
+    (label, detail = "Keep the app open for a moment.", percent = 5) => {
+      updateBackupProgress({ label, detail, percent });
+    },
+    [updateBackupProgress]
+  );
+
+  const clearBackupProgress = useCallback(() => {
+    setBackupProgress({
+      visible: false,
+      label: "",
+      detail: "",
+      percent: 0,
+    });
+  }, []);
+
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
       appStateRef.current = nextState;
@@ -8698,13 +8732,10 @@ export default function Home() {
 
     let targets = [deleteTask];
 
-    if (isRepeatingTask(deleteTask) && deleteTask.completed) {
-      targets = [];
-    }
-
     if (isRepeatSeries && scope !== "single") {
       targets = tasks.filter((task) => {
         if (task.repeatGroupId !== deleteTask.repeatGroupId) return false;
+        if (Number(task.id) === Number(deleteTask.id)) return true;
         if (task.completed) return false;
 
         const rowTime =
@@ -8735,6 +8766,12 @@ export default function Home() {
 
     const idSet = new Set(idsToDelete);
     setTasks((prev) => prev.filter((task) => !idSet.has(task.id)));
+    const deletedSelectedTask =
+      tasksMenuSelectedTaskId &&
+      idsToDelete.some((taskId) => Number(taskId) === Number(tasksMenuSelectedTaskId));
+    if (deletedSelectedTask) {
+      setTasksMenuSelectedTaskId(null);
+    }
 
     if (idsToDelete.length === 1) {
       setLastDeletedTask(deleteTask);
@@ -9647,8 +9684,15 @@ export default function Home() {
   const handleExportListedBackup = async (backup) => {
     if (!backup?.path || backupBusy) return;
     setBackupBusy(true);
+    startBackupProgress(
+      "Exporting backup",
+      "Preparing the selected backup file.",
+      5
+    );
     try {
-      const result = await exportBackupFromPath(backup.path, backup.name);
+      const result = await exportBackupFromPath(backup.path, backup.name, {
+        onProgress: updateBackupProgress,
+      });
       Alert.alert(
         "Backup & Restore",
         result?.message ||
@@ -9657,6 +9701,7 @@ export default function Home() {
     } catch {
       Alert.alert("Backup & Restore", "Could not export backup.");
     } finally {
+      clearBackupProgress();
       setBackupBusy(false);
     }
   };
@@ -9728,14 +9773,24 @@ export default function Home() {
       }
 
       setBackupBusy(true);
+      startBackupProgress(
+        purpose === "restore-list" ? "Opening backup" : "Importing backup",
+        purpose === "restore-list"
+          ? "Checking the selected backup."
+          : "Reading the selected backup file.",
+        5
+      );
       try {
         const result =
           purpose === "restore-list"
             ? await restoreBackupFromPath(
                 selectedListedBackup?.path,
-                normalizedEmail
+                normalizedEmail,
+                { onProgress: updateBackupProgress }
               )
-            : await importBackup(backupImportUri, normalizedEmail);
+            : await importBackup(backupImportUri, normalizedEmail, {
+                onProgress: updateBackupProgress,
+              });
 
         if (!result?.success) {
           Alert.alert(
@@ -9758,6 +9813,7 @@ export default function Home() {
           "Could not unlock this backup. Please check the email ID used for backup."
         );
       } finally {
+        clearBackupProgress();
         setBackupBusy(false);
       }
       return;
@@ -9770,6 +9826,13 @@ export default function Home() {
     }
 
     setBackupBusy(true);
+    startBackupProgress(
+      backupEmailModal.purpose === "enable-auto"
+        ? "Setting up auto backup"
+        : "Creating backup",
+      "Preparing backup encryption.",
+      5
+    );
 
     try {
       if (purpose === "enable-auto") {
@@ -9790,6 +9853,7 @@ export default function Home() {
         setBackupSettings(nextSettings);
         const autoResult = await createAutoBackupIfNeeded({
           dataReady: tasksHydrated,
+          onProgress: updateBackupProgress,
         });
         const refreshedSettings = await getBackupSettings();
         setBackupSettings(refreshedSettings);
@@ -9808,6 +9872,7 @@ export default function Home() {
         type: backupEmailModal.type,
         mode: backupEmailModal.mode,
         email: validation.email,
+        onProgress: updateBackupProgress,
       });
 
       if (!backupResult?.success) {
@@ -9818,9 +9883,15 @@ export default function Home() {
         return;
       }
 
+      updateBackupProgress({
+        percent: 5,
+        label: "Exporting backup",
+        detail: "Preparing the backup for export.",
+      });
       const exportResult = await exportBackup(
         backupResult.path,
-        backupResult.fileName
+        backupResult.fileName,
+        { onProgress: updateBackupProgress }
       );
       await loadAvailableBackups({ showLoading: false });
       closeBackupEmailModal();
@@ -9834,6 +9905,7 @@ export default function Home() {
     } catch {
       Alert.alert("Backup & Restore", "Could not complete backup on this device.");
     } finally {
+      clearBackupProgress();
       setBackupBusy(false);
     }
   };
@@ -9851,8 +9923,18 @@ export default function Home() {
           style: "destructive",
           onPress: async () => {
             setBackupBusy(true);
+            startBackupProgress(
+              "Restoring backup",
+              "Preparing current tasks.",
+              8
+            );
             try {
               const currentTasks = Array.isArray(tasks) ? tasks : [];
+              updateBackupProgress({
+                percent: 18,
+                label: "Restoring backup",
+                detail: "Clearing old reminders.",
+              });
               for (const task of currentTasks) {
                 await cancelTaskReminders(task.notificationId);
                 if (task?.strongAlarmId) {
@@ -9864,6 +9946,11 @@ export default function Home() {
               await Notifications.cancelAllScheduledNotificationsAsync().catch(
                 () => null
               );
+              updateBackupProgress({
+                percent: 45,
+                label: "Restoring backup",
+                detail: "Replacing app data.",
+              });
               const restoreResult = await restoreBackup(backupImported, {
                 mode: "replace",
                 email: backupImportEmailRef.current,
@@ -9877,9 +9964,24 @@ export default function Home() {
                 return;
               }
 
+              updateBackupProgress({
+                percent: 78,
+                label: "Restoring backup",
+                detail: "Reloading restored tasks.",
+              });
               const restoredTasks = await refreshAppStateAfterRestore();
+              updateBackupProgress({
+                percent: 90,
+                label: "Restoring backup",
+                detail: "Rescheduling reminders.",
+              });
               await rescheduleRestoredTaskReminders(restoredTasks);
               await loadAvailableBackups({ showLoading: false });
+              updateBackupProgress({
+                percent: 100,
+                label: "Restore complete",
+                detail: "Backup restored.",
+              });
               setRestoreSummaryVisible(false);
               setBackupImported(null);
               setSelectedListedBackup(null);
@@ -9888,6 +9990,7 @@ export default function Home() {
             } catch {
               Alert.alert("Backup & Restore", "Could not restore this backup.");
             } finally {
+              clearBackupProgress();
               setBackupBusy(false);
             }
           },
@@ -10294,6 +10397,12 @@ export default function Home() {
   const handleTasksMenuTaskSelect = useCallback((task) => {
     if (!task?.id) return;
     setTasksMenuSelectedTaskId(task.id);
+  }, []);
+
+  const handleTasksMenuDeleteTask = useCallback((task) => {
+    if (!task?.id) return;
+    setDeleteTask(task);
+    setDeleteModalVisible(true);
   }, []);
 
   const handleTasksMenuBack = useCallback(() => {
@@ -11531,13 +11640,31 @@ export default function Home() {
           >
             {task?.title || "Task"}
           </Text>
-          <Text
-            className={`text-[10px] font-black uppercase tracking-widest ${
-              isCompletedView ? "text-[#7DFFB3]" : "text-[#66b9b9]"
-            }`}
-          >
-            {statusLabel}
-          </Text>
+          <View className="items-end">
+            <Text
+              className={`text-[10px] font-black uppercase tracking-widest ${
+                isCompletedView ? "text-[#7DFFB3]" : "text-[#66b9b9]"
+              }`}
+            >
+              {statusLabel}
+            </Text>
+            <TouchableOpacity
+              activeOpacity={0.82}
+              accessibilityRole="button"
+              accessibilityLabel={`Delete ${
+                isCompletedView ? "completed" : "pending"
+              } task`}
+              onPress={(event) => {
+                event.stopPropagation?.();
+                handleTasksMenuDeleteTask(task);
+              }}
+              className="mt-2 bg-[#FF7B7B]/15 border border-[#FF7B7B]/40 rounded-full px-2.5 py-1"
+            >
+              <Text className="text-[#FF7B7B] text-[9px] font-black uppercase tracking-widest">
+                Delete
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
         <Text numberOfLines={1} className="text-[#9FB5B5] text-[11px] mt-1">
           {(task?.section || "Task")} | {primaryDateLabel || "No schedule yet"}
@@ -12075,6 +12202,29 @@ export default function Home() {
                     </TouchableOpacity>
                   </>
                 )}
+
+                <TouchableOpacity
+                  activeOpacity={0.86}
+                  disabled={taskActionBusy}
+                  onPress={() => handleTasksMenuDeleteTask(tasksMenuSelectedTask)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Delete ${
+                    tasksMenuSelectedTask.completed ? "completed" : "pending"
+                  } task`}
+                  className={`rounded-full px-3 py-2 mr-2 mb-2 border ${
+                    taskActionBusy
+                      ? "bg-[#123131]/50 border-[#337a7a]/20"
+                      : "bg-[#FF7B7B]/15 border-[#FF7B7B]/40"
+                  }`}
+                >
+                  <Text
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      taskActionBusy ? "text-[#9FB5B5]" : "text-[#FF7B7B]"
+                    }`}
+                  >
+                    Delete
+                  </Text>
+                </TouchableOpacity>
               </View>
             </View>
           ) : isTasksMenuDayListMode ? (
@@ -12969,13 +13119,32 @@ export default function Home() {
             </Text>
           </View>
 
-          {backupBusy ? (
+          {backupBusy || backupProgress.visible ? (
             <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
               <Text className="text-[#66b9b9] font-black">
-                Working on backup...
+                {backupProgress.label || "Working on backup..."}
               </Text>
-              <Text className="text-[#9FB5B5] text-xs mt-1">
-                Keep the app open for a moment.
+              <View className="mt-3 h-2.5 rounded-full bg-[#061414]/70 border border-[#337a7a]/25 overflow-hidden">
+                <View
+                  className="h-full bg-[#66b9b9] rounded-full"
+                  style={{
+                    width: `${Math.max(
+                      4,
+                      Math.min(Math.round(backupProgress.percent || 8), 100)
+                    )}%`,
+                  }}
+                />
+              </View>
+              <View className="flex-row items-center justify-between mt-2">
+                <Text className="text-[#9FB5B5] text-xs flex-1 pr-3">
+                  {backupProgress.detail || "Keep the app open for a moment."}
+                </Text>
+                <Text className="text-[#66b9b9] text-[10px] font-black">
+                  {Math.min(Math.round(backupProgress.percent || 0), 100)}%
+                </Text>
+              </View>
+              <Text className="text-[#6D8787] text-[10px] mt-2">
+                Please keep the app open until this finishes.
               </Text>
             </View>
           ) : null}
@@ -16593,7 +16762,9 @@ export default function Home() {
             deleteTask.repeatGroupId ? (
               <>
                 <Text className="text-[#9FB5B5] text-xs font-semibold mb-3">
-                  Completed tasks stay preserved in history.
+                  {deleteTask.completed
+                    ? "This completed entry can be removed. Other completed history stays preserved."
+                    : "Completed tasks stay preserved in history."}
                 </Text>
                 <TouchableOpacity
                   onPress={() => confirmDeleteTask("single")}
