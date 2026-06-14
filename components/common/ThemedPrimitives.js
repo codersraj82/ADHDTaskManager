@@ -13,20 +13,17 @@ import {
 } from "react-native";
 import {
   getThemeClassName,
-  getThemeStyle,
   useAppTheme,
 } from "../../utils/appTheme";
 
 const createThemeAwareComponent = (Component, displayName) => {
-  const WrappedComponent = forwardRef(({ className, style, ...props }, ref) => {
+  const WrappedComponent = forwardRef(({ className, ...props }, ref) => {
     const { themeMode } = useAppTheme();
-    const themeStyle = getThemeStyle(className, themeMode);
 
     return (
       <Component
         ref={ref}
         className={getThemeClassName(className, themeMode)}
-        style={themeStyle ? [themeStyle, style] : style}
         {...props}
       />
     );

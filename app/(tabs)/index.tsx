@@ -179,11 +179,7 @@ import {
 import {
   AppThemeContext,
   THEME_MODES,
-  THEME_STORAGE_KEY,
   getAppTheme,
-  getThemeClassName,
-  getThemeStyle,
-  normalizeThemeMode,
 } from "../../utils/appTheme";
 import OverwhelmModeSheet from "../../components/task/OverwhelmModeSheet";
 import Reanimated, {
@@ -1151,19 +1147,10 @@ export default function Home() {
   const headerTopPadding = Math.max(insets.top, 8) + APP_HEADER_SAFE_TOP_GAP;
   const headerContainerHeight = headerTopPadding + APP_HEADER_CONTENT_HEIGHT;
   const floatingControlTop = Math.max(insets.top, 8) + 6;
-  const [themeMode, setThemeModeState] = useState(THEME_MODES.DARK);
-  const appTheme = useMemo(() => getAppTheme(themeMode), [themeMode]);
-  const isLightTheme = themeMode === THEME_MODES.LIGHT;
-  const isDarkTheme = !isLightTheme;
+  const appTheme = useMemo(() => getAppTheme(), []);
   Object.assign(COLORS, appTheme.colors);
-  const themedClassName = useCallback(
-    (className) => getThemeClassName(className, themeMode),
-    [themeMode]
-  );
-  const themedStyle = useCallback(
-    (className) => getThemeStyle(className, themeMode),
-    [themeMode]
-  );
+  const themedClassName = useCallback((className) => className, []);
+  const themedStyle = useCallback(() => undefined, []);
   const [tasks, setTasks] = useState([
     {
       id: 1,
@@ -2794,12 +2781,6 @@ export default function Home() {
     ]);
   }, []);
 
-  const updateThemeMode = useCallback((nextMode) => {
-    const normalizedMode = normalizeThemeMode(nextMode);
-    setThemeModeState(normalizedMode);
-    saveSetting(THEME_STORAGE_KEY, normalizedMode);
-  }, [saveSetting]);
-
   const getSettingsMap = () => {
     const rows = db.getAllSync("SELECT key, value FROM app_settings") || [];
     return rows.reduce((acc, row) => {
@@ -4169,7 +4150,6 @@ export default function Home() {
         setOnboardingVisible(!nextProfile.onboardingComplete);
 
         const appSettings = getSettingsMap();
-        setThemeModeState(normalizeThemeMode(appSettings[THEME_STORAGE_KEY]));
         const restoredBackupSettings = await getBackupSettings();
         setBackupSettings(restoredBackupSettings);
         setLastTodayPlanPromptDate(
@@ -9437,7 +9417,6 @@ export default function Home() {
     refreshSpecialTasks();
 
     const settings = getSettingsMap();
-    setThemeModeState(normalizeThemeMode(settings[THEME_STORAGE_KEY]));
     const nextBackupSettings = await getBackupSettings();
     setBackupSettings(nextBackupSettings);
     setLastTodayPlanPromptDate(settings[LAST_TODAY_PLAN_PROMPT_DATE_KEY] || "");
@@ -12451,52 +12430,6 @@ export default function Home() {
         <>
           <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#66b9b9]/25 mb-3">
             <Text className="text-[#E8F4F4] text-lg font-black">
-              Appearance
-            </Text>
-            <Text className="text-[#9FB5B5] text-xs mt-1 leading-5">
-              Dark is the default. Light keeps the same calm style with brighter contrast.
-            </Text>
-
-            <View className="mt-3 bg-[#061414]/45 border border-[#337a7a]/25 rounded-2xl p-2">
-              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest mb-2">
-                Theme
-              </Text>
-              <View className="flex-row">
-                {[
-                  { key: THEME_MODES.DARK, label: "Dark" },
-                  { key: THEME_MODES.LIGHT, label: "Light" },
-                ].map((option) => {
-                  const selected = themeMode === option.key;
-
-                  return (
-                    <TouchableOpacity
-                      key={`theme-mode-${option.key}`}
-                      activeOpacity={0.84}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      onPress={() => updateThemeMode(option.key)}
-                      className={`flex-1 rounded-xl border px-3 py-2 ${
-                        selected
-                          ? "bg-[#66b9b9] border-[#66b9b9]"
-                          : "bg-[#123131]/70 border-[#337a7a]/35"
-                      } ${option.key === THEME_MODES.DARK ? "mr-2" : ""}`}
-                    >
-                      <Text
-                        className={`text-center text-xs font-black uppercase tracking-widest ${
-                          selected ? "text-[#061414]" : "text-[#9FB5B5]"
-                        }`}
-                      >
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-          </View>
-
-          <View className="bg-[#123131]/60 rounded-2xl p-4 border border-[#66b9b9]/25 mb-3">
-            <Text className="text-[#E8F4F4] text-lg font-black">
               Backup & Restore
             </Text>
             <Text className="text-[#9FB5B5] text-xs mt-1 leading-5">
@@ -14194,19 +14127,19 @@ export default function Home() {
   });
   const themeContextValue = useMemo(
     () => ({
-      themeMode,
+      themeMode: THEME_MODES.DARK,
       colors: appTheme.colors,
-      setThemeMode: updateThemeMode,
-      isDark: isDarkTheme,
-      isLight: isLightTheme,
+      setThemeMode: () => {},
+      isDark: true,
+      isLight: false,
     }),
-    [appTheme.colors, isDarkTheme, isLightTheme, themeMode, updateThemeMode]
+    [appTheme.colors]
   );
 
   return (
     <AppThemeContext.Provider value={themeContextValue}>
       <StatusBar
-        barStyle={isLightTheme ? "dark-content" : "light-content"}
+        barStyle="light-content"
         backgroundColor={COLORS.bg}
       />
       {renderFloatingMenuShortcut()}
