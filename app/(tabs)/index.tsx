@@ -215,6 +215,21 @@ const COLORS = {
   danger: "#FF7B7B",
 };
 
+const COMPACT_EMOJI_TEXT_STYLE = {
+  includeFontPadding: true,
+  lineHeight: 16,
+};
+
+const STANDARD_EMOJI_TEXT_STYLE = {
+  includeFontPadding: true,
+  lineHeight: 22,
+};
+
+const CELEBRATION_EMOJI_TEXT_STYLE = {
+  includeFontPadding: true,
+  lineHeight: 64,
+};
+
 const DEFAULT_PROFILE = {
   name: "",
   profileImage: "",
@@ -1140,6 +1155,10 @@ export default function Home() {
   const isLightTheme = themeMode === THEME_MODES.LIGHT;
   const isDarkTheme = !isLightTheme;
   Object.assign(COLORS, appTheme.colors);
+  const themedClassName = useCallback(
+    (className) => getThemeClassName(className, themeMode),
+    [themeMode]
+  );
   const [tasks, setTasks] = useState([
     {
       id: 1,
@@ -10715,9 +10734,9 @@ export default function Home() {
               },
             ]
       }
-      className={`${
+      className={themedClassName(`${
         inScrollContent ? "relative" : "absolute top-0 left-0 right-0 z-30"
-      } bg-[#061414]/95 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]`}
+      } bg-[#061414]/95 border-b border-[#66b9b9]/25 shadow-2xl shadow-[#66b9b9]/20 rounded-b-[32px]`)}
     >
       <View className="flex-row items-center" style={{ height: APP_HEADER_TOP_ROW_HEIGHT }}>
         {renderAvatar("small")}
@@ -10742,7 +10761,7 @@ export default function Home() {
       </View>
       <Animated.View
         style={{ opacity: affirmationOpacity, height: APP_HEADER_AFFIRMATION_HEIGHT }}
-        className="mt-3 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 py-2 justify-center overflow-hidden"
+        className={themedClassName("mt-3 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 py-2 justify-center overflow-hidden")}
       >
         <View
           onLayout={handleHeaderAffirmationViewportLayout}
@@ -10859,7 +10878,7 @@ export default function Home() {
     return (
       <Reanimated.View
         entering={FadeInDown.duration(220).delay(Math.min(index, 6) * 45)}
-        className={`border rounded-[24px] p-5 mb-3 ${recoveryCardAccentClass}`}
+        className={themedClassName(`border rounded-[24px] p-5 mb-3 ${recoveryCardAccentClass}`)}
       >
         <View>
           {isTargetTask ? (
@@ -11027,13 +11046,13 @@ export default function Home() {
         <Pressable onPress={closeRecoveryModal} className="absolute inset-0">
           <Reanimated.View
             style={recoveryBackdropStyle}
-            className="flex-1 bg-[#061414]"
+            className={themedClassName("flex-1 bg-[#061414]")}
           />
         </Pressable>
 
         <Reanimated.View
           style={recoverySheetStyle}
-          className="max-h-[84%] bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/20"
+          className={themedClassName("max-h-[84%] bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/20")}
         >
           <View className="items-center pt-3">
             <View className="w-14 h-1.5 rounded-full bg-[#337a7a]/70" />
@@ -11061,7 +11080,7 @@ export default function Home() {
           {recoverySuccessMessage ? (
             <Reanimated.View
               style={recoverySuccessStyle}
-              className="mx-5 mt-3 bg-[#7DFFB3]/12 border border-[#7DFFB3]/35 rounded-xl px-3 py-2"
+              className={themedClassName("mx-5 mt-3 bg-[#7DFFB3]/12 border border-[#7DFFB3]/35 rounded-xl px-3 py-2")}
             >
               <Text className="text-[#7DFFB3] text-[11px] font-black text-center">
                 {recoverySuccessMessage}
@@ -11129,13 +11148,13 @@ export default function Home() {
           <Pressable onPress={closeTodayPlanSheet} className="absolute inset-0">
             <Reanimated.View
               style={todayPlanBackdropStyle}
-              className="flex-1 bg-[#061414]"
+              className={themedClassName("flex-1 bg-[#061414]")}
             />
           </Pressable>
 
           <Reanimated.View
             style={todayPlanSheetStyle}
-            className="max-h-[84%] bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/20"
+            className={themedClassName("max-h-[84%] bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/20")}
           >
             <View className="items-center pt-3">
               <View className="w-14 h-1.5 rounded-full bg-[#337a7a]/70" />
@@ -11255,7 +11274,7 @@ export default function Home() {
       <Pressable onPress={closeDrawer} className="flex-1 bg-[#061414]/92">
         <Animated.View
           style={{ transform: [{ translateX: drawerX }] }}
-          className="w-[82%] max-w-[320px] h-full bg-[#0B1F1F] border-r border-[#66b9b9]/30 px-5 pt-14 pb-8 shadow-2xl shadow-[#66b9b9]/20"
+          className={themedClassName("w-[82%] max-w-[320px] h-full bg-[#0B1F1F] border-r border-[#66b9b9]/30 px-5 pt-14 pb-8 shadow-2xl shadow-[#66b9b9]/20")}
         >
           <Pressable>
             <View className="flex-row items-center mb-6">
@@ -13366,7 +13385,7 @@ export default function Home() {
                       }
                     : undefined
                 }
-                className={`p-4 rounded-[24px] mb-3 ${cardBgClass} ${cardBorderClass} ${cardShadowClass}`}
+                className={themedClassName(`p-4 rounded-[24px] mb-3 ${cardBgClass} ${cardBorderClass} ${cardShadowClass}`)}
               >
                 {isTaskHighlighted ? (
                   <Animated.View
@@ -13515,7 +13534,9 @@ export default function Home() {
                             {isStrongAlarmToggleBusy ? (
                               <Feather name="loader" size={14} color={COLORS.muted} />
                             ) : isStrongAlarmEnabled ? (
-                              <Text className="text-[14px]">⏰</Text>
+                              <Text className="text-[14px]" style={STANDARD_EMOJI_TEXT_STYLE}>
+                                {"\u23F0"}
+                              </Text>
                             ) : (
                               <Feather name="bell-off" size={14} color={COLORS.muted} />
                             )}
@@ -13603,7 +13624,9 @@ export default function Home() {
                       </Text>
                     )}
                     {hasPendingNotification ? (
-                      <Text className="text-[13px]">⏰</Text>
+                      <Text className="text-[13px]" style={STANDARD_EMOJI_TEXT_STYLE}>
+                        {"\u23F0"}
+                      </Text>
                     ) : null}
                   </View>
                 </Pressable>
@@ -14086,7 +14109,9 @@ export default function Home() {
                               key={idx}
                               className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35 flex-row items-center"
                             >
-                              <Text className="text-[10px]">⏰</Text>
+                              <Text className="text-[10px]" style={COMPACT_EMOJI_TEXT_STYLE}>
+                                {"\u23F0"}
+                              </Text>
                               <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide ml-1">
                                 {time}
                               </Text>
@@ -14157,7 +14182,7 @@ export default function Home() {
       </Reanimated.View>
       <Reanimated.ScrollView
         ref={scrollRef}
-        className={getThemeClassName("flex-1 bg-[#061414]", themeMode)}
+        className={themedClassName("flex-1 bg-[#061414]")}
         scrollEnabled={!isSubtaskReordering}
         onScroll={homeScrollHandler}
         onLayout={(event) => {
@@ -14241,9 +14266,9 @@ export default function Home() {
             <View className="mt-2 h-3 bg-[#061414]/70 rounded-full overflow-hidden border border-[#337a7a]/25">
               <Reanimated.View
                 style={dailyProgressBarStyle}
-                className={`h-full rounded-full ${
+                className={themedClassName(`h-full rounded-full ${
                   totalTodayTasks > 0 ? "bg-[#66b9b9]" : "bg-[#9FB5B5]/30"
-                }`}
+                }`)}
               />
             </View>
 
@@ -14399,7 +14424,7 @@ export default function Home() {
                 <Reanimated.View
                   pointerEvents="none"
                   style={smartTaskShimmerStyle}
-                  className="absolute top-[-1] bottom-[-1] rounded-full bg-[#FFD166]/20"
+                  className={themedClassName("absolute top-[-1] bottom-[-1] rounded-full bg-[#FFD166]/20")}
                 />
                 <TouchableOpacity
                   activeOpacity={0.88}
@@ -16027,7 +16052,9 @@ export default function Home() {
             onPress={handleCurrentTaskFabPress}
             className="w-11 h-11 rounded-full bg-[#123131] border border-[#B6C26E]/65 items-center justify-center shadow-xl shadow-[#B6C26E]/25"
           >
-            <Text className="text-[15px]">⏰</Text>
+            <Text className="text-[15px]" style={STANDARD_EMOJI_TEXT_STYLE}>
+              {"\u23F0"}
+            </Text>
             {currentTaskQuickReason === "active-task" ||
             currentFocusedTaskId === currentTaskQuickTaskId ? (
               <View className="absolute -bottom-0.5 w-2 h-2 rounded-full bg-[#7DFFB3]" />
@@ -16100,7 +16127,7 @@ export default function Home() {
         <Reanimated.View
           entering={FadeInDown.duration(220)}
           style={{ bottom: recoveryPromptBottom }}
-          className="absolute right-20 bg-[#123131]/95 border border-[#66b9b9]/35 rounded-2xl px-3.5 py-2.5 max-w-[210px] shadow-xl shadow-[#66b9b9]/15"
+          className={themedClassName("absolute right-20 bg-[#123131]/95 border border-[#66b9b9]/35 rounded-2xl px-3.5 py-2.5 max-w-[210px] shadow-xl shadow-[#66b9b9]/15")}
         >
           <Text className="text-[#E8F4F4] text-[11px] font-bold">
             Ready when you are. Tap again to review pending tasks.
@@ -16130,10 +16157,12 @@ export default function Home() {
             style={{
               transform: [{ scale: modalScale }],
             }}
-            className="bg-[#0B1F1F] p-8 rounded-[40px] items-center w-full border border-[#7DFFB3]/50 shadow-2xl shadow-[#7DFFB3]/20"
+            className={themedClassName("bg-[#0B1F1F] p-8 rounded-[40px] items-center w-full border border-[#7DFFB3]/50 shadow-2xl shadow-[#7DFFB3]/20")}
           >
             {/* Emoji */}
-            <Text className="text-5xl mb-4">{celebration.emoji}</Text>
+            <Text className="text-5xl mb-4" style={CELEBRATION_EMOJI_TEXT_STYLE}>
+              {celebration.emoji}
+            </Text>
 
             {/* Message */}
             <Text className="text-[#E8F4F4] text-xl text-center font-black tracking-tighter mb-6">

@@ -99,6 +99,13 @@ const LIGHT_CLASS_COLOR_MAP = Object.freeze({
   "#FFD166": "#956B00",
 });
 
+const NORMALIZED_LIGHT_CLASS_COLOR_MAP = Object.freeze(
+  Object.entries(LIGHT_CLASS_COLOR_MAP).reduce((acc, [darkColor, lightColor]) => {
+    acc[darkColor.toUpperCase()] = lightColor;
+    return acc;
+  }, {})
+);
+
 export const normalizeThemeMode = (value) =>
   value === THEME_MODES.LIGHT ? THEME_MODES.LIGHT : THEME_MODES.DARK;
 
@@ -112,7 +119,7 @@ export const getThemeClassName = (className, themeMode) => {
 
   return className.replace(/#[A-Fa-f0-9]{6}/g, (match) => {
     const normalized = match.toUpperCase();
-    return LIGHT_CLASS_COLOR_MAP[normalized] || match;
+    return NORMALIZED_LIGHT_CLASS_COLOR_MAP[normalized] || match;
   });
 };
 
