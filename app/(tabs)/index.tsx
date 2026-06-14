@@ -228,6 +228,10 @@ const STANDARD_EMOJI_TEXT_STYLE = {
   lineHeight: 22,
 };
 
+const REMINDER_NOTIFICATION_EMOJI = "\uD83D\uDD14";
+const CLOCK_ALARM_EMOJI = "\u23F0";
+const TODAY_PLAN_EMOJI = "\uD83D\uDCC5";
+
 const CELEBRATION_EMOJI_TEXT_STYLE = {
   includeFontPadding: true,
   lineHeight: 64,
@@ -2207,8 +2211,10 @@ export default function Home() {
 
   const focusTimeText = `⏱ ${format(hours)}:${format(minutes)}:${format(seconds)} `;
 
-  const radius = 100;
-  const circumference = 2 * Math.PI * radius;
+  const focusRingSize = 240;
+  const focusRingCenter = focusRingSize / 2;
+  const focusRingRadius = 100;
+  const circumference = 2 * Math.PI * focusRingRadius;
 
   // Define session duration (25 min = 1500 sec)
   const totalDuration = 1500;
@@ -14025,12 +14031,16 @@ export default function Home() {
                           >
                             {isStrongAlarmToggleBusy ? (
                               <Feather name="loader" size={14} color={COLORS.muted} />
-                            ) : isStrongAlarmEnabled ? (
-                              <Text className="text-[14px]" style={STANDARD_EMOJI_TEXT_STYLE}>
-                                {"\u23F0"}
-                              </Text>
                             ) : (
-                              <Feather name="bell-off" size={14} color={COLORS.muted} />
+                              <Text
+                                className="text-[14px]"
+                                style={[
+                                  STANDARD_EMOJI_TEXT_STYLE,
+                                  !isStrongAlarmEnabled ? { opacity: 0.45 } : null,
+                                ]}
+                              >
+                                {CLOCK_ALARM_EMOJI}
+                              </Text>
                             )}
                           </TouchableOpacity>
                         )}
@@ -14591,8 +14601,8 @@ export default function Home() {
                           />
                           <Text className="text-[#66b9b9] text-[10px] font-bold tracking-widest uppercase">
                             {hasPendingNotification
-                              ? "ALARMS ACTIVE"
-                              : "ALARMS OFFLINE"}
+                              ? "REMINDERS ACTIVE"
+                              : "REMINDERS OFFLINE"}
                           </Text>
                         </View>
                         <View className="flex-row flex-wrap gap-1.5">
@@ -14602,7 +14612,7 @@ export default function Home() {
                               className="bg-[#061414]/70 px-2 py-1 rounded-full border border-[#337a7a]/35 flex-row items-center"
                             >
                               <Text className="text-[10px]" style={COMPACT_EMOJI_TEXT_STYLE}>
-                                {"\u23F0"}
+                                {REMINDER_NOTIFICATION_EMOJI}
                               </Text>
                               <Text className="text-[#7DFFB3] text-[9px] font-semibold tracking-wide ml-1">
                                 {time}
@@ -14894,7 +14904,9 @@ export default function Home() {
                 accessibilityHint="Open planning options for today"
                 className="px-3.5 py-2.5 rounded-xl border border-[#66b9b9]/40 bg-[#123131]/80 flex-row items-center mb-2"
               >
-                <Text className="text-[11px]">Plan</Text>
+                <Text className="text-[13px]" style={COMPACT_EMOJI_TEXT_STYLE}>
+                  {TODAY_PLAN_EMOJI}
+                </Text>
                 <Text className="ml-1.5 text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
                   Today&apos;s plan
                 </Text>
@@ -15108,12 +15120,12 @@ export default function Home() {
 
                 {/* RING */}
                 <View className="justify-center items-center w-[252px] h-[252px] rounded-full bg-[#061414]/45 border border-[#337a7a]/20 shadow-lg shadow-[#5EEAD4]/10">
-                  <Svg width={240} height={240}>
+                  <Svg width={focusRingSize} height={focusRingSize}>
                     {/* Background */}
                     <Circle
-                      cx="110"
-                      cy="110"
-                      r="100"
+                      cx={focusRingCenter}
+                      cy={focusRingCenter}
+                      r={focusRingRadius}
                       stroke={COLORS.card2}
                       strokeWidth="10"
                       fill="none"
@@ -15121,9 +15133,9 @@ export default function Home() {
 
                     {/* Progress Ring */}
                     <Circle
-                      cx="110"
-                      cy="110"
-                      r="100"
+                      cx={focusRingCenter}
+                      cy={focusRingCenter}
+                      r={focusRingRadius}
                       stroke={ringColor} // Updated to Cyan palette in state
                       strokeWidth="14"
                       fill="none"
@@ -15131,12 +15143,12 @@ export default function Home() {
                       strokeDashoffset={strokeDashoffset}
                       strokeLinecap="round"
                       rotation="90"
-                      origin="110,110"
+                      origin={`${focusRingCenter},${focusRingCenter}`}
                     />
                   </Svg>
 
                   {/* TIMER INSIDE */}
-                  <View className="absolute items-center">
+                  <View className="absolute inset-0 items-center justify-center">
                     <Text className="text-[#5EEAD4] text-[40px] font-black tracking-tight">
                       {focusTimeText.replace('⏱ ', '')}
                     </Text>
