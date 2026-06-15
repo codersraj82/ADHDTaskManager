@@ -1438,6 +1438,7 @@ export default function Home() {
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [startAssistReadAloudEnabled, setStartAssistReadAloudEnabled] =
     useState(false);
+  const [focusLockScreenEnabled, setFocusLockScreenEnabled] = useState(true);
   const [startAssistVoiceHint, setStartAssistVoiceHint] = useState("");
   const [sectionAffirmations, setSectionAffirmations] = useState(() =>
     getSectionAffirmations(SECTION_AFFIRMATION_KEYS, SECTION_HEADER_AFFIRMATIONS)
@@ -3292,7 +3293,23 @@ export default function Home() {
   );
 
   const startNativeFocusLockScreenSession = useCallback(
-    async ({ taskId, startTimestamp, endTimestamp, durationSeconds }) => {
+    async ({
+      taskId,
+      startTimestamp,
+      endTimestamp,
+      durationSeconds,
+      forceEnabled = false,
+    }) => {
+      if (!forceEnabled && !focusLockScreenEnabled) {
+        focusLockScreenSessionIdRef.current = null;
+        await scheduleFocusCompletionReminder(taskId, endTimestamp);
+        return {
+          success: false,
+          errorCode: "FOCUS_LOCK_SCREEN_DISABLED",
+          message: "Focus lock-screen view is disabled in settings.",
+        };
+      }
+
       const options = buildFocusLockScreenOptions({
         taskId,
         startTimestamp,
@@ -3308,7 +3325,7 @@ export default function Home() {
       const result = await startFocusLockScreenSession(options);
       if (result.success) {
         focusLockScreenSessionIdRef.current = options.sessionId;
-        focusCompletionNotificationIdRef.current = null;
+        await cancelFocusCompletionReminder();
         return result;
       }
 
@@ -3316,11 +3333,18 @@ export default function Home() {
       await scheduleFocusCompletionReminder(taskId, endTimestamp);
       return result;
     },
-    [buildFocusLockScreenOptions, isVoiceMuted, scheduleFocusCompletionReminder]
+    [
+      buildFocusLockScreenOptions,
+      cancelFocusCompletionReminder,
+      focusLockScreenEnabled,
+      isVoiceMuted,
+      scheduleFocusCompletionReminder,
+    ]
   );
 
   const updateNativeFocusLockScreenSession = useCallback(
     async ({ readAloudOnComplete = false } = {}) => {
+      if (!focusLockScreenEnabled) return null;
       if (
         !activeTaskId ||
         !focusStartTimestamp ||
@@ -3346,6 +3370,7 @@ export default function Home() {
       activeTaskId,
       buildFocusLockScreenOptions,
       currentDuration,
+      focusLockScreenEnabled,
       focusEndTimestamp,
       focusStartTimestamp,
     ]
@@ -3574,6 +3599,49 @@ export default function Home() {
       return next;
     });
   }, [saveSetting]);
+
+  const toggleFocusLockScreenEnabled = useCallback(() => {
+    setFocusLockScreenEnabled((prev) => {
+      const next = !prev;
+      saveSetting("focusLockScreenEnabled", next ? "true" : "false");
+
+      if (!next) {
+        const nativeSessionId = focusLockScreenSessionIdRef.current;
+        focusLockScreenSessionIdRef.current = null;
+        void stopFocusLockScreenSession(nativeSessionId);
+        if (activeTaskId && isTimerRunning && focusEndTimestamp) {
+          void scheduleFocusCompletionReminder(activeTaskId, focusEndTimestamp);
+        }
+        return next;
+      }
+
+      if (
+        activeTaskId &&
+        isTimerRunning &&
+        focusStartTimestamp &&
+        focusEndTimestamp
+      ) {
+        void startNativeFocusLockScreenSession({
+          taskId: activeTaskId,
+          startTimestamp: focusStartTimestamp,
+          endTimestamp: focusEndTimestamp,
+          durationSeconds: currentDuration,
+          forceEnabled: true,
+        });
+      }
+
+      return next;
+    });
+  }, [
+    activeTaskId,
+    currentDuration,
+    focusEndTimestamp,
+    focusStartTimestamp,
+    isTimerRunning,
+    saveSetting,
+    scheduleFocusCompletionReminder,
+    startNativeFocusLockScreenSession,
+  ]);
 
   const pastPendingTaskCount = todayPlanPastPendingTasks.length;
 
@@ -4400,8 +4468,11 @@ export default function Home() {
         const isMutedFromSettings = appSettings.voiceMuted === "true";
         const startAssistReadAloudFromSettings =
           appSettings.startAssistReadAloudEnabled === "true";
+        const focusLockScreenEnabledFromSettings =
+          appSettings.focusLockScreenEnabled !== "false";
         setIsVoiceMuted(isMutedFromSettings);
         setStartAssistReadAloudEnabled(startAssistReadAloudFromSettings);
+        setFocusLockScreenEnabled(focusLockScreenEnabledFromSettings);
 
         if (
           !hasPlayedWelcomeVoiceRef.current &&
@@ -4479,23 +4550,7 @@ export default function Home() {
               taskId: restoredTimerState.activeTaskId,
               startedAt: restoredStartTimestamp,
             });
-            focusLockScreenSessionIdRef.current = restoredSessionId;
-            void startFocusLockScreenSession({
-              sessionId: restoredSessionId,
-              taskId: String(restoredTimerState.activeTaskId),
-              taskTitle: restoredTask?.title || "Focus Session",
-              startedAt: restoredStartTimestamp,
-              expectedEndAt: restoredEndTimestamp,
-              durationMinutes: Math.max(
-                1,
-                Math.ceil((restoredTimerState.currentDuration || 1500) / 60)
-              ),
-              readAloudOnComplete: false,
-            }).then(async (result) => {
-              if (result.success) {
-                focusCompletionNotificationIdRef.current = null;
-                return;
-              }
+            const scheduleRestoredFocusCompletionReminder = async () => {
               if (restoredEndTimestamp <= Date.now()) return;
               const notificationId = await scheduleFocusCompletionNotification({
                 taskTitle: restoredTask?.title || "Focus Session",
@@ -4505,7 +4560,33 @@ export default function Home() {
                 endTimestamp: restoredEndTimestamp,
               });
               focusCompletionNotificationIdRef.current = notificationId;
-            });
+            };
+
+            if (focusLockScreenEnabledFromSettings) {
+              focusLockScreenSessionIdRef.current = restoredSessionId;
+              void startFocusLockScreenSession({
+                sessionId: restoredSessionId,
+                taskId: String(restoredTimerState.activeTaskId),
+                taskTitle: restoredTask?.title || "Focus Session",
+                startedAt: restoredStartTimestamp,
+                expectedEndAt: restoredEndTimestamp,
+                durationMinutes: Math.max(
+                  1,
+                  Math.ceil((restoredTimerState.currentDuration || 1500) / 60)
+                ),
+                readAloudOnComplete: false,
+              }).then(async (result) => {
+                if (result.success) {
+                  focusCompletionNotificationIdRef.current = null;
+                  return;
+                }
+                await scheduleRestoredFocusCompletionReminder();
+              });
+            } else {
+              focusLockScreenSessionIdRef.current = null;
+              void stopFocusLockScreenSession(restoredSessionId);
+              void scheduleRestoredFocusCompletionReminder();
+            }
           }
         } else {
           clearPersistedFocusTimerState();
@@ -9836,6 +9917,7 @@ export default function Home() {
     setStartAssistReadAloudEnabled(
       settings.startAssistReadAloudEnabled === "true"
     );
+    setFocusLockScreenEnabled(settings.focusLockScreenEnabled !== "false");
     setProductivityStats((prev) => ({
       ...prev,
       currentStreak: Number(settings.currentStreak || 0),
@@ -13494,6 +13576,26 @@ export default function Home() {
               install this app on the new phone, open Import Backup, select the
               backup file, and enter the same email ID.
             </Text>
+          </View>
+
+          <View className="bg-[#123131]/70 p-4 rounded-2xl border border-[#66b9b9]/25 mb-3">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1 pr-3">
+                <Text className="text-[#E8F4F4] font-black">
+                  Lock-screen focus session
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs font-semibold mt-1 leading-4">
+                  Show Active Focus on the Android lock screen. You can close it
+                  without stopping your timer.
+                </Text>
+              </View>
+              <Switch
+                value={focusLockScreenEnabled}
+                onValueChange={toggleFocusLockScreenEnabled}
+                trackColor={{ false: "#337a7a", true: "#66b9b9" }}
+                thumbColor={focusLockScreenEnabled ? "#E8F4F4" : "#9FB5B5"}
+              />
+            </View>
           </View>
 
           <TouchableOpacity onPress={toggleStreakVisibility} className="bg-[#123131]/70 p-4 rounded-2xl border border-[#66b9b9]/25 mb-3">

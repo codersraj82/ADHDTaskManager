@@ -267,6 +267,31 @@ internal object FocusLockScreenStore {
   }
 }
 
+internal object FocusLockScreenLaunchGate {
+  private const val PREF_NAME = "focus_lock_screen_launch_gate_v1"
+  private const val KEY_SUPPRESS_UNTIL = "suppress_show_until_ms"
+
+  fun suppressTemporarily(context: Context, durationMs: Long = 45_000L) {
+    context
+      .getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+      .edit()
+      .putLong(KEY_SUPPRESS_UNTIL, System.currentTimeMillis() + durationMs.coerceAtLeast(1_000L))
+      .apply()
+  }
+
+  fun isSuppressed(context: Context): Boolean {
+    val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    val suppressUntil = prefs.getLong(KEY_SUPPRESS_UNTIL, 0L)
+    if (suppressUntil <= System.currentTimeMillis()) {
+      if (suppressUntil > 0L) {
+        prefs.edit().remove(KEY_SUPPRESS_UNTIL).apply()
+      }
+      return false
+    }
+    return true
+  }
+}
+
 internal object FocusLockScreenScheduler {
   fun scheduleCompletion(context: Context, session: FocusLockScreenSession) {
     val triggerAt = session.expectedEndAtMillis

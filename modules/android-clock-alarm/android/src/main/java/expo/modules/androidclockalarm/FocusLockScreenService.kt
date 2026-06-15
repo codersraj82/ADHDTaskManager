@@ -13,6 +13,12 @@ import android.os.Looper
 import android.os.PowerManager
 
 class FocusLockScreenService : Service() {
+  companion object {
+    private const val AUTO_LOCK_FIRST_ATTEMPT_DELAY_MS = 650L
+    private const val AUTO_LOCK_SECOND_ATTEMPT_DELAY_MS = 1_800L
+    private const val LOCK_STATE_CHECK_INTERVAL_MS = 5_000L
+  }
+
   private val handler = Handler(Looper.getMainLooper())
   private var screenReceiver: BroadcastReceiver? = null
   private var activeSessionId: String? = null
@@ -40,7 +46,11 @@ class FocusLockScreenService : Service() {
         return
       }
 
-      handler.postDelayed(this, remainingMillis.coerceIn(1_000L, 15_000L))
+      showActivityIfLocked(session)
+      handler.postDelayed(
+        this,
+        remainingMillis.coerceIn(1_000L, LOCK_STATE_CHECK_INTERVAL_MS)
+      )
     }
   }
 
@@ -120,16 +130,23 @@ class FocusLockScreenService : Service() {
 
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context, intent: Intent?) {
-        if (intent?.action != Intent.ACTION_SCREEN_OFF) return
         val session = FocusLockScreenStore.get(context) ?: return
         if (session.status != FocusLockScreenContract.STATUS_ACTIVE) return
-        showActivityIfLocked(session)
+
+        when (intent?.action) {
+          Intent.ACTION_SCREEN_OFF -> scheduleAutoLockFocusView(session)
+          Intent.ACTION_SCREEN_ON -> showActivityIfLocked(
+            session = session,
+            refreshFullScreenNotification = true
+          )
+        }
       }
     }
     screenReceiver = receiver
 
     val filter = IntentFilter().apply {
       addAction(Intent.ACTION_SCREEN_OFF)
+      addAction(Intent.ACTION_SCREEN_ON)
     }
 
     try {
@@ -155,12 +172,49 @@ class FocusLockScreenService : Service() {
     }
   }
 
-  private fun showActivityIfLocked(session: FocusLockScreenSession) {
+  private fun scheduleAutoLockFocusView(session: FocusLockScreenSession) {
+    if (FocusLockScreenLaunchGate.isSuppressed(applicationContext)) return
+
+    FocusNotificationHelper.showOngoing(applicationContext, session)
+    scheduleAutoLockFocusViewAttempt(session.sessionId, AUTO_LOCK_FIRST_ATTEMPT_DELAY_MS)
+    scheduleAutoLockFocusViewAttempt(session.sessionId, AUTO_LOCK_SECOND_ATTEMPT_DELAY_MS)
+  }
+
+  private fun scheduleAutoLockFocusViewAttempt(sessionId: String, delayMs: Long) {
+    handler.postDelayed(
+      {
+        val latestSession = FocusLockScreenStore.get(applicationContext) ?: return@postDelayed
+        if (
+          latestSession.sessionId != sessionId ||
+          latestSession.status != FocusLockScreenContract.STATUS_ACTIVE
+        ) {
+          return@postDelayed
+        }
+
+        showActivityIfLocked(
+          session = latestSession,
+          refreshFullScreenNotification = true
+        )
+      },
+      delayMs
+    )
+  }
+
+  private fun showActivityIfLocked(
+    session: FocusLockScreenSession,
+    refreshFullScreenNotification: Boolean = false
+  ) {
+    if (FocusLockScreenLaunchGate.isSuppressed(applicationContext)) return
+
     val keyguardManager = getSystemService(KeyguardManager::class.java)
     val powerManager = getSystemService(PowerManager::class.java)
     val isLocked = keyguardManager?.isKeyguardLocked == true
     val isScreenOff = powerManager?.isInteractive == false
     if (!isLocked && !isScreenOff) return
+
+    if (refreshFullScreenNotification) {
+      FocusNotificationHelper.showOngoing(applicationContext, session)
+    }
 
     try {
       startActivity(FocusNotificationHelper.buildShowFocusIntent(applicationContext, session))

@@ -2,6 +2,7 @@ package expo.modules.androidclockalarm
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -14,7 +15,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
-import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -156,14 +156,12 @@ class FocusLockScreenActivity : Activity() {
 
     val openButton = actionButton("Open app", primary = true).apply {
       setOnClickListener {
-        val target = session ?: return@setOnClickListener
-        try {
-          startActivity(FocusNotificationHelper.buildOpenAppIntent(this@FocusLockScreenActivity, target))
-        } catch (_: Exception) {
-          // Keep the lock-screen view stable if Android cannot open the app.
-        }
-        finish()
+        openAppAfterUnlock()
       }
+    }
+
+    val closeButton = actionButton("Close", primary = false).apply {
+      setOnClickListener { closeLockScreenView() }
     }
 
     val stopButton = actionButton("Stop", primary = false).apply {
@@ -171,10 +169,14 @@ class FocusLockScreenActivity : Activity() {
     }
 
     buttonRow.addView(openButton, layoutParams(match = false, width = 0, height = dp(48), weight = 1f).apply {
-      rightMargin = dp(8)
+      rightMargin = dp(6)
+    })
+    buttonRow.addView(closeButton, layoutParams(match = false, width = 0, height = dp(48), weight = 1f).apply {
+      leftMargin = dp(6)
+      rightMargin = dp(6)
     })
     buttonRow.addView(stopButton, layoutParams(match = false, width = 0, height = dp(48), weight = 1f).apply {
-      leftMargin = dp(8)
+      leftMargin = dp(6)
     })
     root.addView(buttonRow, layoutParams(match = false, width = -1, height = -2))
 
@@ -186,13 +188,68 @@ class FocusLockScreenActivity : Activity() {
     val currentSession = session ?: return
     AlertDialog.Builder(this)
       .setTitle("Stop focus session?")
-      .setMessage("This will close the lock-screen focus timer.")
+      .setMessage("This will stop the active focus session.")
       .setNegativeButton("Keep focusing", null)
       .setPositiveButton("Stop") { _, _ ->
         FocusLockScreenController.requestStopFromNative(applicationContext, currentSession.sessionId)
         finish()
       }
       .show()
+  }
+
+  private fun closeLockScreenView() {
+    FocusLockScreenLaunchGate.suppressTemporarily(
+      applicationContext,
+      CLOSE_SUPPRESSION_MS
+    )
+    finish()
+  }
+
+  @Deprecated("Deprecated in Java")
+  override fun onBackPressed() {
+    closeLockScreenView()
+  }
+
+  private fun openAppAfterUnlock() {
+    val currentSession = session ?: return
+    val openIntent = FocusNotificationHelper.buildOpenAppIntent(this, currentSession)
+
+    FocusLockScreenLaunchGate.suppressTemporarily(applicationContext)
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      val keyguardManager = getSystemService(KeyguardManager::class.java)
+      if (keyguardManager?.isKeyguardLocked == true) {
+        keyguardManager.requestDismissKeyguard(
+          this,
+          object : KeyguardManager.KeyguardDismissCallback() {
+            override fun onDismissSucceeded() {
+              launchAppAndFinish(openIntent)
+            }
+
+            override fun onDismissCancelled() {
+              finish()
+            }
+
+            override fun onDismissError() {
+              finish()
+            }
+          }
+        )
+        return
+      }
+    }
+
+    launchAppAndFinish(openIntent)
+  }
+
+  private fun launchAppAndFinish(openIntent: Intent) {
+    try {
+      startActivity(openIntent)
+    } catch (_: Exception) {
+      // If Android refuses the launch, closing this activity still reveals the keyguard.
+    } finally {
+      finish()
+    }
   }
 
   private fun startTicker() {
@@ -301,5 +358,9 @@ class FocusLockScreenActivity : Activity() {
 
   private fun dp(value: Int): Int {
     return (value * resources.displayMetrics.density).toInt()
+  }
+
+  companion object {
+    private const val CLOSE_SUPPRESSION_MS = 300_000L
   }
 }
