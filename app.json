@@ -4,7 +4,7 @@
     "slug": "adhd-task-manager",
     "version": "7.1",
     "orientation": "portrait",
-    "icon": "./assets/images/notification-icon.png",
+    "icon": "./assets/images/icon.png",
     "scheme": "adhdtaskmanager",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -13,9 +13,9 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/notification-icon.png",
-        "backgroundImage": "./assets/images/notification-icon.png",
+        "backgroundColor": "#100009",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,

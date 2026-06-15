@@ -1360,6 +1360,7 @@ export default function Home() {
   const [backupImported, setBackupImported] = useState(null);
   const [restoreSummaryVisible, setRestoreSummaryVisible] = useState(false);
   const backupImportEmailRef = useRef("");
+  const backupProgressDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [profileDraftName, setProfileDraftName] = useState("");
   const [profileDraftVibe, setProfileDraftVibe] = useState(DEFAULT_PROFILE.vibe);
@@ -1451,12 +1452,15 @@ export default function Home() {
   const [specialTasks, setSpecialTasks] = useState([]);
   const [specialTaskTitle, setSpecialTaskTitle] = useState("");
   const [specialTaskNote, setSpecialTaskNote] = useState("");
+  const backupProgressVisible = backupBusy || backupProgress.visible;
+  const backupProgressReservedHeight = backupProgressVisible ? 108 : 0;
   const footerSafeBottom = Math.max(insets.bottom, 8);
   const footerHeight = 36;
+  const footerBottomOffset = footerSafeBottom + backupProgressReservedHeight;
   const recoveryFabSize = 44;
   const addTaskFabApproxHeight = 56;
   const returnToFocusFabApproxHeight = 44;
-  const floatingBaseBottom = footerSafeBottom + footerHeight + 14;
+  const floatingBaseBottom = footerBottomOffset + footerHeight + 14;
   const recoveryFabBottom = floatingBaseBottom;
   const addTaskFabBottom = recoveryFabBottom + recoveryFabSize + 8;
   const focusFabBottom = addTaskFabBottom + addTaskFabApproxHeight + 10;
@@ -5326,6 +5330,11 @@ export default function Home() {
   }, []);
 
   const updateBackupProgress = useCallback((progress = {}) => {
+    if (backupProgressDismissTimerRef.current) {
+      clearTimeout(backupProgressDismissTimerRef.current);
+      backupProgressDismissTimerRef.current = null;
+    }
+
     setBackupProgress((prev) => ({
       visible: true,
       label: progress.label || prev.label || "Working on backup",
@@ -5344,14 +5353,38 @@ export default function Home() {
     [updateBackupProgress]
   );
 
-  const clearBackupProgress = useCallback(() => {
-    setBackupProgress({
-      visible: false,
-      label: "",
-      detail: "",
-      percent: 0,
-    });
+  const clearBackupProgress = useCallback((delayMs = 900) => {
+    if (backupProgressDismissTimerRef.current) {
+      clearTimeout(backupProgressDismissTimerRef.current);
+      backupProgressDismissTimerRef.current = null;
+    }
+
+    const hideProgress = () => {
+      backupProgressDismissTimerRef.current = null;
+      setBackupProgress({
+        visible: false,
+        label: "",
+        detail: "",
+        percent: 0,
+      });
+    };
+
+    if (delayMs > 0) {
+      backupProgressDismissTimerRef.current = setTimeout(hideProgress, delayMs);
+      return;
+    }
+
+    hideProgress();
   }, []);
+
+  useEffect(
+    () => () => {
+      if (backupProgressDismissTimerRef.current) {
+        clearTimeout(backupProgressDismissTimerRef.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
@@ -5436,11 +5469,23 @@ export default function Home() {
   useEffect(() => {
     const runAutoBackup = async () => {
       if (!tasksHydrated || !backupSettings.autoEnabled) return;
-      const result = await createAutoBackupIfNeeded({
-        dataReady: tasksHydrated,
-      });
-      const nextSettings = await getBackupSettings();
-      setBackupSettings(nextSettings);
+      let result = null;
+      let showedAutoBackupProgress = false;
+      try {
+        result = await createAutoBackupIfNeeded({
+          dataReady: tasksHydrated,
+          onProgress: (progress) => {
+            showedAutoBackupProgress = true;
+            updateBackupProgress(progress);
+          },
+        });
+        const nextSettings = await getBackupSettings();
+        setBackupSettings(nextSettings);
+      } finally {
+        if (showedAutoBackupProgress) {
+          clearBackupProgress();
+        }
+      }
 
       if (result?.success) {
         if (!result.skipped) {
@@ -5463,8 +5508,10 @@ export default function Home() {
   }, [
     backupSettings.autoEnabled,
     backupSettings.lastAutoBackupDate,
+    clearBackupProgress,
     loadAvailableBackups,
     tasksHydrated,
+    updateBackupProgress,
   ]);
 
   useEffect(() => {
@@ -9615,27 +9662,48 @@ export default function Home() {
     setBackupConfirmEmail("");
   };
 
+  const dismissBackupEmailModalForProcessing = () => {
+    Keyboard.dismiss();
+    setBackupEmailModal((prev) => ({ ...prev, visible: false }));
+  };
+
   const handleCreateBackupRequest = (type, mode = "manual") => {
     openBackupEmailModal({ purpose: "create", type, mode });
   };
 
   const handleEnableAutoBackup = async () => {
     if (backupSettings.autoBackupEmailConfigured) {
-      const nextSettings = await saveBackupSettings({
-        autoEnabled: true,
-        autoType: backupSettings.autoType || "minimum",
-      });
-      setBackupSettings(nextSettings);
-      const result = await createAutoBackupIfNeeded({ dataReady: tasksHydrated });
-      const refreshedSettings = await getBackupSettings();
-      setBackupSettings(refreshedSettings);
-      await loadAvailableBackups({ showLoading: false });
-      Alert.alert(
-        "Backup & Restore",
-        result?.success && !result?.skipped
-          ? "Daily auto backup is on. Today's encrypted backup was created."
-          : "Daily auto backup is on."
+      setBackupBusy(true);
+      startBackupProgress(
+        "Setting up auto backup",
+        "Checking today's encrypted backup.",
+        5
       );
+      try {
+        const nextSettings = await saveBackupSettings({
+          autoEnabled: true,
+          autoType: backupSettings.autoType || "minimum",
+        });
+        setBackupSettings(nextSettings);
+        const result = await createAutoBackupIfNeeded({
+          dataReady: tasksHydrated,
+          onProgress: updateBackupProgress,
+        });
+        const refreshedSettings = await getBackupSettings();
+        setBackupSettings(refreshedSettings);
+        await loadAvailableBackups({ showLoading: false });
+        Alert.alert(
+          "Backup & Restore",
+          result?.success && !result?.skipped
+            ? "Daily auto backup is on. Today's encrypted backup was created."
+            : "Daily auto backup is on."
+        );
+      } catch {
+        Alert.alert("Backup & Restore", "Could not enable daily auto backup.");
+      } finally {
+        clearBackupProgress();
+        setBackupBusy(false);
+      }
       return;
     }
 
@@ -9770,6 +9838,7 @@ export default function Home() {
     const purpose = backupEmailModal.purpose;
     if (purpose === "import" || purpose === "restore-list") {
       const normalizedEmail = backupEmail.trim().toLowerCase();
+      const selectedBackupPath = selectedListedBackup?.path;
       if (!validateBackupEmail(normalizedEmail)) {
         Alert.alert(
           "Backup & Restore",
@@ -9778,6 +9847,7 @@ export default function Home() {
         return;
       }
 
+      dismissBackupEmailModalForProcessing();
       setBackupBusy(true);
       startBackupProgress(
         purpose === "restore-list" ? "Opening backup" : "Importing backup",
@@ -9790,7 +9860,7 @@ export default function Home() {
         const result =
           purpose === "restore-list"
             ? await restoreBackupFromPath(
-                selectedListedBackup?.path,
+                selectedBackupPath,
                 normalizedEmail,
                 { onProgress: updateBackupProgress }
               )
@@ -9799,6 +9869,7 @@ export default function Home() {
               });
 
         if (!result?.success) {
+          setBackupEmailModal((prev) => ({ ...prev, visible: true }));
           Alert.alert(
             "Backup & Restore",
             result?.message ||
@@ -9831,9 +9902,13 @@ export default function Home() {
       return;
     }
 
+    const backupPurpose = backupEmailModal.purpose;
+    const backupType = backupEmailModal.type;
+    const backupMode = backupEmailModal.mode;
+    dismissBackupEmailModalForProcessing();
     setBackupBusy(true);
     startBackupProgress(
-      backupEmailModal.purpose === "enable-auto"
+      backupPurpose === "enable-auto"
         ? "Setting up auto backup"
         : "Creating backup",
       "Preparing backup encryption.",
@@ -9841,9 +9916,10 @@ export default function Home() {
     );
 
     try {
-      if (purpose === "enable-auto") {
+      if (backupPurpose === "enable-auto") {
         const emailSaveResult = await saveAutoBackupEmail(validation.email);
         if (!emailSaveResult?.success) {
+          setBackupEmailModal((prev) => ({ ...prev, visible: true }));
           Alert.alert(
             "Backup & Restore",
             emailSaveResult?.message ||
@@ -9854,7 +9930,7 @@ export default function Home() {
 
         const nextSettings = await saveBackupSettings({
           autoEnabled: true,
-          autoType: backupEmailModal.type,
+          autoType: backupType,
         });
         setBackupSettings(nextSettings);
         const autoResult = await createAutoBackupIfNeeded({
@@ -9875,13 +9951,14 @@ export default function Home() {
       }
 
       const backupResult = await createBackup({
-        type: backupEmailModal.type,
-        mode: backupEmailModal.mode,
+        type: backupType,
+        mode: backupMode,
         email: validation.email,
         onProgress: updateBackupProgress,
       });
 
       if (!backupResult?.success) {
+        setBackupEmailModal((prev) => ({ ...prev, visible: true }));
         Alert.alert(
           "Backup & Restore",
           backupResult?.message || "Could not create backup on this device."
@@ -9928,6 +10005,7 @@ export default function Home() {
           text: "Restore",
           style: "destructive",
           onPress: async () => {
+            setRestoreSummaryVisible(false);
             setBackupBusy(true);
             startBackupProgress(
               "Restoring backup",
@@ -9957,12 +10035,24 @@ export default function Home() {
                 label: "Restoring backup",
                 detail: "Replacing app data.",
               });
+              const updateRestoreServiceProgress = (progress = {}) => {
+                const servicePercent =
+                  typeof progress.percent === "number" ? progress.percent : 0;
+                updateBackupProgress({
+                  ...progress,
+                  percent: Math.min(78, 45 + servicePercent * 0.33),
+                  label: progress.label || "Restoring backup",
+                  detail: progress.detail || "Replacing app data.",
+                });
+              };
               const restoreResult = await restoreBackup(backupImported, {
                 mode: "replace",
                 email: backupImportEmailRef.current,
+                onProgress: updateRestoreServiceProgress,
               });
 
               if (!restoreResult?.success) {
+                setRestoreSummaryVisible(true);
                 Alert.alert(
                   "Backup & Restore",
                   restoreResult?.message || "Could not restore this backup."
@@ -9994,6 +10084,7 @@ export default function Home() {
               backupImportEmailRef.current = "";
               Alert.alert("Backup & Restore", "Backup restored.");
             } catch {
+              setRestoreSummaryVisible(true);
               Alert.alert("Backup & Restore", "Could not restore this backup.");
             } finally {
               clearBackupProgress();
@@ -11111,7 +11202,7 @@ export default function Home() {
     </Reanimated.View>
   );
   const renderFixedFooter = () => (
-    <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ bottom: footerSafeBottom }}>
+    <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ bottom: footerBottomOffset }}>
       <View
         className="mx-4 bg-[#0B1F1F] border border-[#66b9b9]/30 rounded-xl px-3 py-1 shadow-xl shadow-[#66b9b9]/10"
         style={{ minHeight: footerHeight }}
@@ -13134,36 +13225,6 @@ export default function Home() {
             </Text>
           </View>
 
-          {backupBusy || backupProgress.visible ? (
-            <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
-              <Text className="text-[#66b9b9] font-black">
-                {backupProgress.label || "Working on backup..."}
-              </Text>
-              <View className="mt-3 h-2.5 rounded-full bg-[#061414]/70 border border-[#337a7a]/25 overflow-hidden">
-                <View
-                  className="h-full bg-[#66b9b9] rounded-full"
-                  style={{
-                    width: `${Math.max(
-                      4,
-                      Math.min(Math.round(backupProgress.percent || 8), 100)
-                    )}%`,
-                  }}
-                />
-              </View>
-              <View className="flex-row items-center justify-between mt-2">
-                <Text className="text-[#9FB5B5] text-xs flex-1 pr-3">
-                  {backupProgress.detail || "Keep the app open for a moment."}
-                </Text>
-                <Text className="text-[#66b9b9] text-[10px] font-black">
-                  {Math.min(Math.round(backupProgress.percent || 0), 100)}%
-                </Text>
-              </View>
-              <Text className="text-[#6D8787] text-[10px] mt-2">
-                Please keep the app open until this finishes.
-              </Text>
-            </View>
-          ) : null}
-
           <TouchableOpacity onPress={toggleStreakVisibility} className="bg-[#123131]/70 p-4 rounded-2xl border border-[#66b9b9]/25 mb-3">
             <Text className="text-[#66b9b9] font-black">
               {productivityStats.showStreak ? "Hide streak badge" : "Show streak badge"}
@@ -13314,6 +13375,73 @@ export default function Home() {
     </Modal>
   );
 
+  const renderBackupProgressOverlay = () => {
+    if (!backupBusy && !backupProgress.visible) return null;
+
+    const percent = Math.min(
+      Math.max(Math.round(backupProgress.percent || (backupBusy ? 6 : 0)), 0),
+      100
+    );
+    const progressWidth = `${Math.max(percent, backupBusy ? 6 : 0)}%`;
+    const bottomOffset = Math.max(insets.bottom, 10) + 12;
+    const label = backupProgress.label || "Backup processing";
+    const detail = backupProgress.detail || "Keep the app open for a moment.";
+    const progressIcon = percent >= 100 ? "check-circle" : "database";
+
+    return (
+      <View
+        pointerEvents="none"
+        accessibilityRole="progressbar"
+        accessibilityValue={{ min: 0, max: 100, now: percent }}
+        style={{
+          position: "absolute",
+          left: 14,
+          right: 14,
+          bottom: bottomOffset,
+          zIndex: 80,
+          elevation: 24,
+        }}
+      >
+        <View className="overflow-hidden rounded-[24px] border border-[#66b9b9]/45 bg-[#061414]/95 px-4 py-3 shadow-2xl shadow-[#66b9b9]/25">
+          <View className="absolute left-0 top-0 bottom-0 w-1 bg-[#66b9b9]" />
+
+          <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center flex-1 pr-3">
+              <View className="w-9 h-9 rounded-full bg-[#66b9b9]/15 border border-[#66b9b9]/35 items-center justify-center">
+                <Feather name={progressIcon} size={17} color={COLORS.accent} />
+              </View>
+              <View className="flex-1 ml-3">
+                <Text
+                  numberOfLines={1}
+                  className="text-[#E8F4F4] text-sm font-black"
+                >
+                  {label}
+                </Text>
+                <Text
+                  numberOfLines={1}
+                  className="text-[#9FB5B5] text-[11px] font-semibold mt-0.5"
+                >
+                  {detail}
+                </Text>
+              </View>
+            </View>
+
+            <Text className="text-[#66b9b9] text-xs font-black tabular-nums">
+              {percent}%
+            </Text>
+          </View>
+
+          <View className="mt-3 h-2 rounded-full bg-[#123131] border border-[#337a7a]/30 overflow-hidden">
+            <View
+              className="h-full rounded-full bg-[#66b9b9]"
+              style={{ width: progressWidth }}
+            />
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   const renderPageModal = () => {
     const activeItem = MENU_ITEMS.find((item) => item.key === activePage);
     const pageSubtitle =
@@ -13343,9 +13471,15 @@ export default function Home() {
               <Text className="text-[#66b9b9] font-black">Close</Text>
             </TouchableOpacity>
           </View>
-          <ScrollView className="flex-1 px-5 pt-5" contentContainerStyle={{ paddingBottom: 80 }}>
+          <ScrollView
+            className="flex-1 px-5 pt-5"
+            contentContainerStyle={{
+              paddingBottom: backupProgressVisible ? 148 : 80,
+            }}
+          >
             {renderPageContent()}
           </ScrollView>
+          {renderBackupProgressOverlay()}
         </View>
       </Modal>
     );
@@ -15257,6 +15391,7 @@ export default function Home() {
       {renderFixedFooter()}
       {renderDrawer()}
       {renderPageModal()}
+      {renderBackupProgressOverlay()}
       {renderEnergyTaskSuggestionSheet()}
       {renderProgressTaskSheet()}
       {renderOnboardingModal()}
@@ -16844,7 +16979,10 @@ export default function Home() {
       </Modal>
 
       {lastDeletedTask && (
-        <View className="absolute bottom-24 left-5 right-5 bg-[#123131] p-4 rounded-2xl flex-row items-center border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
+        <View
+          style={{ bottom: 96 + backupProgressReservedHeight }}
+          className="absolute left-5 right-5 bg-[#123131] p-4 rounded-2xl flex-row items-center border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15"
+        >
           <Text className="text-[#E8F4F4] flex-1 font-medium mr-3 text-xs leading-5">
             Task <Text className="text-[#FFD166] font-bold">{lastDeletedTask?.title}</Text> deleted ({undoTimer}s)
           </Text>

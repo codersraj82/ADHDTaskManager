@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
@@ -14,6 +15,9 @@ import androidx.core.app.NotificationManagerCompat
 
 internal object TaskAlarmNotificationHelper {
   private const val DEFAULT_SNOOZE_MINUTES = 5
+  private const val DEFAULT_NOTIFICATION_ICON_META_DATA =
+    "expo.modules.notifications.default_notification_icon"
+  private const val NOTIFICATION_ICON_RESOURCE_NAME = "notification_icon"
 
   fun show(context: Context, payload: TaskAlarmPayload) {
     ensureNotificationChannel(context)
@@ -45,7 +49,7 @@ internal object TaskAlarmNotificationHelper {
 
     val vibrationPattern = longArrayOf(0, 450, 250, 450, 250, 450)
     val builder = NotificationCompat.Builder(context, TaskAlarmContract.NOTIFICATION_CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+      .setSmallIcon(notificationSmallIconResource(context))
       .setContentTitle("Task alarm")
       .setContentText(payload.title)
       .setSubText(payload.message)
@@ -110,6 +114,45 @@ internal object TaskAlarmNotificationHelper {
     }
 
     notificationManager.createNotificationChannel(channel)
+  }
+
+  private fun notificationSmallIconResource(context: Context): Int {
+    val configuredExpoIcon = readConfiguredExpoNotificationIcon(context)
+    if (configuredExpoIcon != 0) return configuredExpoIcon
+
+    val generatedDrawableIcon = context.resources.getIdentifier(
+      NOTIFICATION_ICON_RESOURCE_NAME,
+      "drawable",
+      context.packageName
+    )
+    if (generatedDrawableIcon != 0) return generatedDrawableIcon
+
+    val generatedMipmapIcon = context.resources.getIdentifier(
+      NOTIFICATION_ICON_RESOURCE_NAME,
+      "mipmap",
+      context.packageName
+    )
+    if (generatedMipmapIcon != 0) return generatedMipmapIcon
+
+    return context.applicationInfo.icon
+  }
+
+  @Suppress("DEPRECATION")
+  private fun readConfiguredExpoNotificationIcon(context: Context): Int {
+    return try {
+      val applicationInfo = context.packageManager.getApplicationInfo(
+        context.packageName,
+        PackageManager.GET_META_DATA
+      )
+      val metadata = applicationInfo.metaData
+      if (metadata?.containsKey(DEFAULT_NOTIFICATION_ICON_META_DATA) == true) {
+        metadata.getInt(DEFAULT_NOTIFICATION_ICON_META_DATA)
+      } else {
+        0
+      }
+    } catch (_: Exception) {
+      0
+    }
   }
 
   private fun buildActionPendingIntent(

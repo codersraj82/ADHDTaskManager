@@ -171,6 +171,21 @@ const emitBackupProgress = (onProgress, progress = {}) => {
   }
 };
 
+const createProgressMapper =
+  (onProgress, startPercent = 0, endPercent = 100, defaults = {}) =>
+  (progress = {}) => {
+    const rawPercent = Math.min(
+      Math.max(Number(progress.percent || 0), 0),
+      100
+    );
+    const range = Math.max(Number(endPercent) - Number(startPercent), 0);
+    emitBackupProgress(onProgress, {
+      percent: Number(startPercent) + (rawPercent / 100) * range,
+      label: progress.label || defaults.label || "Working on backup",
+      detail: progress.detail || defaults.detail || "Keep the app open for a moment.",
+    });
+  };
+
 const ensureDirectoryAsync = async (dir) => {
   if (!dir) return;
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => null);
@@ -1284,6 +1299,14 @@ const replaceTables = (tables = {}) => {
 };
 
 export const restoreBackup = async (importedBackup, options = {}) => {
+  const onProgress = options.onProgress;
+
+  emitBackupProgress(onProgress, {
+    percent: 5,
+    label: "Restoring backup",
+    detail: "Checking backup data.",
+  });
+
   if (!importedBackup?.payload?.data?.tables) {
     return {
       success: false,
@@ -1295,16 +1318,30 @@ export const restoreBackup = async (importedBackup, options = {}) => {
   try {
     let safetyBackup = null;
     if (options.email && validateBackupEmail(options.email)) {
+      emitBackupProgress(onProgress, {
+        percent: 12,
+        label: "Creating safety backup",
+        detail: "Protecting your current app data first.",
+      });
       safetyBackup = await createBackup({
         type: "full",
         mode: "preRestore",
         email: options.email,
+        onProgress: createProgressMapper(onProgress, 12, 42, {
+          label: "Creating safety backup",
+          detail: "Protecting your current app data first.",
+        }),
       });
     }
 
     const payload = importedBackup.payload;
     const backupType = payload.manifest?.backupType === "full" ? "full" : "minimum";
     const tables = { ...payload.data.tables };
+    emitBackupProgress(onProgress, {
+      percent: 50,
+      label: "Preparing restore",
+      detail: "Preparing restored tasks and attachments.",
+    });
     const preparedTasks = await prepareTaskRowsForRestore(
       tables.tasks,
       payload.data.attachments || {},
@@ -1312,7 +1349,17 @@ export const restoreBackup = async (importedBackup, options = {}) => {
     );
 
     tables.tasks = preparedTasks.rows;
+    emitBackupProgress(onProgress, {
+      percent: 76,
+      label: "Restoring backup",
+      detail: "Replacing app data.",
+    });
     replaceTables(tables);
+    emitBackupProgress(onProgress, {
+      percent: 100,
+      label: "Restore ready",
+      detail: "Restored data is in place.",
+    });
 
     return {
       success: true,
