@@ -1,4 +1,4 @@
-import {
+﻿import {
   Modal,
   Animated,
   Alert,
@@ -14270,7 +14270,7 @@ export default function Home() {
                     )}
                     {hasPendingNotification ? (
                       <Text className="text-[13px]" style={STANDARD_EMOJI_TEXT_STYLE}>
-                        {"\u23F0"}
+c                        {REMINDER_NOTIFICATION_EMOJI}
                       </Text>
                     ) : null}
                   </View>
