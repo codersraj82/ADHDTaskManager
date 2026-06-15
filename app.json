@@ -25,6 +25,9 @@
         "POST_NOTIFICATIONS",
         "VIBRATE",
         "WAKE_LOCK",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_SPECIAL_USE",
+        "USE_FULL_SCREEN_INTENT",
         "com.android.alarm.permission.SET_ALARM",
         "SCHEDULE_EXACT_ALARM"
       ]

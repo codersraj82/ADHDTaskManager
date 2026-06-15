@@ -1,6 +1,11 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest
+  xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools">
   <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
   <uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
   <application>
     <receiver
@@ -11,5 +16,28 @@
       android:name=".TaskAlarmActionReceiver"
       android:enabled="true"
       android:exported="false" />
+    <receiver
+      android:name=".FocusActionReceiver"
+      android:enabled="true"
+      android:exported="false" />
+    <service
+      android:name=".FocusLockScreenService"
+      android:enabled="true"
+      android:exported="false"
+      android:foregroundServiceType="specialUse"
+      tools:targetApi="upsidedowncake">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="active_focus_timer_lock_screen"
+        tools:targetApi="upsidedowncake" />
+    </service>
+    <activity
+      android:name=".FocusLockScreenActivity"
+      android:excludeFromRecents="true"
+      android:exported="false"
+      android:launchMode="singleTop"
+      android:showWhenLocked="true"
+      android:theme="@android:style/Theme.Material.NoActionBar"
+      android:turnScreenOn="true" />
   </application>
 </manifest>

@@ -1,0 +1,171 @@
+package expo.modules.androidclockalarm
+
+import android.app.KeyguardManager
+import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
+
+class FocusLockScreenService : Service() {
+  private val handler = Handler(Looper.getMainLooper())
+  private var screenReceiver: BroadcastReceiver? = null
+  private var activeSessionId: String? = null
+
+  private val completionTicker = object : Runnable {
+    override fun run() {
+      val session = FocusLockScreenStore.get(applicationContext)
+      if (
+        session == null ||
+        session.status != FocusLockScreenContract.STATUS_ACTIVE ||
+        session.sessionId != activeSessionId
+      ) {
+        stopSelf()
+        return
+      }
+
+      val remainingMillis = session.expectedEndAtMillis - System.currentTimeMillis()
+      if (remainingMillis <= 0L) {
+        FocusLockScreenController.complete(
+          context = applicationContext,
+          sessionId = session.sessionId,
+          notify = true,
+          readAloud = true
+        )
+        return
+      }
+
+      handler.postDelayed(this, remainingMillis.coerceIn(1_000L, 15_000L))
+    }
+  }
+
+  override fun onCreate() {
+    super.onCreate()
+    registerScreenReceiver()
+  }
+
+  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    when (intent?.action) {
+      FocusLockScreenContract.ACTION_STOP_FOCUS_SESSION_FROM_JS -> {
+        val sessionId = intent.getStringExtra(FocusLockScreenContract.EXTRA_SESSION_ID)
+          ?: activeSessionId
+          ?: return START_NOT_STICKY
+        FocusLockScreenController.stopFromJs(applicationContext, sessionId)
+        return START_NOT_STICKY
+      }
+
+      FocusLockScreenContract.ACTION_STOP_FOCUS_SESSION -> {
+        val sessionId = intent.getStringExtra(FocusLockScreenContract.EXTRA_SESSION_ID)
+          ?: activeSessionId
+          ?: return START_NOT_STICKY
+        FocusLockScreenController.requestStopFromNative(applicationContext, sessionId)
+        return START_NOT_STICKY
+      }
+
+      FocusLockScreenContract.ACTION_COMPLETE_FOCUS_SESSION -> {
+        val sessionId = intent.getStringExtra(FocusLockScreenContract.EXTRA_SESSION_ID)
+          ?: activeSessionId
+          ?: return START_NOT_STICKY
+        FocusLockScreenController.complete(
+          context = applicationContext,
+          sessionId = sessionId,
+          notify = true,
+          readAloud = true
+        )
+        return START_NOT_STICKY
+      }
+
+      else -> {
+        val session = FocusLockScreenSession.fromIntent(intent)
+          ?: FocusLockScreenStore.get(applicationContext)
+          ?: return START_NOT_STICKY
+        startOrUpdateForeground(session)
+      }
+    }
+
+    return START_STICKY
+  }
+
+  override fun onDestroy() {
+    handler.removeCallbacksAndMessages(null)
+    unregisterScreenReceiver()
+    super.onDestroy()
+  }
+
+  override fun onBind(intent: Intent?): IBinder? = null
+
+  private fun startOrUpdateForeground(session: FocusLockScreenSession) {
+    activeSessionId = session.sessionId
+    FocusNotificationHelper.ensureChannels(applicationContext)
+    val notification = FocusNotificationHelper.buildOngoingNotification(applicationContext, session)
+
+    try {
+      startForeground(FocusLockScreenContract.ONGOING_NOTIFICATION_ID, notification)
+    } catch (_: Exception) {
+      FocusNotificationHelper.showOngoing(applicationContext, session)
+    }
+
+    handler.removeCallbacks(completionTicker)
+    completionTicker.run()
+    showActivityIfLocked(session)
+  }
+
+  private fun registerScreenReceiver() {
+    if (screenReceiver != null) return
+
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context, intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SCREEN_OFF) return
+        val session = FocusLockScreenStore.get(context) ?: return
+        if (session.status != FocusLockScreenContract.STATUS_ACTIVE) return
+        showActivityIfLocked(session)
+      }
+    }
+    screenReceiver = receiver
+
+    val filter = IntentFilter().apply {
+      addAction(Intent.ACTION_SCREEN_OFF)
+    }
+
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+      } else {
+        @Suppress("DEPRECATION")
+        registerReceiver(receiver, filter)
+      }
+    } catch (_: Exception) {
+      screenReceiver = null
+    }
+  }
+
+  private fun unregisterScreenReceiver() {
+    val receiver = screenReceiver ?: return
+    try {
+      unregisterReceiver(receiver)
+    } catch (_: Exception) {
+      // Receiver may already be unregistered.
+    } finally {
+      screenReceiver = null
+    }
+  }
+
+  private fun showActivityIfLocked(session: FocusLockScreenSession) {
+    val keyguardManager = getSystemService(KeyguardManager::class.java)
+    val powerManager = getSystemService(PowerManager::class.java)
+    val isLocked = keyguardManager?.isKeyguardLocked == true
+    val isScreenOff = powerManager?.isInteractive == false
+    if (!isLocked && !isScreenOff) return
+
+    try {
+      startActivity(FocusNotificationHelper.buildShowFocusIntent(applicationContext, session))
+    } catch (_: Exception) {
+      // Android may restrict full-screen activity launches; the notification remains.
+    }
+  }
+}

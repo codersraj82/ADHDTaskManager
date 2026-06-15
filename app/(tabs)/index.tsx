@@ -105,6 +105,14 @@ import {
   scheduleStrongAlarmForTask,
 } from "../../services/androidClockAlarm";
 import {
+  buildFocusLockScreenSessionId,
+  completeFocusLockScreenSession,
+  getCurrentFocusLockScreenSession,
+  startFocusLockScreenSession,
+  stopFocusLockScreenSession,
+  updateFocusLockScreenSession,
+} from "../../services/focusLockScreen";
+import {
   createAutoBackupIfNeeded,
   createBackup,
   deleteBackupById,
@@ -2773,6 +2781,7 @@ export default function Home() {
   ).current;
   const pinnedChevronAnim = useRef(new Animated.Value(0)).current;
   const focusCompletionNotificationIdRef = useRef(null);
+  const focusLockScreenSessionIdRef = useRef(null);
   const timerCompletionStampRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
   const hasPlayedWelcomeVoiceRef = useRef(false);
@@ -3255,11 +3264,103 @@ export default function Home() {
     [cancelFocusCompletionReminder, getTaskById, getTaskTitleById]
   );
 
+  const buildFocusLockScreenOptions = useCallback(
+    ({
+      taskId,
+      startTimestamp,
+      endTimestamp,
+      durationSeconds,
+      readAloudOnComplete = false,
+    }) => {
+      if (!taskId || !startTimestamp || !endTimestamp) return null;
+      const sessionId = buildFocusLockScreenSessionId({
+        taskId,
+        startedAt: startTimestamp,
+      });
+
+      return {
+        sessionId,
+        taskId: String(taskId),
+        taskTitle: getTaskTitleById(taskId),
+        startedAt: startTimestamp,
+        expectedEndAt: endTimestamp,
+        durationMinutes: Math.max(1, Math.ceil((durationSeconds || 0) / 60)),
+        readAloudOnComplete,
+      };
+    },
+    [getTaskTitleById]
+  );
+
+  const startNativeFocusLockScreenSession = useCallback(
+    async ({ taskId, startTimestamp, endTimestamp, durationSeconds }) => {
+      const options = buildFocusLockScreenOptions({
+        taskId,
+        startTimestamp,
+        endTimestamp,
+        durationSeconds,
+        readAloudOnComplete: appStateRef.current !== "active" && !isVoiceMuted,
+      });
+      if (!options) {
+        await scheduleFocusCompletionReminder(taskId, endTimestamp);
+        return null;
+      }
+
+      const result = await startFocusLockScreenSession(options);
+      if (result.success) {
+        focusLockScreenSessionIdRef.current = options.sessionId;
+        focusCompletionNotificationIdRef.current = null;
+        return result;
+      }
+
+      focusLockScreenSessionIdRef.current = null;
+      await scheduleFocusCompletionReminder(taskId, endTimestamp);
+      return result;
+    },
+    [buildFocusLockScreenOptions, isVoiceMuted, scheduleFocusCompletionReminder]
+  );
+
+  const updateNativeFocusLockScreenSession = useCallback(
+    async ({ readAloudOnComplete = false } = {}) => {
+      if (
+        !activeTaskId ||
+        !focusStartTimestamp ||
+        !focusEndTimestamp ||
+        !currentDuration
+      ) {
+        return null;
+      }
+
+      const options = buildFocusLockScreenOptions({
+        taskId: activeTaskId,
+        startTimestamp: focusStartTimestamp,
+        endTimestamp: focusEndTimestamp,
+        durationSeconds: currentDuration,
+        readAloudOnComplete,
+      });
+      if (!options) return null;
+
+      focusLockScreenSessionIdRef.current = options.sessionId;
+      return updateFocusLockScreenSession(options);
+    },
+    [
+      activeTaskId,
+      buildFocusLockScreenOptions,
+      currentDuration,
+      focusEndTimestamp,
+      focusStartTimestamp,
+    ]
+  );
+
   const completeFocusSession = useCallback(
-    (completionTimestamp = Date.now()) => {
+    (
+      completionTimestamp = Date.now(),
+      options: { suppressSpeech?: boolean } = {}
+    ) => {
       const completionKey = `${activeTaskId || "none"}-${completionTimestamp}`;
       if (timerCompletionStampRef.current === completionKey) return;
       timerCompletionStampRef.current = completionKey;
+      const nativeSessionId = focusLockScreenSessionIdRef.current;
+      focusLockScreenSessionIdRef.current = null;
 
       setIsTimerRunning(false);
       setIsFocusCompleted(true);
@@ -3285,10 +3386,17 @@ export default function Home() {
         focusEndTimestamp: null,
       });
 
-      void speakEncouragement({
-        muted: isVoiceMuted,
-        message: buildFocusCompletionSpeechMessage(getTaskTitleById(activeTaskId)),
-      });
+      void completeFocusLockScreenSession(nativeSessionId);
+
+      const shouldSpeak =
+        !options?.suppressSpeech &&
+        Math.abs(Date.now() - Number(completionTimestamp || Date.now())) <= 3000;
+      if (shouldSpeak) {
+        void speakEncouragement({
+          muted: isVoiceMuted,
+          message: buildFocusCompletionSpeechMessage(getTaskTitleById(activeTaskId)),
+        });
+      }
 
       clearFocusCompletionAutoClose({ resetCountdown: false, clearTaskContext: false });
       focusCompletionTaskIdRef.current = activeTaskId;
@@ -3302,8 +3410,88 @@ export default function Home() {
       getTaskTitleById,
       isVoiceMuted,
       persistFocusTimerState,
+      recordFocusSession,
     ]
   );
+
+  const reconcileNativeFocusLockScreenStatus = useCallback(async () => {
+    const nativeStatus = await getCurrentFocusLockScreenSession();
+    if (!nativeStatus?.success || !nativeStatus.sessionId || !nativeStatus.status) {
+      return false;
+    }
+
+    const currentSessionId =
+      focusLockScreenSessionIdRef.current ||
+      (activeTaskId && focusStartTimestamp
+        ? buildFocusLockScreenSessionId({
+            taskId: activeTaskId,
+            startedAt: focusStartTimestamp,
+          })
+        : null);
+    const matchesCurrentSession =
+      currentSessionId && nativeStatus.sessionId === currentSessionId;
+    if (!matchesCurrentSession) return false;
+
+    if (nativeStatus.status === "completed") {
+      if (!isFocusCompleted) {
+        completeFocusSession(
+          nativeStatus.expectedEndAtMillis || focusEndTimestamp || Date.now(),
+          { suppressSpeech: true }
+        );
+      }
+      await stopFocusLockScreenSession(nativeStatus.sessionId);
+      return true;
+    }
+
+    if (nativeStatus.status === "stopped") {
+      const elapsedForSave =
+        isTimerRunning && focusStartTimestamp
+          ? getElapsedSecondsFromTimestamp({
+              startTimestamp: focusStartTimestamp,
+              nowTimestamp: Date.now(),
+              maxDurationSeconds: currentDuration,
+            })
+          : focusTime;
+
+      if (elapsedForSave > 0 && !focusSessionRecordedRef.current) {
+        recordFocusSession(elapsedForSave);
+        focusSessionRecordedRef.current = true;
+      }
+
+      clearFocusCompletionAutoClose({ resetCountdown: true });
+      setIsTimerRunning(false);
+      setIsFocusCompleted(false);
+      setFocusTime(0);
+      setFocusStartTimestamp(null);
+      setFocusEndTimestamp(null);
+      setActiveTaskId(null);
+      setCurrentFocusedTaskId((prev) =>
+        Number(prev) === Number(activeTaskId) ? null : prev
+      );
+      focusLockScreenSessionIdRef.current = null;
+      focusSessionRecordedRef.current = false;
+      timerCompletionStampRef.current = null;
+      clearPersistedFocusTimerState();
+      await stopFocusLockScreenSession(nativeStatus.sessionId);
+      await cancelFocusCompletionReminder();
+      return true;
+    }
+
+    return false;
+  }, [
+    activeTaskId,
+    cancelFocusCompletionReminder,
+    clearFocusCompletionAutoClose,
+    clearPersistedFocusTimerState,
+    completeFocusSession,
+    currentDuration,
+    focusEndTimestamp,
+    focusStartTimestamp,
+    focusTime,
+    isFocusCompleted,
+    isTimerRunning,
+    recordFocusSession,
+  ]);
 
   const pickProfileImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -4271,8 +4459,54 @@ export default function Home() {
               ? FOCUS_AUTO_DISMISS_COUNTDOWN_SECONDS
               : 0
           );
-          setFocusStartTimestamp(restoredTimerState.focusStartTimestamp || null);
-          setFocusEndTimestamp(restoredTimerState.focusEndTimestamp || null);
+          const restoredStartTimestamp =
+            restoredTimerState.focusStartTimestamp || null;
+          const restoredEndTimestamp =
+            restoredTimerState.focusEndTimestamp || null;
+          setFocusStartTimestamp(restoredStartTimestamp);
+          setFocusEndTimestamp(restoredEndTimestamp);
+
+          if (
+            restoredTimerState.isTimerRunning &&
+            !restoredIsFocusCompleted &&
+            restoredStartTimestamp &&
+            restoredEndTimestamp
+          ) {
+            const restoredTask = loadedTasks.find(
+              (task) => task.id === restoredTimerState.activeTaskId
+            );
+            const restoredSessionId = buildFocusLockScreenSessionId({
+              taskId: restoredTimerState.activeTaskId,
+              startedAt: restoredStartTimestamp,
+            });
+            focusLockScreenSessionIdRef.current = restoredSessionId;
+            void startFocusLockScreenSession({
+              sessionId: restoredSessionId,
+              taskId: String(restoredTimerState.activeTaskId),
+              taskTitle: restoredTask?.title || "Focus Session",
+              startedAt: restoredStartTimestamp,
+              expectedEndAt: restoredEndTimestamp,
+              durationMinutes: Math.max(
+                1,
+                Math.ceil((restoredTimerState.currentDuration || 1500) / 60)
+              ),
+              readAloudOnComplete: false,
+            }).then(async (result) => {
+              if (result.success) {
+                focusCompletionNotificationIdRef.current = null;
+                return;
+              }
+              if (restoredEndTimestamp <= Date.now()) return;
+              const notificationId = await scheduleFocusCompletionNotification({
+                taskTitle: restoredTask?.title || "Focus Session",
+                taskId: restoredTimerState.activeTaskId,
+                sectionId:
+                  restoredTask?.isPinned ? "Pinned" : restoredTask?.section || null,
+                endTimestamp: restoredEndTimestamp,
+              });
+              focusCompletionNotificationIdRef.current = notificationId;
+            });
+          }
         } else {
           clearPersistedFocusTimerState();
         }
@@ -5122,6 +5356,9 @@ export default function Home() {
     focusSessionRecordedRef.current = false;
     timerCompletionStampRef.current = null;
     clearPersistedFocusTimerState();
+    const nativeSessionId = focusLockScreenSessionIdRef.current;
+    focusLockScreenSessionIdRef.current = null;
+    void stopFocusLockScreenSession(nativeSessionId);
     void cancelFocusCompletionReminder();
   }, [
     activeTaskId,
@@ -5160,6 +5397,8 @@ export default function Home() {
         clearTimeout(lastCompletedTaskTimeoutRef.current);
         lastCompletedTaskTimeoutRef.current = null;
       }
+      void stopFocusLockScreenSession(focusLockScreenSessionIdRef.current);
+      focusLockScreenSessionIdRef.current = null;
       void cancelFocusCompletionReminder();
       void stopEncouragement();
     },
@@ -5391,42 +5630,52 @@ export default function Home() {
       appStateRef.current = nextState;
 
       if (nextState === "active") {
-        refreshSectionAffirmations();
+        void (async () => {
+          refreshSectionAffirmations();
+          const didHandleNativeState = await reconcileNativeFocusLockScreenStatus();
+          if (didHandleNativeState) return;
 
-        if (isFocusCompleted && activeTaskId) {
-          const deadline = focusCompletionDeadlineRef.current;
-          if (deadline) {
-            const remainingSeconds = Math.max(
-              0,
-              Math.ceil((deadline - Date.now()) / 1000)
-            );
-            setFocusCompletionCountdown((prev) =>
-              prev === remainingSeconds ? prev : remainingSeconds
-            );
-            if (remainingSeconds <= 0) {
-              closeCompletedFocusPanel(activeTaskId);
-              return;
+          if (isFocusCompleted && activeTaskId) {
+            const deadline = focusCompletionDeadlineRef.current;
+            if (deadline) {
+              const remainingSeconds = Math.max(
+                0,
+                Math.ceil((deadline - Date.now()) / 1000)
+              );
+              setFocusCompletionCountdown((prev) =>
+                prev === remainingSeconds ? prev : remainingSeconds
+              );
+              if (remainingSeconds <= 0) {
+                closeCompletedFocusPanel(activeTaskId);
+                return;
+              }
             }
           }
-        }
 
-        if (isTimerRunning && focusStartTimestamp && focusEndTimestamp) {
-          const nowTimestamp = Date.now();
-          const elapsedSeconds = getElapsedSecondsFromTimestamp({
-            startTimestamp: focusStartTimestamp,
-            nowTimestamp,
-            maxDurationSeconds: currentDuration,
-          });
-          setFocusTime((prev) => (prev === elapsedSeconds ? prev : elapsedSeconds));
+          if (isTimerRunning && focusStartTimestamp && focusEndTimestamp) {
+            void updateNativeFocusLockScreenSession({
+              readAloudOnComplete: false,
+            });
 
-          const remainingSeconds = getRemainingSecondsFromTimestamp({
-            endTimestamp: focusEndTimestamp,
-            nowTimestamp,
-          });
-          if (remainingSeconds <= 0) {
-            completeFocusSession(focusEndTimestamp);
+            const nowTimestamp = Date.now();
+            const elapsedSeconds = getElapsedSecondsFromTimestamp({
+              startTimestamp: focusStartTimestamp,
+              nowTimestamp,
+              maxDurationSeconds: currentDuration,
+            });
+            setFocusTime((prev) =>
+              prev === elapsedSeconds ? prev : elapsedSeconds
+            );
+
+            const remainingSeconds = getRemainingSecondsFromTimestamp({
+              endTimestamp: focusEndTimestamp,
+              nowTimestamp,
+            });
+            if (remainingSeconds <= 0) {
+              completeFocusSession(focusEndTimestamp);
+            }
           }
-        }
+        })();
 
         return;
       }
@@ -5439,6 +5688,12 @@ export default function Home() {
               maxDurationSeconds: currentDuration,
             })
           : focusTime;
+
+      if (isTimerRunning && focusStartTimestamp && focusEndTimestamp) {
+        void updateNativeFocusLockScreenSession({
+          readAloudOnComplete: !isVoiceMuted,
+        });
+      }
 
       persistFocusTimerState({
         activeTaskId,
@@ -5462,8 +5717,11 @@ export default function Home() {
     closeCompletedFocusPanel,
     isFocusCompleted,
     isTimerRunning,
+    isVoiceMuted,
     persistFocusTimerState,
+    reconcileNativeFocusLockScreenStatus,
     refreshSectionAffirmations,
+    updateNativeFocusLockScreenSession,
   ]);
 
   useEffect(() => {
@@ -6432,7 +6690,12 @@ export default function Home() {
       focusStartTimestamp: session.startTimestamp,
       focusEndTimestamp: session.endTimestamp,
     });
-    void scheduleFocusCompletionReminder(taskId, session.endTimestamp);
+    void startNativeFocusLockScreenSession({
+      taskId,
+      startTimestamp: session.startTimestamp,
+      endTimestamp: session.endTimestamp,
+      durationSeconds: duration,
+    });
     void stopEncouragement();
 
     scheduleScrollToFocusSection();
@@ -6462,6 +6725,9 @@ export default function Home() {
         focusStartTimestamp: null,
         focusEndTimestamp: null,
       });
+      const nativeSessionId = focusLockScreenSessionIdRef.current;
+      focusLockScreenSessionIdRef.current = null;
+      void stopFocusLockScreenSession(nativeSessionId);
       void cancelFocusCompletionReminder();
       return;
     }
@@ -6485,7 +6751,12 @@ export default function Home() {
       focusStartTimestamp: session.startTimestamp,
       focusEndTimestamp: session.endTimestamp,
     });
-    void scheduleFocusCompletionReminder(activeTaskId, session.endTimestamp);
+    void startNativeFocusLockScreenSession({
+      taskId: activeTaskId,
+      startTimestamp: session.startTimestamp,
+      endTimestamp: session.endTimestamp,
+      durationSeconds: currentDuration,
+    });
   };
 
   const pauseFocus = () => {

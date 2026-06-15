@@ -1,6 +1,9 @@
 {
   "platforms": ["android"],
   "android": {
-    "modules": ["expo.modules.androidclockalarm.AndroidClockAlarmModule"]
+    "modules": [
+      "expo.modules.androidclockalarm.AndroidClockAlarmModule",
+      "expo.modules.androidclockalarm.FocusLockScreenModule"
+    ]
   }
 }
