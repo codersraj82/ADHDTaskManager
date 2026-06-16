@@ -45,6 +45,7 @@ import {
   formatDateTimeForDisplay,
   formatSqliteDateTime,
   parseStoredDateTime,
+  toTimeInputParts,
 } from "../../utils/formatDateTime";
 import {
   FOCUS_COMPLETION_AFFIRMATIONS,
@@ -389,6 +390,24 @@ const getProfileCropRect = (imageSize, boxSize, scale, offset) => {
     width: Math.max(1, Math.round(cropWidth)),
     height: Math.max(1, Math.round(cropHeight)),
   };
+};
+
+const formatHeaderTime = (value = new Date()) => {
+  try {
+    const date =
+      value instanceof Date && !Number.isNaN(value.getTime())
+        ? value
+        : new Date();
+    const { hour, minute, period } = toTimeInputParts(date);
+    return `${hour}:${minute} ${period}`;
+  } catch {
+    return "";
+  }
+};
+
+const getMillisecondsUntilNextMinute = (date = new Date()) => {
+  const elapsedInMinute = date.getSeconds() * 1000 + date.getMilliseconds();
+  return Math.max(1000, 60000 - elapsedInMinute + 100);
 };
 
 const affirmations = SECTION_HEADER_AFFIRMATIONS;
@@ -1556,6 +1575,7 @@ export default function Home() {
   const [showReturnToFocusButton, setShowReturnToFocusButton] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
+  const [headerClockDate, setHeaderClockDate] = useState(() => new Date());
   const [headerAffirmationViewportWidth, setHeaderAffirmationViewportWidth] =
     useState(0);
   const [headerAffirmationTextWidth, setHeaderAffirmationTextWidth] =
@@ -1601,6 +1621,10 @@ export default function Home() {
         profileCropScale
       ),
     [profileCropBoxSize, profileCropImageSize, profileCropScale]
+  );
+  const headerClockTime = useMemo(
+    () => formatHeaderTime(headerClockDate),
+    [headerClockDate]
   );
   const backupProgressVisible = backupBusy || backupProgress.visible;
   const backupProgressReservedHeight = backupProgressVisible ? 108 : 0;
@@ -2955,6 +2979,7 @@ export default function Home() {
   const focusLockScreenSessionIdRef = useRef(null);
   const timerCompletionStampRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
+  const headerClockTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasPlayedWelcomeVoiceRef = useRef(false);
   const notificationSpeechHistoryRef = useRef({
     message: "",
@@ -6093,6 +6118,45 @@ export default function Home() {
     },
     []
   );
+
+  useEffect(() => {
+    const clearHeaderClockTimeout = () => {
+      if (headerClockTimeoutRef.current) {
+        clearTimeout(headerClockTimeoutRef.current);
+        headerClockTimeoutRef.current = null;
+      }
+    };
+
+    const syncHeaderClock = () => {
+      clearHeaderClockTimeout();
+      const now = new Date();
+      setHeaderClockDate(now);
+      headerClockTimeoutRef.current = setTimeout(
+        syncHeaderClock,
+        getMillisecondsUntilNextMinute(now)
+      );
+    };
+
+    if (AppState.currentState === "active") {
+      syncHeaderClock();
+    } else {
+      setHeaderClockDate(new Date());
+    }
+
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        syncHeaderClock();
+        return;
+      }
+
+      clearHeaderClockTimeout();
+    });
+
+    return () => {
+      clearHeaderClockTimeout();
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
@@ -12192,6 +12256,27 @@ export default function Home() {
     );
   };
 
+  const renderHeaderClock = () => {
+    if (!headerClockTime) return null;
+
+    return (
+      <View
+        className="ml-2 flex-row items-center rounded-full bg-[#123131]/45 border border-[#337a7a]/25 px-2 py-0.5"
+        style={{ minWidth: 84 }}
+      >
+        <Feather name="clock" size={11} color="#9FB5B5" />
+        <Text
+          numberOfLines={1}
+          ellipsizeMode="clip"
+          className="ml-1 text-[#9FB5B5] text-[11px] font-bold"
+          style={{ width: 58 }}
+        >
+          {headerClockTime}
+        </Text>
+      </View>
+    );
+  };
+
   const renderFixedHeader = (inScrollContent = false) => (
     <Reanimated.View
       style={
@@ -12230,9 +12315,17 @@ export default function Home() {
           <Text numberOfLines={1} className="text-[#E8F4F4] text-lg font-black tracking-tight">
             {getGreeting()}
           </Text>
-          <Text className="text-[#9FB5B5] text-xs font-semibold mt-0.5">
-            {formatLongDate()}
-          </Text>
+          <View className="flex-row items-center mt-0.5">
+            <Text
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              className="text-[#9FB5B5] text-xs font-semibold"
+              style={{ flexShrink: 1 }}
+            >
+              {formatLongDate()}
+            </Text>
+            {renderHeaderClock()}
+          </View>
           <Text
             numberOfLines={1}
             ellipsizeMode="tail"
