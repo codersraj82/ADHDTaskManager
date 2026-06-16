@@ -11,6 +11,7 @@
   AppState,
   Keyboard,
   Switch,
+  Image as NativeImage,
 } from "react-native";
 import {
   useState,
@@ -22,8 +23,9 @@ import {
 import { db, initDB } from "../../database/db";
 import Svg, { Circle } from "react-native-svg";
 import * as DocumentPicker from "expo-document-picker";
-import { Directory, File, Paths } from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
+import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import { Feather } from "@expo/vector-icons";
 
 import * as Notifications from "expo-notifications";
@@ -267,9 +269,18 @@ const getBackupStatusLabel = (status = "ready") => {
   return "Ready";
 };
 
+const MAX_PROFILE_TAGLINE_LENGTH = 60;
+const PROFILE_IMAGE_DIR_NAME = "profile";
+const PROFILE_CROP_MIN_SCALE = 1;
+const PROFILE_CROP_MAX_SCALE = 3;
+const PROFILE_CROP_ZOOM_STEP = 0.15;
+const PROFILE_CROP_NUDGE = 18;
+
 const DEFAULT_PROFILE = {
   name: "",
   profileImage: "",
+  profilePhotoUpdatedAt: "",
+  tagline: "",
   vibe: "🌿",
   onboardingComplete: false,
 };
@@ -281,6 +292,104 @@ const VIBE_OPTIONS = [
   { emoji: "🧠", label: "Focused" },
   { emoji: "🌊", label: "Balanced" },
 ];
+
+const normalizeProfileTagline = (value = "") =>
+  String(value || "").replace(/\s+/g, " ").trim();
+
+const getProfileImageDirectory = () => {
+  const documentDirectory = FileSystem.documentDirectory || "";
+  if (!documentDirectory) return "";
+  const base = documentDirectory.endsWith("/")
+    ? documentDirectory
+    : `${documentDirectory}/`;
+  return `${base}${PROFILE_IMAGE_DIR_NAME}/`;
+};
+
+const isAppOwnedProfileImageUri = (uri = "") => {
+  const safeUri = String(uri || "");
+  const profileDirectory = getProfileImageDirectory();
+  return Boolean(safeUri && profileDirectory && safeUri.startsWith(profileDirectory));
+};
+
+const getProfileImageExtension = (uri = "") => {
+  const cleanUri = String(uri || "").split("?")[0].split("#")[0];
+  const extension = cleanUri.includes(".")
+    ? cleanUri.slice(cleanUri.lastIndexOf(".") + 1).toLowerCase()
+    : "";
+  return ["jpg", "jpeg", "png", "webp", "heic", "heif"].includes(extension)
+    ? extension
+    : "jpg";
+};
+
+const normalizeProfileFromRow = (profileRow: any = {}) => {
+  const tagline = normalizeProfileTagline(profileRow?.tagline);
+
+  return {
+    name: profileRow?.name || "",
+    profileImage: profileRow?.profileImage || "",
+    profilePhotoUpdatedAt: profileRow?.profilePhotoUpdatedAt || "",
+    tagline: tagline.slice(0, MAX_PROFILE_TAGLINE_LENGTH),
+    vibe: profileRow?.vibe || DEFAULT_PROFILE.vibe,
+    onboardingComplete:
+      profileRow?.onboardingComplete === 1 ||
+      profileRow?.onboardingComplete === true,
+  };
+};
+
+const getProfileCropBoxSize = () =>
+  Math.min(300, Math.max(220, Dimensions.get("window").width - 64));
+
+const getProfileCropMetrics = (imageSize, boxSize, scale) => {
+  const width = Math.max(1, Number(imageSize?.width || 1));
+  const height = Math.max(1, Number(imageSize?.height || 1));
+  const safeBoxSize = Math.max(1, Number(boxSize || 1));
+  const safeScale = Math.min(
+    PROFILE_CROP_MAX_SCALE,
+    Math.max(PROFILE_CROP_MIN_SCALE, Number(scale || PROFILE_CROP_MIN_SCALE))
+  );
+  const baseScale = Math.max(safeBoxSize / width, safeBoxSize / height);
+  const scaleFactor = baseScale * safeScale;
+
+  return {
+    width: width * scaleFactor,
+    height: height * scaleFactor,
+    scaleFactor,
+  };
+};
+
+const clampProfileCropOffset = (offset, imageSize, boxSize, scale) => {
+  const metrics = getProfileCropMetrics(imageSize, boxSize, scale);
+  const maxX = Math.max(0, (metrics.width - boxSize) / 2);
+  const maxY = Math.max(0, (metrics.height - boxSize) / 2);
+
+  return {
+    x: Math.max(-maxX, Math.min(maxX, Number(offset?.x || 0))),
+    y: Math.max(-maxY, Math.min(maxY, Number(offset?.y || 0))),
+  };
+};
+
+const getProfileCropRect = (imageSize, boxSize, scale, offset) => {
+  const width = Math.max(1, Number(imageSize?.width || 1));
+  const height = Math.max(1, Number(imageSize?.height || 1));
+  const safeBoxSize = Math.max(1, Number(boxSize || 1));
+  const metrics = getProfileCropMetrics(imageSize, safeBoxSize, scale);
+  const safeOffset = clampProfileCropOffset(offset, imageSize, safeBoxSize, scale);
+  const cropWidth = Math.min(width, safeBoxSize / metrics.scaleFactor);
+  const cropHeight = Math.min(height, safeBoxSize / metrics.scaleFactor);
+  const imageLeft = (safeBoxSize - metrics.width) / 2 + safeOffset.x;
+  const imageTop = (safeBoxSize - metrics.height) / 2 + safeOffset.y;
+  const rawOriginX = -imageLeft / metrics.scaleFactor;
+  const rawOriginY = -imageTop / metrics.scaleFactor;
+  const originX = Math.max(0, Math.min(width - cropWidth, rawOriginX));
+  const originY = Math.max(0, Math.min(height - cropHeight, rawOriginY));
+
+  return {
+    originX: Math.round(originX),
+    originY: Math.round(originY),
+    width: Math.max(1, Math.round(cropWidth)),
+    height: Math.max(1, Math.round(cropHeight)),
+  };
+};
 
 const affirmations = SECTION_HEADER_AFFIRMATIONS;
 
@@ -1372,6 +1481,22 @@ export default function Home() {
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [profileDraftName, setProfileDraftName] = useState("");
   const [profileDraftVibe, setProfileDraftVibe] = useState(DEFAULT_PROFILE.vibe);
+  const [profileDraftTagline, setProfileDraftTagline] = useState(
+    DEFAULT_PROFILE.tagline
+  );
+  const [profilePhotoModalVisible, setProfilePhotoModalVisible] = useState(false);
+  const [profilePhotoViewerVisible, setProfilePhotoViewerVisible] = useState(false);
+  const [profileCropModalVisible, setProfileCropModalVisible] = useState(false);
+  const [profilePhotoBusy, setProfilePhotoBusy] = useState(false);
+  const [profilePhotoLoadFailed, setProfilePhotoLoadFailed] = useState(false);
+  const [profileCropImageSize, setProfileCropImageSize] = useState({
+    width: 0,
+    height: 0,
+  });
+  const [profileCropScale, setProfileCropScale] = useState(
+    PROFILE_CROP_MIN_SCALE
+  );
+  const [profileCropOffset, setProfileCropOffset] = useState({ x: 0, y: 0 });
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [activePage, setActivePage] = useState(null);
@@ -1461,6 +1586,22 @@ export default function Home() {
   const [specialTasks, setSpecialTasks] = useState([]);
   const [specialTaskTitle, setSpecialTaskTitle] = useState("");
   const [specialTaskNote, setSpecialTaskNote] = useState("");
+  const profileTagline = normalizeProfileTagline(profile.tagline);
+  const profileDraftTaglineNormalized =
+    normalizeProfileTagline(profileDraftTagline);
+  const isProfileTaglineTooLong =
+    profileDraftTaglineNormalized.length > MAX_PROFILE_TAGLINE_LENGTH;
+  const hasProfilePhoto = Boolean(profile.profileImage && !profilePhotoLoadFailed);
+  const profileCropBoxSize = getProfileCropBoxSize();
+  const profileCropMetrics = useMemo(
+    () =>
+      getProfileCropMetrics(
+        profileCropImageSize,
+        profileCropBoxSize,
+        profileCropScale
+      ),
+    [profileCropBoxSize, profileCropImageSize, profileCropScale]
+  );
   const backupProgressVisible = backupBusy || backupProgress.visible;
   const backupProgressReservedHeight = backupProgressVisible ? 108 : 0;
   const footerSafeBottom = Math.max(insets.bottom, 8);
@@ -2568,6 +2709,35 @@ export default function Home() {
     scheduleScrollToFocusSection();
   }, [activeTaskId, isFocusCompleted, scheduleScrollToFocusSection]);
 
+  useEffect(() => {
+    let isActive = true;
+
+    const validateSavedProfilePhoto = async () => {
+      if (!profile.profileImage) {
+        setProfilePhotoLoadFailed(false);
+        return;
+      }
+
+      if (!isAppOwnedProfileImageUri(profile.profileImage)) {
+        setProfilePhotoLoadFailed(false);
+        return;
+      }
+
+      const fileInfo = await FileSystem.getInfoAsync(profile.profileImage).catch(
+        () => null
+      );
+      if (!isActive) return;
+
+      setProfilePhotoLoadFailed(!fileInfo?.exists);
+    };
+
+    void validateSavedProfilePhoto();
+
+    return () => {
+      isActive = false;
+    };
+  }, [profile.profileImage]);
+
   const homeScrollHandler = useAnimatedScrollHandler(
     {
       onScroll: (event) => {
@@ -3087,20 +3257,25 @@ export default function Home() {
   };
 
   const saveProfile = (nextProfile) => {
+    const normalizedProfile = normalizeProfileFromRow(nextProfile);
+
     db.runSync(
       `INSERT OR REPLACE INTO app_profile
-       (id, name, profileImage, vibe, onboardingComplete, updatedAt)
-       VALUES (1, ?, ?, ?, ?, datetime('now'))`,
+       (id, name, profileImage, profilePhotoUpdatedAt, tagline, vibe, onboardingComplete, updatedAt)
+       VALUES (1, ?, ?, ?, ?, ?, ?, datetime('now'))`,
       [
-        nextProfile.name,
-        nextProfile.profileImage || "",
-        nextProfile.vibe || "🌿",
-        nextProfile.onboardingComplete ? 1 : 0,
+        normalizedProfile.name,
+        normalizedProfile.profileImage,
+        normalizedProfile.profilePhotoUpdatedAt,
+        normalizedProfile.tagline,
+        normalizedProfile.vibe,
+        normalizedProfile.onboardingComplete ? 1 : 0,
       ]
     );
-    setProfile(nextProfile);
-    setProfileDraftName(nextProfile.name);
-    setProfileDraftVibe(nextProfile.vibe || "🌿");
+    setProfile(normalizedProfile);
+    setProfileDraftName(normalizedProfile.name);
+    setProfileDraftVibe(normalizedProfile.vibe || "🌿");
+    setProfileDraftTagline(normalizedProfile.tagline || "");
   };
 
   const refreshSpecialTasks = () => {
@@ -3518,43 +3693,249 @@ export default function Home() {
     recordFocusSession,
   ]);
 
-  const pickProfileImage = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      alert("Photo access is needed to update your profile image.");
+  const ensureProfileImageDirectory = async () => {
+    const profileDirectory = getProfileImageDirectory();
+    if (!profileDirectory) {
+      throw new Error("Profile image directory unavailable");
+    }
+
+    await FileSystem.makeDirectoryAsync(profileDirectory, {
+      intermediates: true,
+    }).catch(() => null);
+
+    return profileDirectory;
+  };
+
+  const copyProfileImageToAppStorage = async (sourceUri) => {
+    if (!sourceUri) {
+      throw new Error("Missing profile image URI");
+    }
+
+    const profileDirectory = await ensureProfileImageDirectory();
+    const extension = getProfileImageExtension(sourceUri);
+    const destinationUri = `${profileDirectory}avatar-${Date.now()}.${extension}`;
+
+    await FileSystem.copyAsync({
+      from: sourceUri,
+      to: destinationUri,
+    });
+
+    const fileInfo = await FileSystem.getInfoAsync(destinationUri).catch(
+      () => null
+    );
+    if (!fileInfo?.exists) {
+      throw new Error("Profile image copy missing");
+    }
+
+    return destinationUri;
+  };
+
+  const deleteProfileImageIfSafe = async (uri) => {
+    if (!isAppOwnedProfileImageUri(uri)) return;
+
+    await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => null);
+  };
+
+  const replaceProfileImageFromUri = async (sourceUri) => {
+    const previousUri = profile.profileImage || "";
+    const nextUri = await copyProfileImageToAppStorage(sourceUri);
+
+    try {
+      saveProfile({
+        ...profile,
+        profileImage: nextUri,
+        profilePhotoUpdatedAt: new Date().toISOString(),
+      });
+      setProfilePhotoLoadFailed(false);
+    } catch (error) {
+      await deleteProfileImageIfSafe(nextUri);
+      throw error;
+    }
+
+    if (previousUri && previousUri !== nextUri) {
+      await deleteProfileImageIfSafe(previousUri);
+    }
+
+    return nextUri;
+  };
+
+  const pickProfileImage = async (options: any = {}) => {
+    if (profilePhotoBusy) return;
+
+    setProfilePhotoBusy(true);
+    try {
+      const permission =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          "Profile photo",
+          "Permission is needed to choose a photo."
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (result.canceled) return;
+
+      const pickedUri = result.assets?.[0]?.uri;
+      if (!pickedUri) {
+        Alert.alert("Profile photo", "Photo was not changed.");
+        return;
+      }
+
+      await replaceProfileImageFromUri(pickedUri);
+      if (options?.closeAfterSave) {
+        setProfilePhotoModalVisible(false);
+      }
+    } catch (error) {
+      console.log("Profile image update failed:", error);
+      Alert.alert(
+        "Profile photo",
+        "Could not save profile photo. Please try again."
+      );
+    } finally {
+      setProfilePhotoBusy(false);
+    }
+  };
+
+  const openProfileCropFlow = () => {
+    if (!hasProfilePhoto) {
+      Alert.alert("Profile photo", "Photo was not changed.");
       return;
     }
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.85,
-    });
+    NativeImage.getSize(
+      profile.profileImage,
+      (width, height) => {
+        setProfileCropImageSize({ width, height });
+        setProfileCropScale(PROFILE_CROP_MIN_SCALE);
+        setProfileCropOffset({ x: 0, y: 0 });
+        setProfilePhotoModalVisible(false);
+        setProfileCropModalVisible(true);
+      },
+      () => {
+        setProfilePhotoLoadFailed(true);
+        Alert.alert("Profile photo", "Photo was not changed.");
+      }
+    );
+  };
 
-    if (result.canceled || !result.assets?.[0]?.uri) return;
+  const nudgeProfileCrop = (deltaX, deltaY) => {
+    setProfileCropOffset((currentOffset) =>
+      clampProfileCropOffset(
+        {
+          x: currentOffset.x + deltaX,
+          y: currentOffset.y + deltaY,
+        },
+        profileCropImageSize,
+        profileCropBoxSize,
+        profileCropScale
+      )
+    );
+  };
 
-    const pickedUri = result.assets[0].uri;
-    let imageUri = pickedUri;
-
-    try {
-      const profileDir = new Directory(Paths.document, "profile");
-      profileDir.create({ intermediates: true, idempotent: true });
-
-      const extension = pickedUri.split(".").pop()?.split("?")[0] || "jpg";
-      const sourceFile = new File(pickedUri);
-      const avatarFile = new File(
-        profileDir,
-        `avatar-${Date.now()}.${extension}`
+  const adjustProfileCropZoom = (delta) => {
+    setProfileCropScale((currentScale) => {
+      const nextScale = Math.min(
+        PROFILE_CROP_MAX_SCALE,
+        Math.max(PROFILE_CROP_MIN_SCALE, currentScale + delta)
       );
-      sourceFile.copy(avatarFile);
-      imageUri = avatarFile.uri;
-    } catch (e) {
-      console.log("Profile image copy skipped:", e);
-    }
+      setProfileCropOffset((currentOffset) =>
+        clampProfileCropOffset(
+          currentOffset,
+          profileCropImageSize,
+          profileCropBoxSize,
+          nextScale
+        )
+      );
+      return nextScale;
+    });
+  };
 
-    const nextProfile = { ...profile, profileImage: imageUri };
-    saveProfile(nextProfile);
+  const saveProfileCrop = async () => {
+    if (profilePhotoBusy || !profile.profileImage) return;
+
+    setProfilePhotoBusy(true);
+    try {
+      const cropRect = getProfileCropRect(
+        profileCropImageSize,
+        profileCropBoxSize,
+        profileCropScale,
+        profileCropOffset
+      );
+      const result = await manipulateAsync(
+        profile.profileImage,
+        [{ crop: cropRect }],
+        { compress: 0.82, format: SaveFormat.JPEG }
+      );
+
+      if (!result?.uri) {
+        throw new Error("Profile crop returned no URI");
+      }
+
+      await replaceProfileImageFromUri(result.uri);
+      setProfileCropModalVisible(false);
+      setProfilePhotoModalVisible(true);
+    } catch (error) {
+      console.log("Profile image crop failed:", error);
+      Alert.alert(
+        "Profile photo",
+        "Could not save profile photo. Please try again."
+      );
+    } finally {
+      setProfilePhotoBusy(false);
+    }
+  };
+
+  const removeProfileImage = async () => {
+    if (profilePhotoBusy) return;
+
+    const previousUri = profile.profileImage || "";
+    setProfilePhotoBusy(true);
+    try {
+      saveProfile({
+        ...profile,
+        profileImage: "",
+        profilePhotoUpdatedAt: new Date().toISOString(),
+      });
+      setProfilePhotoLoadFailed(false);
+      await deleteProfileImageIfSafe(previousUri);
+      setProfilePhotoModalVisible(false);
+      setProfilePhotoViewerVisible(false);
+    } catch (error) {
+      console.log("Profile image removal failed:", error);
+      Alert.alert(
+        "Profile photo",
+        "Could not save profile photo. Please try again."
+      );
+    } finally {
+      setProfilePhotoBusy(false);
+    }
+  };
+
+  const confirmRemoveProfileImage = () => {
+    if (!hasProfilePhoto) return;
+
+    Alert.alert(
+      "Remove profile photo?",
+      "Your photo will be removed from this app.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: () => {
+            void removeProfileImage();
+          },
+        },
+      ]
+    );
   };
 
   const openDrawer = () => {
@@ -4180,6 +4561,8 @@ export default function Home() {
           id INTEGER PRIMARY KEY CHECK (id = 1),
           name TEXT DEFAULT '',
           profileImage TEXT DEFAULT '',
+          profilePhotoUpdatedAt TEXT,
+          tagline TEXT DEFAULT '',
           vibe TEXT DEFAULT '🌿',
           onboardingComplete INTEGER DEFAULT 0,
           updatedAt TEXT
@@ -4358,6 +4741,15 @@ export default function Home() {
            WHERE createdAt IS NULL OR TRIM(createdAt) = ''`
         );
 
+        const profileTableInfo = db.getAllSync("PRAGMA table_info(app_profile)");
+        const profileColumnNames = profileTableInfo.map((c: any) => c.name);
+        if (!profileColumnNames.includes("profilePhotoUpdatedAt")) {
+          db.execSync("ALTER TABLE app_profile ADD COLUMN profilePhotoUpdatedAt TEXT;");
+        }
+        if (!profileColumnNames.includes("tagline")) {
+          db.execSync("ALTER TABLE app_profile ADD COLUMN tagline TEXT DEFAULT '';");
+        }
+
         // 3. Load All Data (Tasks + Section Settings)
         const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
         const loadedTasks = taskResult.map((t) => {
@@ -4436,12 +4828,7 @@ export default function Home() {
           db.getAllSync("SELECT * FROM app_profile WHERE id = 1") || [];
         const profileRow = profileRows[0];
         const nextProfile = profileRow
-          ? {
-              name: profileRow.name || "",
-              profileImage: profileRow.profileImage || "",
-              vibe: profileRow.vibe || "🌿",
-              onboardingComplete: profileRow.onboardingComplete === 1,
-            }
+          ? normalizeProfileFromRow(profileRow)
           : DEFAULT_PROFILE;
 
         if (!profileRow) {
@@ -4450,6 +4837,7 @@ export default function Home() {
           setProfile(nextProfile);
           setProfileDraftName(nextProfile.name);
           setProfileDraftVibe(nextProfile.vibe);
+          setProfileDraftTagline(nextProfile.tagline || "");
         }
         setOnboardingVisible(!nextProfile.onboardingComplete);
 
@@ -9947,15 +10335,11 @@ export default function Home() {
     const profileRows = db.getAllSync("SELECT * FROM app_profile WHERE id = 1") || [];
     const profileRow = profileRows[0];
     if (profileRow) {
-      const nextProfile = {
-        name: profileRow.name || "",
-        profileImage: profileRow.profileImage || "",
-        vibe: profileRow.vibe || DEFAULT_PROFILE.vibe,
-        onboardingComplete: profileRow.onboardingComplete === 1,
-      };
+      const nextProfile = normalizeProfileFromRow(profileRow);
       setProfile(nextProfile);
       setProfileDraftName(nextProfile.name);
       setProfileDraftVibe(nextProfile.vibe);
+      setProfileDraftTagline(nextProfile.tagline || "");
     }
 
     return restoredTasks;
@@ -10449,6 +10833,27 @@ export default function Home() {
     );
   };
 
+  const getValidatedProfileTagline = () => {
+    const tagline = normalizeProfileTagline(profileDraftTagline);
+    if (tagline.length > MAX_PROFILE_TAGLINE_LENGTH) {
+      Alert.alert("Personal tagline", "Keep tagline under 60 characters.");
+      return null;
+    }
+
+    return tagline;
+  };
+
+  const saveProfileTagline = () => {
+    const tagline = getValidatedProfileTagline();
+    if (tagline === null) return false;
+
+    saveProfile({
+      ...profile,
+      tagline,
+    });
+    return true;
+  };
+
   const saveOnboardingProfile = () => {
     const name = profileDraftName.trim();
     if (!name) return;
@@ -10464,10 +10869,14 @@ export default function Home() {
   };
 
   const saveProfileEdits = () => {
+    const tagline = getValidatedProfileTagline();
+    if (tagline === null) return;
+
     const name = profileDraftName.trim() || profile.name || "Friend";
     saveProfile({
       ...profile,
       name,
+      tagline,
       vibe: profileDraftVibe || profile.vibe || "🌿",
       onboardingComplete: true,
     });
@@ -11255,18 +11664,370 @@ export default function Home() {
 
     return (
       <TouchableOpacity
-        onPress={pickProfileImage}
+        onPress={() => setProfilePhotoModalVisible(true)}
         activeOpacity={0.8}
+        accessibilityRole="button"
+        accessibilityLabel="Profile photo"
         className={`${avatarSize} rounded-full bg-[#123131] border-2 border-[#66b9b9]/50 shadow-lg shadow-[#66b9b9]/20 items-center justify-center overflow-hidden`}
       >
-        {profile.profileImage ? (
-          <Image source={{ uri: profile.profileImage }} className="w-full h-full" />
+        {hasProfilePhoto ? (
+          <Image
+            source={{ uri: profile.profileImage }}
+            onError={() => setProfilePhotoLoadFailed(true)}
+            className="w-full h-full"
+          />
         ) : (
           <Text className={`${textSize}`}>{profile.vibe || "🌿"}</Text>
         )}
       </TouchableOpacity>
     );
   };
+
+  const renderProfilePhotoActionButton = ({
+    label,
+    icon,
+    onPress,
+    disabled = false,
+    danger = false,
+  }) => (
+    <TouchableOpacity
+      activeOpacity={0.84}
+      disabled={disabled || profilePhotoBusy}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      className={`flex-1 min-w-[46%] h-12 rounded-2xl border flex-row items-center justify-center px-3 mb-2 ${
+        danger
+          ? "bg-[#2F1717]/85 border-[#FF8A8A]/35"
+          : "bg-[#123131]/80 border-[#66b9b9]/30"
+      } ${(disabled || profilePhotoBusy) ? "opacity-55" : ""}`}
+    >
+      <Feather
+        name={icon}
+        size={15}
+        color={danger ? "#FFB3B3" : COLORS.accent}
+      />
+      <Text
+        numberOfLines={1}
+        className={`ml-2 text-[10px] font-black uppercase tracking-widest ${
+          danger ? "text-[#FFB3B3]" : "text-[#66b9b9]"
+        }`}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const renderProfileTaglineEditor = ({
+    compact = false,
+    showSaveButton = true,
+  } = {}) => (
+    <View className={compact ? "mt-4" : "mt-2 mb-4"}>
+      <View className="flex-row items-center justify-between mb-2">
+        <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+          Personal tagline
+        </Text>
+        <Text
+          className={`text-[10px] font-bold ${
+            isProfileTaglineTooLong ? "text-[#FFB3B3]" : "text-[#9FB5B5]"
+          }`}
+        >
+          {profileDraftTaglineNormalized.length}/{MAX_PROFILE_TAGLINE_LENGTH}
+        </Text>
+      </View>
+      <Text className="text-[#9FB5B5] text-xs font-semibold mb-2">
+        Add a short line that feels encouraging when you open the app.
+      </Text>
+      <TextInput
+        value={profileDraftTagline}
+        onChangeText={setProfileDraftTagline}
+        placeholder="One small step at a time"
+        placeholderTextColor={COLORS.muted}
+        returnKeyType="done"
+        multiline={false}
+        className={`bg-[#061414]/45 text-[#E8F4F4] p-3 rounded-2xl border font-semibold ${
+          isProfileTaglineTooLong ? "border-[#FF8A8A]/60" : "border-[#66b9b9]/25"
+        }`}
+      />
+      {isProfileTaglineTooLong ? (
+        <Text className="text-[#FFB3B3] text-[11px] font-bold mt-2">
+          Keep tagline under 60 characters.
+        </Text>
+      ) : null}
+      {showSaveButton ? (
+        <TouchableOpacity
+          activeOpacity={0.86}
+          disabled={profilePhotoBusy}
+          onPress={saveProfileTagline}
+          className={`mt-3 bg-[#66b9b9] rounded-2xl px-4 py-3 ${
+            profilePhotoBusy ? "opacity-55" : ""
+          }`}
+        >
+          <Text className="text-[#061414] text-center text-[10px] font-black uppercase tracking-widest">
+            Save tagline
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+
+  const renderProfilePhotoModal = () => (
+    <Modal
+      visible={profilePhotoModalVisible}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setProfilePhotoModalVisible(false)}
+    >
+      <View className="flex-1 justify-end bg-[#061414]/92">
+        <Pressable
+          onPress={() => {
+            if (!profilePhotoBusy) setProfilePhotoModalVisible(false);
+          }}
+          className="absolute inset-0"
+        />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View className="bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 px-5 pt-3 pb-6 shadow-2xl shadow-[#66b9b9]/20">
+            <View className="items-center mb-3">
+              <View className="w-14 h-1.5 rounded-full bg-[#337a7a]/70 mb-4" />
+              <Text className="text-[#E8F4F4] text-xl font-black">
+                Profile photo
+              </Text>
+            </View>
+
+            <View className="items-center mb-4">
+              <View className="w-32 h-32 rounded-full bg-[#123131] border-2 border-[#66b9b9]/45 shadow-lg shadow-[#66b9b9]/20 items-center justify-center overflow-hidden">
+                {hasProfilePhoto ? (
+                  <Image
+                    source={{ uri: profile.profileImage }}
+                    onError={() => setProfilePhotoLoadFailed(true)}
+                    className="w-full h-full"
+                  />
+                ) : (
+                  <Text className="text-5xl">{profile.vibe || "🌿"}</Text>
+                )}
+              </View>
+            </View>
+
+            <View className="flex-row flex-wrap justify-between">
+              {hasProfilePhoto ? (
+                <>
+                  {renderProfilePhotoActionButton({
+                    label: "View photo",
+                    icon: "maximize-2",
+                    onPress: () => setProfilePhotoViewerVisible(true),
+                  })}
+                  {renderProfilePhotoActionButton({
+                    label: "Change photo",
+                    icon: "image",
+                    onPress: () => void pickProfileImage(),
+                  })}
+                  {renderProfilePhotoActionButton({
+                    label: "Crop photo",
+                    icon: "crop",
+                    onPress: openProfileCropFlow,
+                  })}
+                  {renderProfilePhotoActionButton({
+                    label: "Remove photo",
+                    icon: "trash-2",
+                    onPress: confirmRemoveProfileImage,
+                    danger: true,
+                  })}
+                </>
+              ) : (
+                renderProfilePhotoActionButton({
+                  label: "Add photo",
+                  icon: "image",
+                  onPress: () => void pickProfileImage(),
+                })
+              )}
+              {renderProfilePhotoActionButton({
+                label: "Close",
+                icon: "x",
+                onPress: () => setProfilePhotoModalVisible(false),
+              })}
+            </View>
+
+            {renderProfileTaglineEditor({ compact: true })}
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
+  );
+
+  const renderProfilePhotoViewerModal = () => (
+    <Modal
+      visible={profilePhotoViewerVisible && hasProfilePhoto}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setProfilePhotoViewerVisible(false)}
+    >
+      <View className="flex-1 bg-[#061414]/96 justify-center px-6">
+        <Pressable
+          onPress={() => setProfilePhotoViewerVisible(false)}
+          className="absolute inset-0"
+        />
+        <View className="items-center">
+          <View className="w-full aspect-square max-w-[360px] rounded-[28px] bg-[#123131] border border-[#66b9b9]/35 overflow-hidden shadow-2xl shadow-[#66b9b9]/20">
+            <Image
+              source={{ uri: profile.profileImage }}
+              resizeMode="cover"
+              onError={() => {
+                setProfilePhotoLoadFailed(true);
+                setProfilePhotoViewerVisible(false);
+              }}
+              className="w-full h-full"
+            />
+          </View>
+          <TouchableOpacity
+            activeOpacity={0.86}
+            onPress={() => setProfilePhotoViewerVisible(false)}
+            className="mt-5 h-12 px-6 rounded-2xl bg-[#123131]/90 border border-[#66b9b9]/35 flex-row items-center justify-center"
+          >
+            <Feather name="x" size={15} color={COLORS.accent} />
+            <Text className="ml-2 text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+              Close
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const renderProfileCropModal = () => (
+    <Modal
+      visible={profileCropModalVisible}
+      transparent
+      animationType="fade"
+      onRequestClose={() => {
+        if (profilePhotoBusy) return;
+        setProfileCropModalVisible(false);
+        setProfilePhotoModalVisible(true);
+      }}
+    >
+      <View className="flex-1 justify-end bg-[#061414]/94">
+        <View className="bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 px-5 pt-3 pb-6 shadow-2xl shadow-[#66b9b9]/20">
+          <View className="items-center mb-4">
+            <View className="w-14 h-1.5 rounded-full bg-[#337a7a]/70 mb-4" />
+            <Text className="text-[#E8F4F4] text-xl font-black">
+              Crop photo
+            </Text>
+          </View>
+
+          <View className="items-center">
+            <View
+              style={{
+                width: profileCropBoxSize,
+                height: profileCropBoxSize,
+              }}
+              className="rounded-[28px] bg-[#061414] border border-[#66b9b9]/35 overflow-hidden items-center justify-center"
+            >
+              {hasProfilePhoto ? (
+                <Image
+                  source={{ uri: profile.profileImage }}
+                  resizeMode="stretch"
+                  style={{
+                    width: profileCropMetrics.width,
+                    height: profileCropMetrics.height,
+                    transform: [
+                      { translateX: profileCropOffset.x },
+                      { translateY: profileCropOffset.y },
+                    ],
+                  }}
+                />
+              ) : null}
+              <View className="absolute inset-0 rounded-[28px] border-2 border-[#66b9b9]/65" />
+            </View>
+
+            <View className="flex-row items-center justify-center mt-4">
+              <TouchableOpacity
+                activeOpacity={0.84}
+                disabled={profileCropScale <= PROFILE_CROP_MIN_SCALE}
+                onPress={() => adjustProfileCropZoom(-PROFILE_CROP_ZOOM_STEP)}
+                accessibilityLabel="Zoom out"
+                className="w-12 h-12 rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center mx-1"
+              >
+                <Feather name="minus" size={17} color={COLORS.accent} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.84}
+                onPress={() => nudgeProfileCrop(0, PROFILE_CROP_NUDGE)}
+                accessibilityLabel="Move photo down"
+                className="w-12 h-12 rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center mx-1"
+              >
+                <Feather name="arrow-down" size={17} color={COLORS.accent} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.84}
+                onPress={() => nudgeProfileCrop(0, -PROFILE_CROP_NUDGE)}
+                accessibilityLabel="Move photo up"
+                className="w-12 h-12 rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center mx-1"
+              >
+                <Feather name="arrow-up" size={17} color={COLORS.accent} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.84}
+                disabled={profileCropScale >= PROFILE_CROP_MAX_SCALE}
+                onPress={() => adjustProfileCropZoom(PROFILE_CROP_ZOOM_STEP)}
+                accessibilityLabel="Zoom in"
+                className="w-12 h-12 rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center mx-1"
+              >
+                <Feather name="plus" size={17} color={COLORS.accent} />
+              </TouchableOpacity>
+            </View>
+
+            <View className="flex-row items-center justify-center mt-2">
+              <TouchableOpacity
+                activeOpacity={0.84}
+                onPress={() => nudgeProfileCrop(PROFILE_CROP_NUDGE, 0)}
+                accessibilityLabel="Move photo right"
+                className="w-12 h-12 rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center mx-1"
+              >
+                <Feather name="arrow-right" size={17} color={COLORS.accent} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.84}
+                onPress={() => nudgeProfileCrop(-PROFILE_CROP_NUDGE, 0)}
+                accessibilityLabel="Move photo left"
+                className="w-12 h-12 rounded-2xl bg-[#123131]/85 border border-[#66b9b9]/30 items-center justify-center mx-1"
+              >
+                <Feather name="arrow-left" size={17} color={COLORS.accent} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View className="flex-row mt-5">
+            <TouchableOpacity
+              activeOpacity={0.84}
+              disabled={profilePhotoBusy}
+              onPress={() => {
+                setProfileCropModalVisible(false);
+                setProfilePhotoModalVisible(true);
+              }}
+              className="flex-1 h-12 rounded-2xl border border-[#337a7a]/40 bg-[#123131]/70 items-center justify-center mr-2"
+            >
+              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                Cancel
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.9}
+              disabled={profilePhotoBusy}
+              onPress={() => void saveProfileCrop()}
+              className={`flex-1 h-12 rounded-2xl items-center justify-center ml-2 ${
+                profilePhotoBusy ? "bg-[#66b9b9]/30" : "bg-[#66b9b9]"
+              }`}
+            >
+              <Text className="text-[#061414] text-[10px] font-black uppercase tracking-widest">
+                {profilePhotoBusy ? "Saving..." : "Crop photo"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
 
   const renderStatPill = (label, value, accent = "#66b9b9") => (
     <View className="flex-1 bg-[#061414]/45 border border-[#337a7a]/30 rounded-2xl p-3">
@@ -11472,8 +12233,14 @@ export default function Home() {
           <Text className="text-[#9FB5B5] text-xs font-semibold mt-0.5">
             {formatLongDate()}
           </Text>
-          <Text className="text-[#66b9b9] text-[10px] font-bold uppercase tracking-widest mt-1">
-            Ready to focus today? ✨
+          <Text
+            numberOfLines={1}
+            ellipsizeMode="tail"
+            className={`text-[#66b9b9] text-[10px] font-bold mt-1 ${
+              profileTagline ? "" : "uppercase tracking-widest"
+            }`}
+          >
+            {profileTagline || "Ready to focus today? ✨"}
           </Text>
         </View>
         <TouchableOpacity
@@ -12871,6 +13638,7 @@ export default function Home() {
             placeholderTextColor={COLORS.muted}
             className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-3 border border-[#66b9b9]/25 font-semibold"
           />
+          {renderProfileTaglineEditor({ showSaveButton: false })}
           <View className="flex-row flex-wrap mb-4">
             {VIBE_OPTIONS.map((vibe) => (
               <TouchableOpacity
@@ -15764,6 +16532,9 @@ c                        {REMINDER_NOTIFICATION_EMOJI}
       {renderFixedFooter()}
       {renderDrawer()}
       {renderPageModal()}
+      {renderProfilePhotoModal()}
+      {renderProfilePhotoViewerModal()}
+      {renderProfileCropModal()}
       {renderBackupProgressOverlay()}
       {renderEnergyTaskSuggestionSheet()}
       {renderProgressTaskSheet()}

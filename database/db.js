@@ -27,6 +27,8 @@ export const initDB = () => {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       name TEXT DEFAULT '',
       profileImage TEXT DEFAULT '',
+      profilePhotoUpdatedAt TEXT,
+      tagline TEXT DEFAULT '',
       vibe TEXT DEFAULT '🌿',
       onboardingComplete INTEGER DEFAULT 0,
       updatedAt TEXT
@@ -105,6 +107,26 @@ export const initDB = () => {
         `ALTER TABLE tasks ADD COLUMN ${column.name} ${column.type};`,
       );
       console.log(`✅ Column ensured: ${column.name}`);
+    } catch (_e) {
+      // If error, it means column already exists - we ignore it.
+    }
+  });
+
+  const profileMigrations = [
+    { name: "profilePhotoUpdatedAt", type: "TEXT" },
+    { name: "tagline", type: "TEXT DEFAULT ''" },
+  ];
+  const profileColumns = db
+    .getAllSync("PRAGMA table_info(app_profile)")
+    .map((column) => column.name);
+
+  profileMigrations.forEach((column) => {
+    if (profileColumns.includes(column.name)) return;
+
+    try {
+      db.execSync(
+        `ALTER TABLE app_profile ADD COLUMN ${column.name} ${column.type};`
+      );
     } catch (_e) {
       // If error, it means column already exists - we ignore it.
     }
