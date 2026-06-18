@@ -15662,13 +15662,25 @@ export default function Home() {
 
                   <View className="flex-row items-center justify-between mt-1">
                     {task.scheduledTime ? (
-                      <Text className="text-[#9FB5B5] text-xs font-semibold">
+                      <Text
+                        numberOfLines={1}
+                        className={`flex-1 pr-2 text-sm font-black ${
+                          isEarlyRecurringPreview
+                            ? "text-[#D9A441]"
+                            : task.completed
+                              ? "text-[#9FB5B5]"
+                              : "text-[#BFEAEA]"
+                        }`}
+                      >
                         {isEarlyRecurringPreview
                           ? `Due tomorrow | ${formatDateTimeForDisplay(task.scheduledTime)}`
                           : formatDateTimeForDisplay(task.scheduledTime)}
                       </Text>
                     ) : (
-                      <Text className="text-[#9FB5B5] text-xs font-semibold">
+                      <Text
+                        numberOfLines={1}
+                        className="flex-1 pr-2 text-[#9FB5B5] text-sm font-bold"
+                      >
                         No schedule yet
                       </Text>
                     )}
