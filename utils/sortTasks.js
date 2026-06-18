@@ -27,10 +27,31 @@ const wasCompletedToday = (task, nowTime) => {
 
 const getTaskId = (task) => task.id ?? 0;
 
+const isEarlyRecurringPreviewTask = (task) =>
+  task?.isEarlyRecurringPreview === true ||
+  task?.displayMode === "earlyRecurringPreview";
+
 const compareAscendingByScheduledTime = (a, b) => {
   const aTime = a.scheduledTime ?? Number.POSITIVE_INFINITY;
   const bTime = b.scheduledTime ?? Number.POSITIVE_INFINITY;
   if (aTime !== bTime) return aTime - bTime;
+  return getTaskId(a.task) - getTaskId(b.task);
+};
+
+const compareEarlyPreviewTasks = (a, b) => {
+  const aTime = a.scheduledTime ?? Number.POSITIVE_INFINITY;
+  const bTime = b.scheduledTime ?? Number.POSITIVE_INFINITY;
+  if (aTime !== bTime) return aTime - bTime;
+
+  const titleCompare = String(a.task?.title || "").localeCompare(
+    String(b.task?.title || "")
+  );
+  if (titleCompare !== 0) return titleCompare;
+
+  const aCreatedTime = toTimestamp(a.task?.createdAt) ?? Number.POSITIVE_INFINITY;
+  const bCreatedTime = toTimestamp(b.task?.createdAt) ?? Number.POSITIVE_INFINITY;
+  if (aCreatedTime !== bCreatedTime) return aCreatedTime - bCreatedTime;
+
   return getTaskId(a.task) - getTaskId(b.task);
 };
 
@@ -100,9 +121,15 @@ export const sortSectionTasks = (tasks, section, now = new Date()) => {
   );
 
   const pendingEntries = [];
+  const earlyPreviewEntries = [];
   const completedTodayEntries = [];
 
   sectionEntries.forEach((entry) => {
+    if (isEarlyRecurringPreviewTask(entry.task)) {
+      earlyPreviewEntries.push(entry);
+      return;
+    }
+
     if (!entry.task.completed) {
       pendingEntries.push(entry);
       return;
@@ -117,22 +144,43 @@ export const sortSectionTasks = (tasks, section, now = new Date()) => {
   const sortedCompletedTasks = completedTodayEntries
     .sort(compareCompletedTasks)
     .map((entry) => entry.task);
+  const sortedEarlyPreviewTasks = earlyPreviewEntries
+    .sort(compareEarlyPreviewTasks)
+    .map((entry) => entry.task);
 
-  return [...sortedPendingTasks, ...sortedCompletedTasks];
+  return [...sortedPendingTasks, ...sortedCompletedTasks, ...sortedEarlyPreviewTasks];
 };
 
 export const sortTasksForSection = sortSectionTasks;
 
 export const getPendingTaskCount = (tasks, section) =>
   tasks.reduce((count, task) => {
-    if (task.section !== section || task.completed || task.isPinned) return count;
+    if (
+      task.section !== section ||
+      task.completed ||
+      task.isPinned ||
+      isEarlyRecurringPreviewTask(task)
+    ) {
+      return count;
+    }
     return count + 1;
   }, 0);
 
 export const sortPinnedTasks = (tasks, now = new Date()) => {
-  const nowTime = now.getTime();
   const pinnedEntries = mapTaskEntries(
-    tasks.filter((task) => task.isPinned && !task.completed)
+    tasks.filter(
+      (task) =>
+        task.isPinned && !task.completed && !isEarlyRecurringPreviewTask(task)
+    )
   );
-  return sortPendingTaskEntries(pinnedEntries, nowTime);
+  const earlyPreviewEntries = mapTaskEntries(
+    tasks.filter(
+      (task) =>
+        task.isPinned && !task.completed && isEarlyRecurringPreviewTask(task)
+    )
+  );
+  return [
+    ...sortPendingTaskEntries(pinnedEntries, now.getTime()),
+    ...earlyPreviewEntries.sort(compareEarlyPreviewTasks).map((entry) => entry.task),
+  ];
 };

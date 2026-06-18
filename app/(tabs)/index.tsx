@@ -93,6 +93,7 @@ import {
 } from "../../utils/repeatTaskHelpers";
 import { createTaskDuplicateFromCompleted } from "../../utils/taskDuplicateHelpers";
 import { formatRepeatLabel } from "../../utils/repeatLabelFormatter";
+import { buildRecurringDisplayTasksForDate } from "../../utils/recurringDisplayHelpers";
 import {
   cancelNotificationById,
   scheduleFocusCompletionNotification,
@@ -744,6 +745,10 @@ const isTaskDeletedOrArchived = (task) =>
   task?.archived === 1 ||
   task?.isArchived === true ||
   task?.isArchived === 1;
+
+const isEarlyRecurringPreviewTask = (task) =>
+  task?.isEarlyRecurringPreview === true ||
+  task?.displayMode === "earlyRecurringPreview";
 
 const getTaskIdentityKey = (value) => {
   if (value === null || value === undefined) return "";
@@ -1726,6 +1731,14 @@ export default function Home() {
         : `${completedTodayTasks} of ${totalTodayTasks} tasks completed ✨`;
   const modalScale = useRef(new Animated.Value(0.8)).current;
   const todayDateKey = dailyStats?.date || getDateKey();
+  const displayTasksForToday = useMemo(() => {
+    const viewDate = parseDayKeyToDate(todayDateKey) || new Date();
+    return buildRecurringDisplayTasksForDate(tasks, viewDate);
+  }, [tasks, todayDateKey]);
+  const realDisplayTasksForToday = useMemo(
+    () => displayTasksForToday.filter((task) => !isEarlyRecurringPreviewTask(task)),
+    [displayTasksForToday]
+  );
   const progressTaskLists = useMemo(() => {
     const now = new Date();
     const { start, end } = getDayBounds(now);
@@ -1990,20 +2003,20 @@ export default function Home() {
 
   const pendingActionableTasks = useMemo(
     () =>
-      tasks.filter((task) => {
+      realDisplayTasksForToday.filter((task) => {
         if (!task || task.completed) return false;
         if (task.isPinned) return true;
         return SECTION_ORDER.includes(task.section);
       }),
-    [tasks]
+    [realDisplayTasksForToday]
   );
 
   const currentTaskQuickTarget = useMemo(
     () =>
-      findBestCurrentTask(tasks, {
+      findBestCurrentTask(realDisplayTasksForToday, {
         activeTaskId,
       }),
-    [activeTaskId, tasks]
+    [activeTaskId, realDisplayTasksForToday]
   );
   const currentTaskQuickTask = currentTaskQuickTarget?.task || null;
   const currentTaskQuickTaskId = currentTaskQuickTarget?.taskId || null;
@@ -2037,7 +2050,9 @@ export default function Home() {
 
   const smartActionTask = useMemo(() => {
     const activeTask = activeTaskId
-      ? tasks.find((task) => task.id === activeTaskId && !task.completed)
+      ? realDisplayTasksForToday.find(
+          (task) => task.id === activeTaskId && !task.completed
+        )
       : null;
     if (activeTask) {
       return {
@@ -2087,7 +2102,7 @@ export default function Home() {
           icon: "🚀",
         }
       : null;
-  }, [activeTaskId, pendingActionableTasks, tasks]);
+  }, [activeTaskId, pendingActionableTasks, realDisplayTasksForToday]);
 
   const smartTaskInitiationAffirmation = useMemo(() => {
     if (!smartActionTask?.task) return "";
@@ -2104,7 +2119,7 @@ export default function Home() {
       return acc;
     }, {});
 
-    tasks.forEach((task) => {
+    displayTasksForToday.forEach((task) => {
       if (task.isPinned) return;
       if (groupedTasks[task.section]) {
         groupedTasks[task.section].push(task);
@@ -2112,7 +2127,7 @@ export default function Home() {
     });
 
     return groupedTasks;
-  }, [tasks]);
+  }, [displayTasksForToday]);
 
   const sectionTasksMap = useMemo(() => {
     const now = new Date();
@@ -2142,7 +2157,9 @@ export default function Home() {
           return;
         }
 
-        pendingTasks.push(task);
+        if (!isEarlyRecurringPreviewTask(task)) {
+          pendingTasks.push(task);
+        }
       });
 
       const todayPendingCount = pendingTasks.reduce((count, task) => {
@@ -2184,12 +2201,18 @@ export default function Home() {
   }, [sectionTasksByName]);
 
   const nearestUpcomingSection = useMemo(
-    () => getNearestUpcomingSection(tasks),
-    [tasks]
+    () => getNearestUpcomingSection(realDisplayTasksForToday),
+    [realDisplayTasksForToday]
   );
 
-  const pinnedTasks = useMemo(() => sortPinnedTasks(tasks), [tasks]);
-  const pinnedTaskCount = pinnedTasks.length;
+  const pinnedTasks = useMemo(
+    () => sortPinnedTasks(displayTasksForToday),
+    [displayTasksForToday]
+  );
+  const pinnedTaskCount = useMemo(
+    () => pinnedTasks.filter((task) => !isEarlyRecurringPreviewTask(task)).length,
+    [pinnedTasks]
+  );
   const pinnedHeaderStats = useMemo(() => {
     const now = new Date();
     const nowTime = now.getTime();
@@ -2200,6 +2223,7 @@ export default function Home() {
     let nearestUpcomingTime = Number.POSITIVE_INFINITY;
 
     pinnedTasks.forEach((task) => {
+      if (isEarlyRecurringPreviewTask(task)) return;
       const scheduledTimestamp = toTaskTimestamp(task.scheduledTime);
 
       if (isTimestampWithinRange(scheduledTimestamp, start, end)) {
@@ -15158,6 +15182,8 @@ export default function Home() {
           {isSectionExpanded && (
             <View className="px-3 pb-3">
               {sectionTasks.map((task) => {
+            const isEarlyRecurringPreview = isEarlyRecurringPreviewTask(task);
+            const earlyPreviewTag = task.earlyTag || "Tomorrow";
             const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
             const taskDate = parseStoredDateTime(task.scheduledTime);
             const taskTimestamp = taskDate?.getTime() || 0;
@@ -15172,10 +15198,13 @@ export default function Home() {
               (task.firstAction || "").trim() ||
               "Choose one tiny first move.";
             const hasPendingNotification =
-              Array.isArray(task.notificationId) && task.notificationId.length > 0;
+              !isEarlyRecurringPreview &&
+              Array.isArray(task.notificationId) &&
+              task.notificationId.length > 0;
             const repeatLabel = repeatLabelByTaskId[task.id] || "";
             const hasRepeatLabel = Boolean(repeatLabel);
-            const showTaskHeaderMeta = task.isPinned || hasRepeatLabel;
+            const showTaskHeaderMeta =
+              task.isPinned || hasRepeatLabel || isEarlyRecurringPreview;
             const energyMetadataPills = getTaskEnergyMetadataPills(task);
             const taskSupportSignal =
               taskSupportSignalById[task.id] || EMPTY_TASK_SUPPORT_SIGNAL;
@@ -15191,6 +15220,7 @@ export default function Home() {
             const showTaskSupportHint =
               isTaskExpanded &&
               !task.completed &&
+              !isEarlyRecurringPreview &&
               !isArchivedOrDeletedTask &&
               taskSupportSignal.level !== "none";
             const isHeavySupportSignal = taskSupportSignal.level === "heavy";
@@ -15207,7 +15237,7 @@ export default function Home() {
               : "How did this task feel?";
 
             const upcomingReminders = [];
-            if (task.scheduledTime) {
+            if (!isEarlyRecurringPreview && task.scheduledTime) {
               const intervals = [20, 10, 5, 0];
               intervals.forEach((mins) => {
                 const triggerTime = taskTimestamp - mins * 60000;
@@ -15223,9 +15253,9 @@ export default function Home() {
               });
             }
 
-            const cardBgClass = activeTaskId === task.id ? "bg-[#123131]" : task.completed ? "bg-[#0B1F1F]/90 opacity-90" : "bg-[#0B1F1F]";
-            const cardBorderClass = activeTaskId === task.id ? "border-[#5EEAD4] border" : task.completed ? "border-[#7DFFB3]/60 border-l-4" : "border-[#337a7a]/35 border border-l-4 border-l-[#9FB88D]/85";
-            const cardShadowClass = activeTaskId === task.id ? "shadow-2xl shadow-[#5EEAD4]/20" : task.completed ? "shadow-lg shadow-[#7DFFB3]/10" : "shadow-md shadow-[#66b9b9]/10";
+            const cardBgClass = activeTaskId === task.id ? "bg-[#123131]" : task.completed ? "bg-[#0B1F1F]/90 opacity-90" : isEarlyRecurringPreview ? "bg-[#0B1F1F]/95" : "bg-[#0B1F1F]";
+            const cardBorderClass = activeTaskId === task.id ? "border-[#5EEAD4] border" : task.completed ? "border-[#7DFFB3]/60 border-l-4" : isEarlyRecurringPreview ? "border-[#D9A441]/35 border border-l-4 border-l-[#D9A441]/70" : "border-[#337a7a]/35 border border-l-4 border-l-[#9FB88D]/85";
+            const cardShadowClass = activeTaskId === task.id ? "shadow-2xl shadow-[#5EEAD4]/20" : task.completed ? "shadow-lg shadow-[#7DFFB3]/10" : isEarlyRecurringPreview ? "shadow-md shadow-[#D9A441]/10" : "shadow-md shadow-[#66b9b9]/10";
             const taskCardClassName = `p-4 rounded-[24px] mb-3 ${cardBgClass} ${cardBorderClass} ${cardShadowClass}`;
             const isTaskHighlighted = highlightedTaskId === task.id;
             const highlightOverlayOpacity = taskHighlightPulse.interpolate({
@@ -15243,7 +15273,7 @@ export default function Home() {
 
             return (
               <Animated.View
-                key={task.id}
+                key={task.displayKey || task.id}
                 onLayout={(event) => {
                   taskPositions.current[task.id] = event.nativeEvent.layout.y;
                 }}
@@ -15283,18 +15313,38 @@ export default function Home() {
                   <View className="flex-row items-center justify-between pb-3 mb-2 border-b border-[#337a7a]/25">
                     <View className="flex-row items-center flex-1">
                       <TouchableOpacity
+                        activeOpacity={0.82}
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          isEarlyRecurringPreview
+                            ? "Tomorrow preview"
+                            : task.completed
+                              ? "Mark task as pending"
+                              : "Mark task as completed"
+                        }
                         onPress={(event) => {
                           event.stopPropagation?.();
+                          if (isEarlyRecurringPreview) {
+                            showCelebration(
+                              "This repeating task is scheduled for tomorrow.",
+                              "OK"
+                            );
+                            return;
+                          }
                           toggleTask(task.id);
                         }}
-                        className={`w-7 h-7 rounded-[10px] border-2 mr-3 items-center justify-center ${
+                        className={`w-9 h-9 rounded-[13px] border-2 mr-3.5 items-center justify-center shadow-sm ${
                           task.completed
-                            ? "bg-[#7DFFB3] border-[#7DFFB3]"
-                            : "bg-[#061414]/40 border-[#337a7a]"
+                            ? "bg-[#7DFFB3] border-[#7DFFB3] shadow-[#7DFFB3]/25"
+                            : isEarlyRecurringPreview
+                              ? "bg-[#2A2218]/75 border-[#D9A441]/60 shadow-[#D9A441]/15"
+                            : "bg-[#061414]/45 border-[#66b9b9]/45 shadow-[#66b9b9]/10"
                         }`}
                       >
                         {task.completed ? (
-                          <Feather name="check" size={12} color={COLORS.bg} />
+                          <Feather name="check" size={18} color={COLORS.bg} />
+                        ) : isEarlyRecurringPreview ? (
+                          <Feather name="calendar" size={16} color={COLORS.warning} />
                         ) : null}
                       </TouchableOpacity>
 
@@ -15312,6 +15362,17 @@ export default function Home() {
 
                         {showTaskHeaderMeta ? (
                           <View className="flex-row items-center flex-wrap mt-1">
+                            {isEarlyRecurringPreview ? (
+                              <View className="px-2 py-0.5 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/70 mr-2 mb-1">
+                                <Text
+                                  numberOfLines={1}
+                                  className="text-[#D9A441] text-[9px] font-black uppercase tracking-widest"
+                                >
+                                  {earlyPreviewTag}
+                                </Text>
+                              </View>
+                            ) : null}
+
                             {task.isPinned ? (
                               <View className="flex-row items-center mr-2">
                                 <Feather
@@ -15348,7 +15409,7 @@ export default function Home() {
                           </View>
                         ) : null}
 
-                        {!task.completed ? (
+                        {!task.completed && !isEarlyRecurringPreview ? (
                           <TouchableOpacity
                             accessibilityLabel="Help Me Start"
                             accessibilityHint="Opens gentle start options for this task"
@@ -15376,6 +15437,7 @@ export default function Home() {
                       <View className="flex-row items-center">
                         {Platform.OS === "android" &&
                         !task.completed &&
+                        !isEarlyRecurringPreview &&
                         !isArchivedOrDeletedTask && (
                           <TouchableOpacity
                             accessibilityRole="button"
@@ -15421,7 +15483,7 @@ export default function Home() {
                             )}
                           </TouchableOpacity>
                         )}
-                        {!task.completed && (
+                        {!task.completed && !isEarlyRecurringPreview && (
                           <TouchableOpacity
                             activeOpacity={0.7}
                             onPress={(event) => {
@@ -15477,17 +15539,19 @@ export default function Home() {
                           <Feather name="edit-2" size={14} color={COLORS.accent} />
                         </TouchableOpacity>
 
-                        <TouchableOpacity
-                          activeOpacity={0.7}
-                          onPress={(event) => {
-                            event.stopPropagation?.();
-                            setDeleteTask(task);
-                            setDeleteModalVisible(true);
-                          }}
-                          className="p-1.5 bg-[#FF7B7B]/15 rounded-xl border border-[#FF7B7B]/25"
-                        >
-                          <Feather name="trash-2" size={14} color={COLORS.danger} />
-                        </TouchableOpacity>
+                        {!isEarlyRecurringPreview ? (
+                          <TouchableOpacity
+                            activeOpacity={0.7}
+                            onPress={(event) => {
+                              event.stopPropagation?.();
+                              setDeleteTask(task);
+                              setDeleteModalVisible(true);
+                            }}
+                            className="p-1.5 bg-[#FF7B7B]/15 rounded-xl border border-[#FF7B7B]/25"
+                          >
+                            <Feather name="trash-2" size={14} color={COLORS.danger} />
+                          </TouchableOpacity>
+                        ) : null}
                       </View>
                     </View>
                   </View>
@@ -15495,7 +15559,9 @@ export default function Home() {
                   <View className="flex-row items-center justify-between mt-1">
                     {task.scheduledTime ? (
                       <Text className="text-[#9FB5B5] text-xs font-semibold">
-                        {formatDateTimeForDisplay(task.scheduledTime)}
+                        {isEarlyRecurringPreview
+                          ? `Due tomorrow | ${formatDateTimeForDisplay(task.scheduledTime)}`
+                          : formatDateTimeForDisplay(task.scheduledTime)}
                       </Text>
                     ) : (
                       <Text className="text-[#9FB5B5] text-xs font-semibold">
@@ -15504,7 +15570,7 @@ export default function Home() {
                     )}
                     {hasPendingNotification ? (
                       <Text className="text-[13px]" style={STANDARD_EMOJI_TEXT_STYLE}>
-c                        {REMINDER_NOTIFICATION_EMOJI}
+                        {REMINDER_NOTIFICATION_EMOJI}
                       </Text>
                     ) : null}
                   </View>
@@ -15560,6 +15626,17 @@ c                        {REMINDER_NOTIFICATION_EMOJI}
 
                     {isTaskExpanded && (
                       <>
+                        {isEarlyRecurringPreview ? (
+                          <View className="mt-2 p-3 rounded-2xl border border-[#D9A441]/30 bg-[#2A2218]/65">
+                            <Text className="text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
+                              Repeats tomorrow
+                            </Text>
+                            <Text className="text-[#E8F4F4] text-xs mt-1.5">
+                              This repeating task is scheduled for tomorrow.
+                            </Text>
+                          </View>
+                        ) : null}
+
                         {showTaskSupportHint ? (
                           <View className="mt-2 p-3 rounded-2xl border border-[#66b9b9]/30 bg-[#123131]/70">
                             <Text className="text-[#E8F4F4] text-xs font-black">
@@ -15841,61 +15918,65 @@ c                        {REMINDER_NOTIFICATION_EMOJI}
                             className="text-[#E8F4F4] text-xs py-1 border-b border-[#66b9b9]/35"
                           />
                         </View>
-                    <Animated.View
-                      style={{ transform: [{ translateX: shakeAnim }] }}
-                      className="flex-row mt-3 items-center flex-wrap"
-                    >
-                      {[10, 20, 30].map((min) => (
-                        <TouchableOpacity
-                          key={min}
-                          onPress={() =>
-                            setTaskDurations((prev) => ({
-                              ...prev,
-                              [task.id]: min * 60,
-                            }))
-                          }
-                          className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
-                            showDurationError === task.id
-                              ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
-                              : taskDurations[task.id] === min * 60
-                              ? "bg-[#66b9b9] border-[#66b9b9]"
-                              : "bg-[#123131]/80 border-[#337a7a]/40"
-                          }`}
+                    {!isEarlyRecurringPreview ? (
+                      <>
+                        <Animated.View
+                          style={{ transform: [{ translateX: shakeAnim }] }}
+                          className="flex-row mt-3 items-center flex-wrap"
                         >
-                          <Text
-                            className={`text-[11px] font-bold ${
-                              taskDurations[task.id] === min * 60
-                                ? "text-[#061414]"
-                                : "text-[#E8F4F4]"
+                          {[10, 20, 30].map((min) => (
+                            <TouchableOpacity
+                              key={min}
+                              onPress={() =>
+                                setTaskDurations((prev) => ({
+                                  ...prev,
+                                  [task.id]: min * 60,
+                                }))
+                              }
+                              className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
+                                showDurationError === task.id
+                                  ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
+                                  : taskDurations[task.id] === min * 60
+                                  ? "bg-[#66b9b9] border-[#66b9b9]"
+                                  : "bg-[#123131]/80 border-[#337a7a]/40"
+                              }`}
+                            >
+                              <Text
+                                className={`text-[11px] font-bold ${
+                                  taskDurations[task.id] === min * 60
+                                    ? "text-[#061414]"
+                                    : "text-[#E8F4F4]"
+                                }`}
+                              >
+                                {min}m
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+
+                          <TouchableOpacity
+                            onPress={() => {
+                              setCurrentTaskForTime(task.id);
+                              setTimeModalVisible(true);
+                            }}
+                            className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
+                              showDurationError === task.id
+                                ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
+                                : "bg-[#123131]/80 border-[#337a7a]/40"
                             }`}
                           >
-                            {min}m
+                            <Text className="text-[#E8F4F4] text-[11px] font-bold">
+                              Custom
+                            </Text>
+                          </TouchableOpacity>
+                        </Animated.View>
+
+                        {showDurationError === task.id && (
+                          <Text className="text-[#FF7B7B] text-[10px] mt-1 font-bold">
+                            Please select focus time
                           </Text>
-                        </TouchableOpacity>
-                      ))}
-
-                      <TouchableOpacity
-                        onPress={() => {
-                          setCurrentTaskForTime(task.id);
-                          setTimeModalVisible(true);
-                        }}
-                        className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
-                          showDurationError === task.id
-                            ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
-                            : "bg-[#123131]/80 border-[#337a7a]/40"
-                        }`}
-                      >
-                        <Text className="text-[#E8F4F4] text-[11px] font-bold">
-                          Custom
-                        </Text>
-                      </TouchableOpacity>
-                    </Animated.View>
-
-                    {showDurationError === task.id && (
-                      <Text className="text-[#FF7B7B] text-[10px] mt-1 font-bold">
-                        Please select focus time
-                      </Text>
-                    )}
+                        )}
+                      </>
+                    ) : null}
 
                     {lastCompletedTaskId === task.id && (
                       <Text className="text-[#7DFFB3] text-[10px] mt-2 font-bold uppercase tracking-widest">
@@ -15912,6 +15993,13 @@ c                        {REMINDER_NOTIFICATION_EMOJI}
                     <TouchableOpacity
                       onPress={() => {
                         if (task.completed) return;
+                        if (isEarlyRecurringPreview) {
+                          showCelebration(
+                            "This repeating task is scheduled for tomorrow.",
+                            "OK"
+                          );
+                          return;
+                        }
 
                         const duration = taskDurations[task.id];
 
@@ -15926,21 +16014,27 @@ c                        {REMINDER_NOTIFICATION_EMOJI}
                         startFocus(task.id);
                       }}
                       className={`mt-2 self-start px-3 py-2 rounded-full border ${
-                        taskDurations[task.id]
+                        isEarlyRecurringPreview
+                          ? "bg-[#2A2218]/75 border-[#D9A441]/35"
+                          : taskDurations[task.id]
                           ? "bg-[#66b9b9]/15 border-[#66b9b9]/40"
                           : "bg-[#123131]/70 border-[#337a7a]/35"
                       }`}
                     >
                       <Text
                         className={`font-bold text-xs uppercase tracking-widest ${
-                          taskDurations[task.id] ? "text-[#66b9b9]" : "text-[#9FB5B5]"
+                          isEarlyRecurringPreview
+                            ? "text-[#D9A441]"
+                            : taskDurations[task.id] ? "text-[#66b9b9]" : "text-[#9FB5B5]"
                         }`}
                       >
-                        {taskDurations[task.id] ? "Start Focus" : "Select Focus Time"}
+                        {isEarlyRecurringPreview
+                          ? "Scheduled Tomorrow"
+                          : taskDurations[task.id] ? "Start Focus" : "Select Focus Time"}
                       </Text>
                     </TouchableOpacity>
 
-                    {taskDurations[task.id] && (
+                    {taskDurations[task.id] && !isEarlyRecurringPreview && (
                       <Text className="text-[#99bdbd] text-[10px] mt-1.5 font-semibold">
                         {formatDuration(taskDurations[task.id])} selected
                       </Text>
