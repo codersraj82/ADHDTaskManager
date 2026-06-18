@@ -21,7 +21,7 @@ import {
   useMemo,
 } from "react";
 import { db, initDB } from "../../database/db";
-import Svg, { Circle } from "react-native-svg";
+import Svg, { Circle, Defs, LinearGradient, Path, Stop } from "react-native-svg";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
@@ -210,7 +210,9 @@ import Reanimated, {
   useAnimatedReaction,
   useAnimatedStyle,
   useSharedValue,
+  withDelay,
   withRepeat,
+  withSequence,
   withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -411,7 +413,16 @@ const getMillisecondsUntilNextMinute = (date = new Date()) => {
   return Math.max(1000, 60000 - elapsedInMinute + 100);
 };
 
-const affirmations = SECTION_HEADER_AFFIRMATIONS;
+const HEADER_AFFIRMATIONS = [
+  ...SECTION_HEADER_AFFIRMATIONS,
+  "You do not have to finish everything at once; choose one kind next step and let your attention settle.",
+  "A slower start still counts. Give your brain one clear place to land, then move gently.",
+  "Your list is here to support you, not rush you. One calm action is enough to begin.",
+  "If the day feels noisy, come back to the smallest useful version and let that be a real win.",
+  "You are allowed to restart softly. Pick one task, one breath, and one doable first move.",
+];
+
+const affirmations = HEADER_AFFIRMATIONS;
 
 const MENU_ITEMS = [
   { key: "profile", label: "Profile Details", icon: "👤" },
@@ -482,11 +493,11 @@ const FOCUS_AUTO_DISMISS_COUNTDOWN_SECONDS = Math.max(
 );
 const APP_HORIZONTAL_PADDING = 16;
 const APP_HEADER_SAFE_TOP_GAP = 4;
-const APP_HEADER_CONTENT_HEIGHT = 156;
+const APP_HEADER_CONTENT_HEIGHT = 166;
 const APP_HEADER_BOTTOM_PADDING = 16;
 const APP_HEADER_TOP_ROW_HEIGHT = 54;
-const APP_HEADER_AFFIRMATION_HEIGHT = 58;
-const APP_HEADER_AFFIRMATION_TEXT_HEIGHT = 40;
+const APP_HEADER_AFFIRMATION_HEIGHT = 68;
+const APP_HEADER_AFFIRMATION_TEXT_HEIGHT = 46;
 const FLOATING_MENU_BUTTON_SIZE = 44;
 const FLOATING_MENU_SEARCH_GAP = 8;
 const TASK_SEARCH_TOP_GAP = 12;
@@ -495,10 +506,11 @@ const TASK_SEARCH_OPEN_SPACER_HEIGHT = 468;
 const HEADER_HIDE_SCROLL_THRESHOLD = 48;
 const HEADER_SHOW_SCROLL_THRESHOLD = 12;
 const HEADER_HIDE_OFFSET_FALLBACK = 184;
-const HEADER_AFFIRMATION_MARQUEE_GAP = 56;
-const HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC = 18;
-const HEADER_AFFIRMATION_MIN_DURATION_MS = 14000;
-const HEADER_AFFIRMATION_MAX_DURATION_MS = 42000;
+const HEADER_AFFIRMATION_MARQUEE_GAP = 80;
+const HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC = 20;
+const HEADER_AFFIRMATION_MIN_DURATION_MS = 18000;
+const HEADER_AFFIRMATION_MAX_DURATION_MS = 90000;
+const HEADER_AFFIRMATION_START_PAUSE_MS = 900;
 const WELCOME_VOICE_DELAY_MS = 900;
 const NOTIFICATION_SPEECH_MIN_GAP_MS = 6000;
 const SMART_TASK_BORDER_CYCLE_MS = 3600;
@@ -2960,10 +2972,16 @@ export default function Home() {
     );
 
     headerAffirmationTranslateX.value = withRepeat(
-      withTiming(-travelDistance, {
-        duration,
-        easing: Easing.linear,
-      }),
+      withSequence(
+        withDelay(
+          HEADER_AFFIRMATION_START_PAUSE_MS,
+          withTiming(-travelDistance, {
+            duration,
+            easing: Easing.linear,
+          })
+        ),
+        withTiming(0, { duration: 0 })
+      ),
       -1,
       false
     );
@@ -2977,6 +2995,7 @@ export default function Home() {
   //******useRef********** */
 
   const scrollRef = useRef(null);
+  const profilePhotoSheetScrollRef = useRef(null);
   const recoveryListRef = useRef(null);
   const recoveryScrollOffsetRef = useRef(0);
   const recoveryTargetScrollTimeoutRef = useRef(null);
@@ -11809,6 +11828,7 @@ export default function Home() {
   const renderProfileTaglineEditor = ({
     compact = false,
     showSaveButton = true,
+    onInputFocus = null,
   } = {}) => (
     <View className={compact ? "mt-4" : "mt-2 mb-4"}>
       <View className="flex-row items-center justify-between mb-2">
@@ -11829,9 +11849,11 @@ export default function Home() {
       <TextInput
         value={profileDraftTagline}
         onChangeText={setProfileDraftTagline}
+        onFocus={onInputFocus || undefined}
         placeholder="One small step at a time"
         placeholderTextColor={COLORS.muted}
         returnKeyType="done"
+        maxLength={MAX_PROFILE_TAGLINE_LENGTH}
         multiline={false}
         className={`bg-[#061414]/45 text-[#E8F4F4] p-3 rounded-2xl border font-semibold ${
           isProfileTaglineTooLong ? "border-[#FF8A8A]/60" : "border-[#66b9b9]/25"
@@ -11859,90 +11881,120 @@ export default function Home() {
     </View>
   );
 
-  const renderProfilePhotoModal = () => (
-    <Modal
-      visible={profilePhotoModalVisible}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setProfilePhotoModalVisible(false)}
-    >
-      <View className="flex-1 justify-end bg-[#061414]/92">
-        <Pressable
-          onPress={() => {
-            if (!profilePhotoBusy) setProfilePhotoModalVisible(false);
-          }}
-          className="absolute inset-0"
-        />
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-        >
-          <View className="bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 px-5 pt-3 pb-6 shadow-2xl shadow-[#66b9b9]/20">
-            <View className="items-center mb-3">
-              <View className="w-14 h-1.5 rounded-full bg-[#337a7a]/70 mb-4" />
-              <Text className="text-[#E8F4F4] text-xl font-black">
-                Profile photo
-              </Text>
-            </View>
+  const renderProfilePhotoModal = () => {
+    const sheetMaxHeight = Math.round(
+      Dimensions.get("window").height * (isKeyboardVisible ? 0.74 : 0.88)
+    );
+    const taglineKeyboardPadding = isKeyboardVisible
+      ? Math.max(insets.bottom, 12) + 112
+      : 0;
+    const scrollTaglineIntoView = () => {
+      setTimeout(() => {
+        profilePhotoSheetScrollRef.current?.scrollToEnd?.({ animated: true });
+      }, 260);
+    };
 
-            <View className="items-center mb-4">
-              <View className="w-32 h-32 rounded-full bg-[#123131] border-2 border-[#66b9b9]/45 shadow-lg shadow-[#66b9b9]/20 items-center justify-center overflow-hidden">
-                {hasProfilePhoto ? (
-                  <Image
-                    source={{ uri: profile.profileImage }}
-                    onError={() => setProfilePhotoLoadFailed(true)}
-                    className="w-full h-full"
-                  />
-                ) : (
-                  <Text className="text-5xl">{profile.vibe || "🌿"}</Text>
-                )}
-              </View>
-            </View>
+    return (
+      <Modal
+        visible={profilePhotoModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setProfilePhotoModalVisible(false)}
+      >
+        <View className="flex-1 justify-end bg-[#061414]/92">
+          <Pressable
+            onPress={() => {
+              if (!profilePhotoBusy) setProfilePhotoModalVisible(false);
+            }}
+            className="absolute inset-0"
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={modalKeyboardOffset}
+            className="flex-1 justify-end"
+          >
+            <View
+              style={{ maxHeight: sheetMaxHeight }}
+              className="bg-[#0B1F1F] rounded-t-[34px] border-t border-[#66b9b9]/35 px-5 pt-3 pb-6 shadow-2xl shadow-[#66b9b9]/20"
+            >
+              <ScrollView
+                ref={profilePhotoSheetScrollRef}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: taglineKeyboardPadding }}
+              >
+                <View className="items-center mb-3">
+                  <View className="w-14 h-1.5 rounded-full bg-[#337a7a]/70 mb-4" />
+                  <Text className="text-[#E8F4F4] text-xl font-black">
+                    Profile photo
+                  </Text>
+                </View>
 
-            <View className="flex-row flex-wrap justify-between">
-              {hasProfilePhoto ? (
-                <>
-                  {renderProfilePhotoActionButton({
-                    label: "View photo",
-                    icon: "maximize-2",
-                    onPress: () => setProfilePhotoViewerVisible(true),
-                  })}
-                  {renderProfilePhotoActionButton({
-                    label: "Change photo",
-                    icon: "image",
-                    onPress: () => void pickProfileImage(),
-                  })}
-                  {renderProfilePhotoActionButton({
-                    label: "Crop photo",
-                    icon: "crop",
-                    onPress: openProfileCropFlow,
-                  })}
-                  {renderProfilePhotoActionButton({
-                    label: "Remove photo",
-                    icon: "trash-2",
-                    onPress: confirmRemoveProfileImage,
-                    danger: true,
-                  })}
-                </>
-              ) : (
-                renderProfilePhotoActionButton({
-                  label: "Add photo",
-                  icon: "image",
-                  onPress: () => void pickProfileImage(),
-                })
-              )}
-              {renderProfilePhotoActionButton({
-                label: "Close",
-                icon: "x",
-                onPress: () => setProfilePhotoModalVisible(false),
-              })}
-            </View>
+                <View className="items-center mb-4">
+                  <View className="w-32 h-32 rounded-full bg-[#123131] border-2 border-[#66b9b9]/45 shadow-lg shadow-[#66b9b9]/20 items-center justify-center overflow-hidden">
+                    {hasProfilePhoto ? (
+                      <Image
+                        source={{ uri: profile.profileImage }}
+                        onError={() => setProfilePhotoLoadFailed(true)}
+                        className="w-full h-full"
+                      />
+                    ) : (
+                      <Text className="text-5xl">{profile.vibe || "🌿"}</Text>
+                    )}
+                  </View>
+                </View>
 
-            {renderProfileTaglineEditor({ compact: true })}
-          </View>
-        </KeyboardAvoidingView>
-      </View>
-    </Modal>
-  );
+                <View className="flex-row flex-wrap justify-between">
+                  {hasProfilePhoto ? (
+                    <>
+                      {renderProfilePhotoActionButton({
+                        label: "View photo",
+                        icon: "maximize-2",
+                        onPress: () => setProfilePhotoViewerVisible(true),
+                      })}
+                      {renderProfilePhotoActionButton({
+                        label: "Change photo",
+                        icon: "image",
+                        onPress: () => void pickProfileImage(),
+                      })}
+                      {renderProfilePhotoActionButton({
+                        label: "Crop photo",
+                        icon: "crop",
+                        onPress: openProfileCropFlow,
+                      })}
+                      {renderProfilePhotoActionButton({
+                        label: "Remove photo",
+                        icon: "trash-2",
+                        onPress: confirmRemoveProfileImage,
+                        danger: true,
+                      })}
+                    </>
+                  ) : (
+                    renderProfilePhotoActionButton({
+                      label: "Add photo",
+                      icon: "image",
+                      onPress: () => void pickProfileImage(),
+                    })
+                  )}
+                  {renderProfilePhotoActionButton({
+                    label: "Close",
+                    icon: "x",
+                    onPress: () => setProfilePhotoModalVisible(false),
+                  })}
+                </View>
+
+                {renderProfileTaglineEditor({
+                  compact: true,
+                  onInputFocus: scrollTaglineIntoView,
+                })}
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+    );
+  };
 
   const renderProfilePhotoViewerModal = () => (
     <Modal
@@ -12385,11 +12437,19 @@ export default function Home() {
               style={headerAffirmationMarqueeStyle}
               className="flex-row items-center"
             >
-              <Text numberOfLines={1} className="text-[#E8F4F4] text-sm font-bold leading-5">
+              <Text
+                numberOfLines={1}
+                className="text-[#E8F4F4] text-sm font-bold leading-5"
+                style={{ flexShrink: 0 }}
+              >
                 {currentAffirmation}
               </Text>
               <View style={{ width: HEADER_AFFIRMATION_MARQUEE_GAP }} />
-              <Text numberOfLines={1} className="text-[#E8F4F4] text-sm font-bold leading-5">
+              <Text
+                numberOfLines={1}
+                className="text-[#E8F4F4] text-sm font-bold leading-5"
+                style={{ flexShrink: 0 }}
+              >
                 {currentAffirmation}
               </Text>
             </Reanimated.View>
@@ -12408,6 +12468,7 @@ export default function Home() {
               numberOfLines={1}
               onLayout={handleHeaderAffirmationTextLayout}
               className="text-[#E8F4F4] text-sm font-bold leading-5"
+              style={{ flexShrink: 0 }}
             >
               {currentAffirmation}
             </Text>
@@ -15333,18 +15394,61 @@ export default function Home() {
                           }
                           toggleTask(task.id);
                         }}
-                        className={`w-9 h-9 rounded-[13px] border-2 mr-3.5 items-center justify-center shadow-sm ${
+                        className={`w-11 h-11 rounded-[16px] border-2 mr-3.5 items-center justify-center shadow-md ${
                           task.completed
-                            ? "bg-[#7DFFB3] border-[#7DFFB3] shadow-[#7DFFB3]/25"
+                            ? "bg-[#7DFFB3] border-[#B7FFD3] shadow-[#7DFFB3]/35"
                             : isEarlyRecurringPreview
-                              ? "bg-[#2A2218]/75 border-[#D9A441]/60 shadow-[#D9A441]/15"
-                            : "bg-[#061414]/45 border-[#66b9b9]/45 shadow-[#66b9b9]/10"
+                              ? "bg-[#2A2218]/80 border-[#D9A441]/65 shadow-[#D9A441]/18"
+                            : "bg-[#061414]/60 border-[#66b9b9]/55 shadow-[#66b9b9]/14"
                         }`}
                       >
                         {task.completed ? (
-                          <Feather name="check" size={18} color={COLORS.bg} />
+                          <View className="w-9 h-9 rounded-[13px] bg-[#061414]/10 items-center justify-center">
+                            <Svg width={32} height={32} viewBox="0 0 32 32">
+                              <Defs>
+                                <LinearGradient
+                                  id={`task-check-gradient-${task.id}`}
+                                  x1="7"
+                                  y1="23"
+                                  x2="26"
+                                  y2="7"
+                                  gradientUnits="userSpaceOnUse"
+                                >
+                                  <Stop offset="0" stopColor="#0A3A35" />
+                                  <Stop offset="0.52" stopColor="#061414" />
+                                  <Stop offset="1" stopColor="#123131" />
+                                </LinearGradient>
+                              </Defs>
+                              <Path
+                                d="M7.4 16.7 C10.1 19.9 12.1 21.9 13.7 21.9 C15.6 21.9 17.3 18.7 20.1 14.9 C22.1 12.2 23.8 10.1 25.4 8.5"
+                                fill="none"
+                                stroke="#FFFFFF"
+                                strokeWidth={7.2}
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                opacity={0.42}
+                              />
+                              <Path
+                                d="M7.4 16.7 C10.1 19.9 12.1 21.9 13.7 21.9 C15.6 21.9 17.3 18.7 20.1 14.9 C22.1 12.2 23.8 10.1 25.4 8.5"
+                                fill="none"
+                                stroke={`url(#task-check-gradient-${task.id})`}
+                                strokeWidth={5.1}
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                              <Path
+                                d="M8.4 15.2 C10.7 17.7 12.3 19.2 13.6 19.2 C15.1 19.2 16.8 16.5 19.1 13.4 C21 10.9 22.7 9.2 24.2 8.1"
+                                fill="none"
+                                stroke="#DFFFF1"
+                                strokeWidth={1.6}
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                opacity={0.86}
+                              />
+                            </Svg>
+                          </View>
                         ) : isEarlyRecurringPreview ? (
-                          <Feather name="calendar" size={16} color={COLORS.warning} />
+                          <Feather name="calendar" size={18} color={COLORS.warning} />
                         ) : null}
                       </TouchableOpacity>
 
