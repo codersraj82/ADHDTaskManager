@@ -94,15 +94,17 @@ export const getRecurringTaskDisplayInfo = (task, viewDate = new Date()) => {
       isScheduledToday: false,
       isEarlyRecurringPreview: false,
       occurrenceDate: occurrenceDateKey || null,
+      section: task?.section || null,
     };
   }
 
   if (occurrenceDateKey < viewDateKey) {
     return {
-      shouldShow: true,
+      shouldShow: false,
       isScheduledToday: false,
       isEarlyRecurringPreview: false,
       occurrenceDate: occurrenceDateKey,
+      section: task?.section || null,
     };
   }
 
@@ -112,6 +114,7 @@ export const getRecurringTaskDisplayInfo = (task, viewDate = new Date()) => {
       isScheduledToday: true,
       isEarlyRecurringPreview: false,
       occurrenceDate: occurrenceDateKey,
+      section: task?.section || null,
     };
   }
 
@@ -121,6 +124,7 @@ export const getRecurringTaskDisplayInfo = (task, viewDate = new Date()) => {
       isScheduledToday: false,
       isEarlyRecurringPreview: false,
       occurrenceDate: occurrenceDateKey,
+      section: task?.section || null,
     };
   }
 
@@ -133,7 +137,9 @@ export const getRecurringTaskDisplayInfo = (task, viewDate = new Date()) => {
     isScheduledToday: false,
     isEarlyRecurringPreview,
     occurrenceDate: occurrenceDateKey,
+    section: task?.section || null,
     earlyTag: isEarlyRecurringPreview ? EARLY_RECURRING_PREVIEW_TAG : undefined,
+    headerTag: isEarlyRecurringPreview ? EARLY_RECURRING_PREVIEW_TAG : undefined,
   };
 };
 
@@ -168,6 +174,7 @@ export const buildRecurringDisplayTasksForDate = (
       isEarlyRecurringPreview: true,
       earlyPreviewForDate: displayInfo.occurrenceDate,
       earlyTag: displayInfo.earlyTag || EARLY_RECURRING_PREVIEW_TAG,
+      headerTag: displayInfo.headerTag || EARLY_RECURRING_PREVIEW_TAG,
     });
 
     return displayTasks;

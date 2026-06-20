@@ -79,7 +79,10 @@ import {
   getNearestUpcomingSection,
   SECTION_ORDER,
 } from "../../utils/sectionHelpers";
-import { buildNextRecurringTask } from "../../utils/repeatTaskGenerator";
+import {
+  buildDailyRecurringTaskForDate,
+  buildNextRecurringTask,
+} from "../../utils/repeatTaskGenerator";
 import {
   MONTHLY_REPEAT_TYPES,
   REPEAT_TYPES,
@@ -3353,6 +3356,213 @@ export default function Home() {
     setSpecialTasks(rows);
   };
 
+  const createMissedDailyRecurringTasksForDate = async (
+    sourceTasks = [],
+    targetDate = new Date()
+  ) => {
+    const targetKey = getDateKey(targetDate);
+    const groupedDailyTasks = new Map();
+
+    sourceTasks.forEach((task) => {
+      if (!task || isTaskDeletedOrArchived(task)) return;
+      if (normalizeRepeatType(task.repeatType) !== REPEAT_TYPES.DAILY) return;
+      if (!task.scheduledTime) return;
+
+      const groupKey = task.repeatGroupId
+        ? `group:${task.repeatGroupId}`
+        : `task:${task.id}`;
+      const existing = groupedDailyTasks.get(groupKey) || [];
+      existing.push(task);
+      groupedDailyTasks.set(groupKey, existing);
+    });
+
+    const createdTasks = [];
+
+    for (const groupTasks of groupedDailyTasks.values()) {
+      const datedTasks = groupTasks
+        .map((task) => {
+          const scheduledDate = parseStoredDateTime(task.scheduledTime);
+          return {
+            task,
+            scheduledDate,
+            dateKey: scheduledDate ? getDateKey(scheduledDate) : "",
+          };
+        })
+        .filter((entry) => entry.scheduledDate && entry.dateKey);
+
+      if (!datedTasks.length) continue;
+      if (datedTasks.some((entry) => entry.dateKey === targetKey)) continue;
+      if (datedTasks.some((entry) => entry.dateKey > targetKey)) continue;
+
+      const latestPastEntry = datedTasks
+        .filter((entry) => entry.dateKey < targetKey)
+        .sort((a, b) => b.scheduledDate.getTime() - a.scheduledDate.getTime())[0];
+      if (!latestPastEntry) continue;
+
+      const sourceTask = latestPastEntry.task;
+      const repeatGroupId = sourceTask.repeatGroupId || createRepeatGroupId();
+      if (!sourceTask.repeatGroupId) {
+        db.runSync("UPDATE tasks SET repeatGroupId = ? WHERE id = ?", [
+          repeatGroupId,
+          sourceTask.id,
+        ]);
+        sourceTask.repeatGroupId = repeatGroupId;
+      }
+
+      const nextTask = buildDailyRecurringTaskForDate(
+        {
+          ...sourceTask,
+          repeatGroupId,
+        },
+        targetDate
+      );
+      if (!nextTask?.scheduledTime) continue;
+
+      const existing =
+        db.getFirstSync(
+          "SELECT id FROM tasks WHERE repeatGroupId = ? AND scheduledTime = ? LIMIT 1",
+          [repeatGroupId, nextTask.scheduledTime]
+        ) || null;
+      if (existing?.id) continue;
+
+      const createdAt = formatSqliteDateTime(new Date());
+      const nextTaskAttachments = normalizeTaskAttachments(nextTask);
+      const nextTaskAttachmentUri = getPrimaryAttachmentUri(nextTaskAttachments);
+
+      const result = db.runSync(
+        `INSERT INTO tasks (
+          title,
+          section,
+          completed,
+          completedAt,
+          createdAt,
+          repeatType,
+          repeatDays,
+          repeatMonthlyType,
+          repeatCustomDate,
+          repeatYearlyDate,
+          repeatGroupId,
+          scheduledTime,
+          details,
+          attachment,
+          attachments,
+          subtasks,
+          notificationId,
+          isPinned,
+          usePhoneAlarm,
+          moodType,
+          firstAction,
+          minimumVersion,
+          energyRequired,
+          focusRequired,
+          taskContext,
+          estimatedMinutes,
+          startAssistUsedCount,
+          lastStartAssistAt,
+          stuckCount,
+          lastStuckAt
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          nextTask.title || "Task",
+          nextTask.section || "Morning",
+          0,
+          null,
+          createdAt,
+          REPEAT_TYPES.DAILY,
+          serializeRepeatDays([]),
+          "",
+          "",
+          "",
+          repeatGroupId,
+          nextTask.scheduledTime || "",
+          nextTask.details || "",
+          nextTaskAttachmentUri,
+          serializeTaskAttachments(nextTaskAttachments),
+          JSON.stringify(nextTask.subtasks || []),
+          JSON.stringify([]),
+          0,
+          0,
+          nextTask.moodType || "",
+          nextTask.firstAction || "",
+          nextTask.minimumVersion || "",
+          normalizeEnergyRequiredValue(nextTask.energyRequired),
+          normalizeFocusRequiredValue(nextTask.focusRequired),
+          normalizeTaskContextValue(nextTask.taskContext),
+          normalizeEstimatedMinutesValue(nextTask.estimatedMinutes),
+          Number(nextTask.startAssistUsedCount || 0),
+          nextTask.lastStartAssistAt || null,
+          Number(nextTask.stuckCount || 0),
+          nextTask.lastStuckAt || null,
+        ]
+      );
+
+      const insertedId = result.lastInsertRowId;
+      const scheduledIds = await scheduleProReminders(
+        {
+          ...nextTask,
+          id: insertedId,
+          title: sourceTask.title,
+        },
+        { source: "recurringCatchUp" }
+      );
+
+      db.runSync("UPDATE tasks SET notificationId = ? WHERE id = ?", [
+        JSON.stringify(scheduledIds),
+        insertedId,
+      ]);
+
+      createdTasks.push({
+        ...nextTask,
+        id: insertedId,
+        attachment: nextTaskAttachmentUri,
+        attachments: nextTaskAttachments,
+        repeatType: REPEAT_TYPES.DAILY,
+        repeatDays: [],
+        repeatMonthlyType: "",
+        repeatCustomDate: "",
+        repeatYearlyDate: "",
+        repeatGroupId,
+        notificationId: scheduledIds,
+        completed: false,
+        completedAt: null,
+        createdAt,
+        isPinned: false,
+        usePhoneAlarm: false,
+        useStrongAlarm: false,
+        strongAlarmId: "",
+        strongAlarmScheduledAt: "",
+        strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
+        lastStrongAlarmResult: null,
+        moodType: nextTask.moodType || "",
+        firstAction: nextTask.firstAction || "",
+        minimumVersion: nextTask.minimumVersion || "",
+        energyRequired: normalizeEnergyRequiredValue(nextTask.energyRequired),
+        focusRequired: normalizeFocusRequiredValue(nextTask.focusRequired),
+        taskContext: normalizeTaskContextValue(nextTask.taskContext),
+        estimatedMinutes: normalizeEstimatedMinutesValue(nextTask.estimatedMinutes),
+        startAssistUsedCount: Number(nextTask.startAssistUsedCount || 0),
+        lastStartAssistAt: nextTask.lastStartAssistAt || "",
+        stuckCount: Number(nextTask.stuckCount || 0),
+        lastStuckAt: nextTask.lastStuckAt || "",
+        reminderOpenCount: 0,
+        reminderStartNowCount: 0,
+        reminderSnoozeCount: 0,
+        reminderMoveGentlyCount: 0,
+        reminderMakeSmallerCount: 0,
+        lastReminderActionAt: "",
+        lastReminderAction: "",
+        reminderActionHistory: [],
+        snoozeCount: 0,
+        lastSnoozedAt: "",
+        rescheduleCount: 0,
+        lastRescheduledAt: "",
+      });
+    }
+
+    return createdTasks;
+  };
+
   const checkDailyReset = () => {
     const today = getDateKey();
     const settings = getSettingsMap();
@@ -3386,6 +3596,28 @@ export default function Home() {
         lastActiveDate: today,
         lastQualifiedDate,
       }));
+
+      createMissedDailyRecurringTasksForDate(tasksRef.current, new Date())
+        .then((catchUpDailyTasks) => {
+          if (!catchUpDailyTasks.length) return;
+
+          setTasks((prev) => {
+            const existingKeys = new Set(
+              prev.map((task) => `${task.repeatGroupId || task.id}:${task.scheduledTime}`)
+            );
+            const newTasks = catchUpDailyTasks.filter((task) => {
+              const key = `${task.repeatGroupId || task.id}:${task.scheduledTime}`;
+              if (existingKeys.has(key)) return false;
+              existingKeys.add(key);
+              return true;
+            });
+
+            return newTasks.length ? [...prev, ...newTasks] : prev;
+          });
+        })
+        .catch((error) => {
+          console.log("Daily recurring catch-up error:", error);
+        });
     }
   };
 
@@ -4872,7 +5104,11 @@ export default function Home() {
             isPinned: t.isPinned === 1,
           };
         });
-        setTasks(loadedTasks);
+        const catchUpDailyTasks = await createMissedDailyRecurringTasksForDate(
+          loadedTasks,
+          new Date()
+        );
+        setTasks([...loadedTasks, ...catchUpDailyTasks]);
         loadDailyMoodEntries();
 
         const settingsResult =

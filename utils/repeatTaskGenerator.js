@@ -162,3 +162,38 @@ export const buildNextRecurringTask = (task, now = new Date()) => {
     notificationId: [],
   };
 };
+
+export const buildDailyRecurringTaskForDate = (task, targetDate = new Date()) => {
+  const repeatType = normalizeRepeatType(task?.repeatType);
+  if (repeatType !== REPEAT_TYPES.DAILY) return null;
+
+  const baseDate = getBaseDate(task, targetDate);
+  const parsedTargetDate = parseStoredDateTime(targetDate);
+  if (!parsedTargetDate) return null;
+
+  const occurrenceDate = copyTime(
+    new Date(
+      parsedTargetDate.getFullYear(),
+      parsedTargetDate.getMonth(),
+      parsedTargetDate.getDate()
+    ),
+    baseDate
+  );
+  const scheduledTime = formatSqliteDateTime(occurrenceDate);
+  const subtasks = Array.isArray(task?.subtasks)
+    ? task.subtasks.map((subtask) => ({
+        ...subtask,
+        completed: false,
+      }))
+    : [];
+
+  return {
+    ...task,
+    completed: false,
+    completedAt: null,
+    isPinned: false,
+    scheduledTime,
+    subtasks,
+    notificationId: [],
+  };
+};
