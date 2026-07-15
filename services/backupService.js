@@ -32,6 +32,7 @@ const MONTHLY_BACKUP_DIR_NAME = "monthly";
 const YEARLY_BACKUP_DIR_NAME = "yearly";
 const PRE_RESTORE_BACKUP_DIR_NAME = "pre-restore";
 const BACKUP_INDEX_FILE_NAME = "backup-index.json";
+const BACKUP_TEMP_DIR_NAME = "tmp";
 const AUTO_BACKUP_EMAIL_SECURE_KEY = "adhdTaskManager.autoBackupEmail";
 const KDF_ITERATIONS = 210000;
 const KEY_BYTES = 32;
@@ -48,7 +49,40 @@ const BACKUP_SETTING_KEYS = {
   lastAutoBackupError: "backup.lastAutoBackupError",
 };
 
-let autoBackupInProgress = false;
+let backupInProgress = false;
+let activeBackupSource = "";
+let restoreInProgress = false;
+const MINIMUM_BACKUP_TIMEOUT_MS = 60 * 1000;
+const FULL_BACKUP_TIMEOUT_MS = 5 * 60 * 1000;
+const ATTACHMENT_BATCH_SIZE = 5;
+
+const yieldToUI = () => new Promise((resolve) => setTimeout(resolve, 0));
+const debugBackup = (event, details = {}) => {
+  if (globalThis.__DEV__) {
+    console.info(`[backup] ${event}`, details);
+  }
+};
+
+class BackupFlowError extends Error {
+  constructor(errorCode, message) {
+    super(message);
+    this.name = "BackupFlowError";
+    this.errorCode = errorCode;
+  }
+}
+
+const assertBackupCanContinue = (cancelToken, deadline) => {
+  if (cancelToken?.cancelled) {
+    throw new BackupFlowError("BACKUP_CANCELLED", "Backup cancelled.");
+  }
+  if (Date.now() > deadline) {
+    if (cancelToken) cancelToken.cancelled = true;
+    throw new BackupFlowError(
+      "BACKUP_TIMEOUT",
+      "Backup took too long and was stopped. Please try again."
+    );
+  }
+};
 
 const TABLES = [
   "tasks",
@@ -162,9 +196,14 @@ const emitBackupProgress = (onProgress, progress = {}) => {
 
   try {
     onProgress({
+      step: progress.step || "preparing",
+      message: progress.message || progress.detail || progress.label || "",
       percent: Math.min(Math.max(Number(progress.percent || 0), 0), 100),
       label: progress.label || "",
       detail: progress.detail || "",
+      current:
+        typeof progress.current === "number" ? progress.current : undefined,
+      total: typeof progress.total === "number" ? progress.total : undefined,
     });
   } catch {
     // Progress callbacks are UI-only and should never block backup work.
@@ -203,6 +242,8 @@ const getBackupDirectory = (mode = "manual") => {
 };
 
 const getBackupIndexPath = () => `${getBackupBaseDirectory()}${BACKUP_INDEX_FILE_NAME}`;
+const getBackupTempDirectory = () =>
+  `${getBackupBaseDirectory()}${BACKUP_TEMP_DIR_NAME}/`;
 
 const getBackupSourceFromMode = (mode = "manual") => {
   if (mode === "auto") return "auto";
@@ -507,7 +548,7 @@ const deriveBackupKey = async (email, saltBytes, iterations = KDF_ITERATIONS) =>
     asyncTick: 20,
   });
 
-const encryptPayload = async (payload, email) => {
+const encryptPayload = async (payload, email, cancelToken, deadline) => {
   if (!validateBackupEmail(email)) {
     return {
       success: false,
@@ -516,27 +557,40 @@ const encryptPayload = async (payload, email) => {
     };
   }
 
-  const salt = await Crypto.getRandomBytesAsync(SALT_BYTES);
-  const iv = await Crypto.getRandomBytesAsync(IV_BYTES);
-  const saltBase64 = bytesToBase64(salt);
-  const ivBase64 = bytesToBase64(iv);
-  const normalizedEmail = normalizeEmail(email);
-  const key = await deriveBackupKey(normalizedEmail, salt);
-  const plaintext = utf8ToBytes(JSON.stringify(payload));
-  const ciphertext = gcm(key, iv).encrypt(plaintext);
+  try {
+    const salt = await Crypto.getRandomBytesAsync(SALT_BYTES);
+    const iv = await Crypto.getRandomBytesAsync(IV_BYTES);
+    const saltBase64 = bytesToBase64(salt);
+    const ivBase64 = bytesToBase64(iv);
+    const normalizedEmail = normalizeEmail(email);
+    const key = await deriveBackupKey(normalizedEmail, salt);
+    assertBackupCanContinue(cancelToken, deadline);
+    await yieldToUI();
+    const plaintext = utf8ToBytes(JSON.stringify(payload));
+    assertBackupCanContinue(cancelToken, deadline);
+    await yieldToUI();
+    const ciphertext = gcm(key, iv).encrypt(plaintext);
+    assertBackupCanContinue(cancelToken, deadline);
 
-  return {
-    success: true,
-    ciphertext: bytesToBase64(ciphertext),
-    encryption: {
-      algorithm: "AES-256-GCM",
-      kdf: "PBKDF2-HMAC-SHA256",
-      iterations: KDF_ITERATIONS,
-      salt: saltBase64,
-      iv: ivBase64,
-      emailFingerprint: makeEmailFingerprint(normalizedEmail, saltBase64),
-    },
-  };
+    return {
+      success: true,
+      ciphertext: bytesToBase64(ciphertext),
+      encryption: {
+        algorithm: "AES-256-GCM",
+        kdf: "PBKDF2-HMAC-SHA256",
+        iterations: KDF_ITERATIONS,
+        salt: saltBase64,
+        iv: ivBase64,
+        emailFingerprint: makeEmailFingerprint(normalizedEmail, saltBase64),
+      },
+    };
+  } catch (error) {
+    if (error?.errorCode) throw error;
+    throw new BackupFlowError(
+      "ENCRYPTION_FAILED",
+      "Backup could not be protected. Please try again."
+    );
+  }
 };
 
 const decryptPayload = async (envelope, email) => {
@@ -598,33 +652,76 @@ const readAttachmentBase64 = async (attachment) => {
   }
 };
 
-const buildBackupTables = async (backupType) => {
-  const tables = TABLES.reduce((acc, table) => {
-    acc[table] = getTableRows(table);
-    return acc;
-  }, {});
+const buildBackupTables = async (
+  backupType,
+  { onProgress, cancelToken, deadline } = {}
+) => {
+  const tables = {};
+  for (let tableIndex = 0; tableIndex < TABLES.length; tableIndex += 1) {
+    assertBackupCanContinue(cancelToken, deadline);
+    const table = TABLES[tableIndex];
+    tables[table] = getTableRows(table);
+    emitBackupProgress(onProgress, {
+      step: table === "tasks" ? "collecting_tasks" : "collecting_settings",
+      percent: 18 + ((tableIndex + 1) / TABLES.length) * 7,
+      label: table === "tasks" ? "Collecting tasks" : "Collecting app settings",
+      detail: "Creating a safe snapshot of your app data.",
+      current: tableIndex + 1,
+      total: TABLES.length,
+    });
+    await yieldToUI();
+  }
 
   const attachmentFiles = {};
   let attachmentCount = 0;
   let skippedAttachments = 0;
 
-  tables.tasks = await Promise.all(
-    (tables.tasks || []).map(async (taskRow) => {
+  const taskRows = tables.tasks || [];
+  const totalAttachments =
+    backupType === "full"
+      ? taskRows.reduce(
+          (count, row) => count + normalizeTaskAttachments(row).length,
+          0
+        )
+      : 0;
+  let processedAttachments = 0;
+  const backedUpTaskRows = [];
+
+  for (
+    let taskIndex = 0;
+    taskIndex < taskRows.length;
+    taskIndex += ATTACHMENT_BATCH_SIZE
+  ) {
+    assertBackupCanContinue(cancelToken, deadline);
+    const batch = taskRows.slice(taskIndex, taskIndex + ATTACHMENT_BATCH_SIZE);
+    for (const taskRow of batch) {
       const normalized = normalizeTaskAttachments(taskRow);
 
       if (backupType !== "full") {
-        return {
+        backedUpTaskRows.push({
           ...taskRow,
           attachment: "",
           attachments: "[]",
-        };
+        });
+        continue;
       }
 
       const backedUpAttachments = [];
       for (const attachment of normalized) {
+        assertBackupCanContinue(cancelToken, deadline);
         const filePayload = await readAttachmentBase64(attachment);
+        processedAttachments += 1;
         if (!filePayload?.base64) {
           skippedAttachments += 1;
+          emitBackupProgress(onProgress, {
+            step: "collecting_attachments",
+            percent: 25 + (processedAttachments / Math.max(totalAttachments, 1)) * 25,
+            label: "Adding attachments",
+            detail: `Processing attachment ${processedAttachments} of ${totalAttachments}.`,
+            current: processedAttachments,
+            total: totalAttachments,
+          });
+          await yieldToUI();
           continue;
         }
 
@@ -657,15 +754,26 @@ const buildBackupTables = async (backupType) => {
           isAppOwned: true,
         });
         attachmentCount += 1;
+        emitBackupProgress(onProgress, {
+          step: "collecting_attachments",
+          percent: 25 + (processedAttachments / Math.max(totalAttachments, 1)) * 25,
+          label: "Adding attachments",
+          detail: `Processing attachment ${processedAttachments} of ${totalAttachments}.`,
+          current: processedAttachments,
+          total: totalAttachments,
+        });
+        await yieldToUI();
       }
 
-      return {
+      backedUpTaskRows.push({
         ...taskRow,
         attachment: getPrimaryAttachmentUri(backedUpAttachments),
         attachments: JSON.stringify(backedUpAttachments),
-      };
-    })
-  );
+      });
+    }
+    await yieldToUI();
+  }
+  tables.tasks = backedUpTaskRows;
 
   return {
     tables,
@@ -683,8 +791,28 @@ export const createBackup = async (options = {}) => {
   const mode = options.mode || "manual";
   const email = normalizeEmail(options.email);
   const onProgress = options.onProgress;
+  const cancelToken = options.cancelToken || { cancelled: false };
+  const startedAt = Date.now();
+  const timeoutMs = Math.max(
+    1000,
+    Number(options.timeoutMs) ||
+      (type === "full" ? FULL_BACKUP_TIMEOUT_MS : MINIMUM_BACKUP_TIMEOUT_MS)
+  );
+  const deadline = startedAt + timeoutMs;
+  let tempPath = "";
+
+  if (backupInProgress) {
+    return {
+      success: false,
+      errorCode: "BACKUP_ALREADY_RUNNING",
+      message: "A backup is already running.",
+      source: getBackupSourceFromMode(mode),
+      activeSource: activeBackupSource,
+    };
+  }
 
   emitBackupProgress(onProgress, {
+    step: "checking_email",
     percent: 5,
     label: "Preparing backup",
     detail: "Checking backup email.",
@@ -698,13 +826,34 @@ export const createBackup = async (options = {}) => {
     };
   }
 
+  backupInProgress = true;
+  activeBackupSource = getBackupSourceFromMode(mode);
+  debugBackup("started", {
+    backupType: type,
+    source: activeBackupSource,
+  });
   try {
+    assertBackupCanContinue(cancelToken, deadline);
+    await yieldToUI();
     emitBackupProgress(onProgress, {
+      step: "collecting_tasks",
       percent: 18,
       label: "Preparing backup",
       detail: "Collecting app data.",
     });
-    const backupData = await buildBackupTables(type);
+    const backupData = await buildBackupTables(type, {
+      onProgress,
+      cancelToken,
+      deadline,
+    });
+    debugBackup("snapshot ready", {
+      backupType: type,
+      source: activeBackupSource,
+      taskCount: backupData.counts.tasks,
+      attachmentCount: backupData.counts.attachments,
+      skippedAttachmentCount: backupData.counts.skippedAttachments,
+      durationMs: Date.now() - startedAt,
+    });
     const createdAt = new Date().toISOString();
     const manifest = {
       appName: APP_NAME,
@@ -730,12 +879,15 @@ export const createBackup = async (options = {}) => {
       },
     };
     emitBackupProgress(onProgress, {
+      step: "encrypting",
       percent: 50,
       label: "Encrypting backup",
       detail: "Protecting the backup file.",
     });
-    const encrypted = await encryptPayload(payload, email);
+    await yieldToUI();
+    const encrypted = await encryptPayload(payload, email, cancelToken, deadline);
     if (!encrypted.success) return encrypted;
+    assertBackupCanContinue(cancelToken, deadline);
 
     const envelopeManifest = {
       ...manifest,
@@ -749,24 +901,44 @@ export const createBackup = async (options = {}) => {
 
     const directory = getBackupDirectory(mode);
     emitBackupProgress(onProgress, {
+      step: "writing_file",
       percent: 72,
       label: "Saving backup",
       detail: "Creating app-owned backup file.",
     });
     await ensureDirectoryAsync(directory);
+    await ensureDirectoryAsync(getBackupTempDirectory());
     const fileName = getBackupFileName(type, mode);
     const path = `${directory}${fileName}`;
+    tempPath = `${getBackupTempDirectory()}backup-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}.tmp`;
 
-    await FileSystem.writeAsStringAsync(path, JSON.stringify(envelope), {
+    await yieldToUI();
+    await FileSystem.writeAsStringAsync(tempPath, JSON.stringify(envelope), {
       encoding: FileSystem.EncodingType.UTF8,
     });
+    assertBackupCanContinue(cancelToken, deadline);
+    const tempInfo = await FileSystem.getInfoAsync(tempPath).catch(() => null);
+    if (!tempInfo?.exists || !Number(tempInfo.size)) {
+      throw new BackupFlowError("FILE_WRITE_FAILED", "Backup file could not be saved.");
+    }
+    await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => null);
+    await FileSystem.moveAsync({ from: tempPath, to: path });
+    tempPath = "";
+    const finalInfo = await FileSystem.getInfoAsync(path).catch(() => null);
+    if (!finalInfo?.exists || !Number(finalInfo.size)) {
+      throw new BackupFlowError("FILE_WRITE_FAILED", "Backup file could not be saved.");
+    }
 
     emitBackupProgress(onProgress, {
+      step: "updating_index",
       percent: 86,
       label: "Updating backup list",
       detail: "Saving backup details.",
     });
     let indexItem = null;
+    let indexWarning = "";
     try {
       indexItem = await buildBackupIndexItem({
         path,
@@ -777,10 +949,12 @@ export const createBackup = async (options = {}) => {
       await upsertBackupIndexItem(indexItem);
     } catch {
       indexItem = null;
+      indexWarning = "Backup was created, but the backup list could not be updated.";
     }
 
     if (mode === "auto") {
       emitBackupProgress(onProgress, {
+        step: "cleanup",
         percent: 94,
         label: "Cleaning old backups",
         detail: "Keeping the latest automatic backups.",
@@ -795,9 +969,20 @@ export const createBackup = async (options = {}) => {
     }
 
     emitBackupProgress(onProgress, {
+      step: "complete",
       percent: 100,
       label: "Backup ready",
       detail: "Backup created.",
+    });
+    debugBackup("complete", {
+      backupType: type,
+      source: getBackupSourceFromMode(mode),
+      taskCount: backupData.counts.tasks,
+      attachmentCount: backupData.counts.attachments,
+      skippedAttachmentCount: backupData.counts.skippedAttachments,
+      size: Number(finalInfo.size),
+      durationMs: Date.now() - startedAt,
+      warningCode: indexWarning ? "INDEX_UPDATE_FAILED" : "",
     });
 
     return {
@@ -808,15 +993,53 @@ export const createBackup = async (options = {}) => {
       manifest: envelopeManifest,
       counts: backupData.counts,
       indexItem,
-      message: "Backup created.",
+      errorCode: indexWarning ? "INDEX_UPDATE_FAILED" : undefined,
+      message:
+        indexWarning ||
+        (backupData.counts.skippedAttachments > 0
+          ? "Backup created. Some missing attachments were skipped."
+          : "Backup created successfully."),
+      backupPath: path,
+      backupName: fileName,
+      backupType: type,
+      source: getBackupSourceFromMode(mode),
+      taskCount: backupData.counts.tasks,
+      attachmentCount: backupData.counts.attachments,
+      skippedAttachmentCount: backupData.counts.skippedAttachments,
+      size: Number(finalInfo.size),
+      durationMs: Date.now() - startedAt,
     };
   } catch (error) {
+    const errorCode = error?.errorCode || "UNKNOWN_ERROR";
+    debugBackup("failed", {
+      backupType: type,
+      source: getBackupSourceFromMode(mode),
+      errorCode,
+      durationMs: Date.now() - startedAt,
+    });
     return {
       success: false,
-      errorCode: "BACKUP_CREATE_FAILED",
-      message: "Could not create backup on this device.",
+      cancelled: errorCode === "BACKUP_CANCELLED",
+      errorCode,
+      message:
+        error?.message || "Backup could not be created. Please try again.",
+      backupType: type,
+      source: getBackupSourceFromMode(mode),
+      durationMs: Date.now() - startedAt,
       error,
     };
+  } finally {
+    if (tempPath) {
+      emitBackupProgress(onProgress, {
+        step: "cleanup",
+        percent: 96,
+        label: "Cleaning temporary files",
+        detail: "Removing unfinished backup data.",
+      });
+      await FileSystem.deleteAsync(tempPath, { idempotent: true }).catch(() => null);
+    }
+    backupInProgress = false;
+    activeBackupSource = "";
   }
 };
 
@@ -1315,6 +1538,7 @@ export const restoreBackup = async (importedBackup, options = {}) => {
     };
   }
 
+  restoreInProgress = true;
   try {
     let safetyBackup = null;
     if (options.email && validateBackupEmail(options.email)) {
@@ -1377,6 +1601,8 @@ export const restoreBackup = async (importedBackup, options = {}) => {
       message: "Could not restore this backup.",
       error,
     };
+  } finally {
+    restoreInProgress = false;
   }
 };
 
@@ -1425,7 +1651,7 @@ const findAutoBackupForToday = async () => {
 };
 
 export const createAutoBackupIfNeeded = async (options = {}) => {
-  if (autoBackupInProgress) {
+  if (backupInProgress || restoreInProgress) {
     return {
       success: false,
       skipped: true,
@@ -1484,13 +1710,13 @@ export const createAutoBackupIfNeeded = async (options = {}) => {
     };
   }
 
-  autoBackupInProgress = true;
   try {
     const result = await createBackup({
       type: settings.autoType,
       mode: "auto",
       email,
       onProgress: options.onProgress,
+      cancelToken: options.cancelToken,
     });
 
     if (!result?.success) {
@@ -1524,7 +1750,7 @@ export const createAutoBackupIfNeeded = async (options = {}) => {
       message: "Last auto backup could not be created.",
     };
   } finally {
-    autoBackupInProgress = false;
+    // createBackup owns and always releases the shared creation lock.
   }
 };
 

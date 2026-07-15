@@ -1517,6 +1517,7 @@ export default function Home() {
   const [restoreSummaryVisible, setRestoreSummaryVisible] = useState(false);
   const backupImportEmailRef = useRef("");
   const backupProgressDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backupCancelTokenRef = useRef<{ cancelled: boolean } | null>(null);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [profileDraftName, setProfileDraftName] = useState("");
   const [profileDraftVibe, setProfileDraftVibe] = useState(DEFAULT_PROFILE.vibe);
@@ -6567,14 +6568,24 @@ export default function Home() {
       }
     };
 
-    void runAutoBackup();
+    let autoBackupTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      autoBackupTimer = null;
+      void runAutoBackup();
+    }, 7000);
     const subscription = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") {
-        void runAutoBackup();
+        if (autoBackupTimer) clearTimeout(autoBackupTimer);
+        autoBackupTimer = setTimeout(() => {
+          autoBackupTimer = null;
+          void runAutoBackup();
+        }, 7000);
       }
     });
 
-    return () => subscription.remove();
+    return () => {
+      if (autoBackupTimer) clearTimeout(autoBackupTimer);
+      subscription.remove();
+    };
   }, [
     backupSettings.autoEnabled,
     backupSettings.lastAutoBackupDate,
@@ -11030,15 +11041,19 @@ export default function Home() {
         return;
       }
 
+      backupCancelTokenRef.current = { cancelled: false };
       const backupResult = await createBackup({
         type: backupType,
         mode: backupMode,
         email: validation.email,
         onProgress: updateBackupProgress,
+        cancelToken: backupCancelTokenRef.current,
       });
 
       if (!backupResult?.success) {
-        setBackupEmailModal((prev) => ({ ...prev, visible: true }));
+        if (!backupResult?.cancelled) {
+          setBackupEmailModal((prev) => ({ ...prev, visible: true }));
+        }
         Alert.alert(
           "Backup & Restore",
           backupResult?.message || "Could not create backup on this device."
@@ -11060,14 +11075,18 @@ export default function Home() {
       closeBackupEmailModal();
       Alert.alert(
         "Backup & Restore",
-        exportResult?.message ||
-          (exportResult?.success
-            ? "Backup exported."
-            : "Could not export backup on this device.")
+        exportResult?.success
+          ? backupResult.skippedAttachmentCount > 0
+            ? `${backupResult.fileName} was exported. Some missing attachments were skipped.`
+            : backupResult.errorCode === "INDEX_UPDATE_FAILED"
+              ? `${backupResult.fileName} was exported, but the in-app backup list could not be updated.`
+              : `${backupResult.fileName} was exported successfully.`
+          : exportResult?.message || "Could not export backup on this device."
       );
     } catch {
       Alert.alert("Backup & Restore", "Could not complete backup on this device.");
     } finally {
+      backupCancelTokenRef.current = null;
       clearBackupProgress();
       setBackupBusy(false);
     }
@@ -14945,7 +14964,7 @@ export default function Home() {
 
     return (
       <View
-        pointerEvents="none"
+        pointerEvents="box-none"
         accessibilityRole="progressbar"
         accessibilityValue={{ min: 0, max: 100, now: percent }}
         style={{
@@ -14992,6 +15011,27 @@ export default function Home() {
               style={{ width: progressWidth }}
             />
           </View>
+          {backupCancelTokenRef.current && percent < 100 ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Cancel backup"
+              onPress={() => {
+                if (backupCancelTokenRef.current) {
+                  backupCancelTokenRef.current.cancelled = true;
+                  updateBackupProgress({
+                    label: "Cancelling backup",
+                    detail: "Cleaning temporary files safely.",
+                    percent,
+                  });
+                }
+              }}
+              className="mt-2 self-end px-3 py-1.5 rounded-full border border-[#66b9b9]/35 bg-[#123131]/80"
+            >
+              <Text className="text-[#9FB5B5] text-[10px] font-black uppercase tracking-widest">
+                Cancel
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
     );
