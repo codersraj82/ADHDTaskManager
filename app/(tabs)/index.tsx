@@ -516,6 +516,8 @@ const APP_HEADER_TOP_ROW_HEIGHT = 54;
 const FLOATING_MENU_BUTTON_SIZE = 44;
 const FLOATING_MENU_SEARCH_GAP = 8;
 const TASK_SEARCH_TOP_GAP = 12;
+// 36px marquee + 8px top margin + 8px breathing room before search.
+const INSPIRATION_ROW_SPACE = 52;
 const TASK_SEARCH_CLOSED_SPACER_HEIGHT = 76;
 const TASK_SEARCH_OPEN_SPACER_HEIGHT = 468;
 const HEADER_HIDE_SCROLL_THRESHOLD = 48;
@@ -2566,11 +2568,15 @@ export default function Home() {
   const taskSearchFloatingContainerStyle = useAnimatedStyle(() => ({
     top:
       headerContainerHeight +
+      INSPIRATION_ROW_SPACE +
       TASK_SEARCH_TOP_GAP -
       floatingMenuOpacity.value *
         Math.max(
           0,
-          headerContainerHeight + TASK_SEARCH_TOP_GAP - floatingControlTop
+          headerContainerHeight +
+            INSPIRATION_ROW_SPACE +
+            TASK_SEARCH_TOP_GAP -
+            floatingControlTop
         ),
   }));
   const taskSearchPanelFloatingStyle = useAnimatedStyle(() => ({

@@ -101,6 +101,7 @@ const styles = StyleSheet.create({
     height: BAR_HEIGHT,
     marginHorizontal: 16,
     marginTop: 8,
+    marginBottom: 8,
     overflow: "hidden",
     justifyContent: "center",
     borderRadius: 14,
