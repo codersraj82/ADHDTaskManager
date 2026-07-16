@@ -15765,8 +15765,8 @@ export default function Home() {
                   />
                 ) : null}
                 <Pressable onPress={() => toggleTaskCardExpansion(task.id)}>
-                  <View className="flex-row items-center justify-between pb-3 mb-2 border-b border-[#337a7a]/25">
-                    <View className="flex-row items-center flex-1">
+                  <View className="pb-3 mb-2 border-b border-[#337a7a]/25">
+                    <View className="flex-row items-start w-full">
                       <TouchableOpacity
                         activeOpacity={0.82}
                         accessibilityRole="button"
@@ -15795,6 +15795,7 @@ export default function Home() {
                               ? "bg-[#2A2218]/80 border-[#D9A441]/65 shadow-[#D9A441]/18"
                             : "bg-[#061414]/60 border-[#66b9b9]/55 shadow-[#66b9b9]/14"
                         }`}
+                        style={{ flexShrink: 0 }}
                       >
                         {task.completed ? (
                           <View className="w-9 h-9 rounded-[13px] bg-[#061414]/10 items-center justify-center">
@@ -15846,14 +15847,16 @@ export default function Home() {
                         ) : null}
                       </TouchableOpacity>
 
-                      <View className="flex-1 pr-2">
+                      <View className="flex-1 pr-2" style={{ minWidth: 0 }}>
                         <Text
-                          numberOfLines={2}
-                          className={`text-base font-bold flex-1 tracking-wide ${
+                          numberOfLines={isTaskExpanded ? undefined : 3}
+                          ellipsizeMode="tail"
+                          className={`text-base font-bold tracking-wide ${
                             task.completed
                               ? "text-[#9FB5B5] line-through"
                               : "text-[#E8F4F4]"
                           }`}
+                          style={{ flexShrink: 1, flexWrap: "wrap" }}
                         >
                           {task.title}
                         </Text>
@@ -15932,7 +15935,9 @@ export default function Home() {
                         ) : null}
                       </View>
 
-                      <View className="flex-row items-center">
+                    </View>
+
+                    <View className="flex-row items-center justify-end mt-2">
                         {Platform.OS === "android" &&
                         !task.completed &&
                         !isEarlyRecurringPreview &&
@@ -16051,7 +16056,6 @@ export default function Home() {
                           </TouchableOpacity>
                         ) : null}
                       </View>
-                    </View>
                   </View>
 
                   <View className="flex-row items-center justify-between mt-1">
