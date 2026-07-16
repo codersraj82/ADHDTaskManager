@@ -27,6 +27,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import { Feather } from "@expo/vector-icons";
+import { router, useFocusEffect } from "expo-router";
+import InspirationalMarquee from "../../components/header/InspirationalMarquee";
 
 import * as Notifications from "expo-notifications";
 import DatePickerModal from "../../components/DatePickerModal";
@@ -217,9 +219,7 @@ import Reanimated, {
   useAnimatedReaction,
   useAnimatedStyle,
   useSharedValue,
-  withDelay,
   withRepeat,
-  withSequence,
   withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -510,11 +510,9 @@ const FOCUS_AUTO_DISMISS_COUNTDOWN_SECONDS = Math.max(
 );
 const APP_HORIZONTAL_PADDING = 16;
 const APP_HEADER_SAFE_TOP_GAP = 4;
-const APP_HEADER_CONTENT_HEIGHT = 166;
+const APP_HEADER_CONTENT_HEIGHT = 70;
 const APP_HEADER_BOTTOM_PADDING = 16;
 const APP_HEADER_TOP_ROW_HEIGHT = 54;
-const APP_HEADER_AFFIRMATION_HEIGHT = 68;
-const APP_HEADER_AFFIRMATION_TEXT_HEIGHT = 46;
 const FLOATING_MENU_BUTTON_SIZE = 44;
 const FLOATING_MENU_SEARCH_GAP = 8;
 const TASK_SEARCH_TOP_GAP = 12;
@@ -523,11 +521,6 @@ const TASK_SEARCH_OPEN_SPACER_HEIGHT = 468;
 const HEADER_HIDE_SCROLL_THRESHOLD = 48;
 const HEADER_SHOW_SCROLL_THRESHOLD = 12;
 const HEADER_HIDE_OFFSET_FALLBACK = 184;
-const HEADER_AFFIRMATION_MARQUEE_GAP = 80;
-const HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC = 20;
-const HEADER_AFFIRMATION_MIN_DURATION_MS = 18000;
-const HEADER_AFFIRMATION_MAX_DURATION_MS = 90000;
-const HEADER_AFFIRMATION_START_PAUSE_MS = 900;
 const WELCOME_VOICE_DELAY_MS = 900;
 const NOTIFICATION_SPEECH_MIN_GAP_MS = 6000;
 const SMART_TASK_BORDER_CYCLE_MS = 3600;
@@ -1617,10 +1610,6 @@ export default function Home() {
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [currentAffirmation, setCurrentAffirmation] = useState(affirmations[0]);
   const [headerClockDate, setHeaderClockDate] = useState(() => new Date());
-  const [headerAffirmationViewportWidth, setHeaderAffirmationViewportWidth] =
-    useState(0);
-  const [headerAffirmationTextWidth, setHeaderAffirmationTextWidth] =
-    useState(0);
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [startAssistReadAloudEnabled, setStartAssistReadAloudEnabled] =
     useState(false);
@@ -1695,28 +1684,6 @@ export default function Home() {
 
   const syncHeaderCollapsedState = useCallback((collapsed) => {
     setIsHeaderCollapsed((prev) => (prev === collapsed ? prev : collapsed));
-  }, []);
-  const shouldScrollHeaderAffirmation = useMemo(() => {
-    if (!headerAffirmationViewportWidth || !headerAffirmationTextWidth) {
-      return false;
-    }
-    return headerAffirmationTextWidth > headerAffirmationViewportWidth - 6;
-  }, [headerAffirmationTextWidth, headerAffirmationViewportWidth]);
-
-  const handleHeaderAffirmationViewportLayout = useCallback((event) => {
-    const width = Math.max(0, Math.ceil(event?.nativeEvent?.layout?.width || 0));
-    if (!width) return;
-    setHeaderAffirmationViewportWidth((prev) =>
-      Math.abs(prev - width) < 2 ? prev : width
-    );
-  }, []);
-
-  const handleHeaderAffirmationTextLayout = useCallback((event) => {
-    const width = Math.max(0, Math.ceil(event?.nativeEvent?.layout?.width || 0));
-    if (!width) return;
-    setHeaderAffirmationTextWidth((prev) =>
-      Math.abs(prev - width) < 2 ? prev : width
-    );
   }, []);
 
   //******Vriables */
@@ -2506,7 +2473,6 @@ export default function Home() {
   const lastHomeScrollY = useSharedValue(0);
   const lastFocusVisibilityCheckY = useSharedValue(0);
   const lastFocusVisibilityViewportHeight = useSharedValue(0);
-  const headerAffirmationTranslateX = useSharedValue(0);
   const smartTaskBorderPhase = useSharedValue(0);
   const smartTaskShimmerPhase = useSharedValue(0);
   const smartTaskEmojiPulse = useSharedValue(0);
@@ -2541,9 +2507,6 @@ export default function Home() {
   }));
   const headerAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: headerTranslateY.value }],
-  }));
-  const headerAffirmationMarqueeStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: headerAffirmationTranslateX.value }],
   }));
   const smartTaskButtonBorderStyle = useAnimatedStyle(() => ({
     borderColor: interpolateColor(
@@ -2976,45 +2939,6 @@ export default function Home() {
     };
   }, [currentTaskFabPulse, currentTaskQuickTaskId]);
 
-  useEffect(() => {
-    setHeaderAffirmationTextWidth(0);
-  }, [currentAffirmation]);
-
-  useEffect(() => {
-    cancelAnimation(headerAffirmationTranslateX);
-    headerAffirmationTranslateX.value = 0;
-
-    if (!shouldScrollHeaderAffirmation || !headerAffirmationTextWidth) return;
-
-    const travelDistance =
-      headerAffirmationTextWidth + HEADER_AFFIRMATION_MARQUEE_GAP;
-    const rawDurationMs =
-      (travelDistance / HEADER_AFFIRMATION_SCROLL_SPEED_PX_PER_SEC) * 1000;
-    const duration = Math.min(
-      HEADER_AFFIRMATION_MAX_DURATION_MS,
-      Math.max(HEADER_AFFIRMATION_MIN_DURATION_MS, Math.round(rawDurationMs))
-    );
-
-    headerAffirmationTranslateX.value = withRepeat(
-      withSequence(
-        withDelay(
-          HEADER_AFFIRMATION_START_PAUSE_MS,
-          withTiming(-travelDistance, {
-            duration,
-            easing: Easing.linear,
-          })
-        ),
-        withTiming(0, { duration: 0 })
-      ),
-      -1,
-      false
-    );
-  }, [
-    currentAffirmation,
-    headerAffirmationTextWidth,
-    headerAffirmationTranslateX,
-    shouldScrollHeaderAffirmation,
-  ]);
 
   //******useRef********** */
 
@@ -3369,6 +3293,18 @@ export default function Home() {
     setProfileDraftVibe(normalizedProfile.vibe || "🌿");
     setProfileDraftTagline(normalizedProfile.tagline || "");
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      const row = db.getFirstSync("SELECT * FROM app_profile WHERE id = 1");
+      if (!row) return;
+      const nextProfile = normalizeProfileFromRow(row);
+      setProfile(nextProfile);
+      setProfileDraftName(nextProfile.name);
+      setProfileDraftVibe(nextProfile.vibe);
+      setProfileDraftTagline(nextProfile.tagline || "");
+    }, [])
+  );
 
   const refreshSpecialTasks = () => {
     const rows =
@@ -11617,6 +11553,11 @@ export default function Home() {
 
   const openMenuPage = (pageKey) => {
     closeDrawer();
+    if (pageKey === "profile") {
+      Keyboard.dismiss();
+      router.push("/profile/edit");
+      return;
+    }
     if (pageKey === "tasks") {
       setTasksMenuPeriod("today");
       resetTasksMenuNavigation();
@@ -12077,7 +12018,10 @@ export default function Home() {
 
     return (
       <TouchableOpacity
-        onPress={() => setProfilePhotoModalVisible(true)}
+        onPress={() => {
+          Keyboard.dismiss();
+          router.push("/profile/edit");
+        }}
         activeOpacity={0.8}
         accessibilityRole="button"
         accessibilityLabel="Profile photo"
@@ -12726,61 +12670,6 @@ export default function Home() {
           <Text className="text-[#E8F4F4] text-2xl leading-none">=</Text>
         </TouchableOpacity>
       </View>
-      <Animated.View
-        style={[
-          { opacity: affirmationOpacity, height: APP_HEADER_AFFIRMATION_HEIGHT },
-          themedStyle("mt-3 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 py-2 justify-center overflow-hidden"),
-        ]}
-        className={themedClassName("mt-3 bg-[#123131]/60 border border-[#66b9b9]/25 rounded-2xl px-3 py-2 justify-center overflow-hidden")}
-      >
-        <View
-          onLayout={handleHeaderAffirmationViewportLayout}
-          style={{ height: APP_HEADER_AFFIRMATION_TEXT_HEIGHT }}
-          className="relative justify-center overflow-hidden"
-        >
-          {shouldScrollHeaderAffirmation ? (
-            <Reanimated.View
-              style={headerAffirmationMarqueeStyle}
-              className="flex-row items-center"
-            >
-              <Text
-                numberOfLines={1}
-                className="text-[#E8F4F4] text-sm font-bold leading-5"
-                style={{ flexShrink: 0 }}
-              >
-                {currentAffirmation}
-              </Text>
-              <View style={{ width: HEADER_AFFIRMATION_MARQUEE_GAP }} />
-              <Text
-                numberOfLines={1}
-                className="text-[#E8F4F4] text-sm font-bold leading-5"
-                style={{ flexShrink: 0 }}
-              >
-                {currentAffirmation}
-              </Text>
-            </Reanimated.View>
-          ) : (
-            <Text
-              numberOfLines={1}
-              ellipsizeMode="tail"
-              className="text-[#E8F4F4] text-sm font-bold leading-5"
-            >
-              {currentAffirmation}
-            </Text>
-          )}
-
-          <View className="absolute opacity-0 left-0 top-0">
-            <Text
-              numberOfLines={1}
-              onLayout={handleHeaderAffirmationTextLayout}
-              className="text-[#E8F4F4] text-sm font-bold leading-5"
-              style={{ flexShrink: 0 }}
-            >
-              {currentAffirmation}
-            </Text>
-          </View>
-        </View>
-      </Animated.View>
     </Reanimated.View>
   );
   const renderFloatingMenuShortcut = () => (
@@ -16687,6 +16576,10 @@ export default function Home() {
         }}
       >
         {renderFixedHeader(true)}
+
+        <Animated.View style={{ opacity: affirmationOpacity }}>
+          <InspirationalMarquee text={currentAffirmation} />
+        </Animated.View>
 
         <View
           style={{
