@@ -9,6 +9,8 @@ export type AlarmResult = {
   alarmId?: string;
   errorCode?: string;
   message?: string;
+  schedulerStatus?: "scheduled" | "not_scheduled" | "permission_needed" | "failed";
+  nextRunAt?: number;
 };
 
 export type SetClockAlarmOptions = {
@@ -40,6 +42,12 @@ export type AndroidClockAlarmModuleType = {
   canUseStrongAlarm(): boolean | Promise<boolean>;
   canScheduleExactAlarms(): boolean | Promise<boolean>;
   openExactAlarmSettings(): Promise<AlarmResult>;
+  scheduleAutoBackup(options: {
+    backupTime: string;
+    backupType: "minimum" | "full";
+  }): Promise<AlarmResult>;
+  cancelAutoBackup(): Promise<AlarmResult>;
+  getAutoBackupScheduleStatus(): Promise<AlarmResult>;
   scheduleTaskAlarm(options: ScheduleTaskAlarmOptions): Promise<AlarmResult>;
   cancelTaskAlarm(alarmId: string): Promise<AlarmResult>;
   snoozeTaskAlarm(alarmId: string, minutes: number): Promise<AlarmResult>;

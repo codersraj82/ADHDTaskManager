@@ -120,7 +120,6 @@ import {
   updateFocusLockScreenSession,
 } from "../../services/focusLockScreen";
 import {
-  createAutoBackupIfNeeded,
   createBackup,
   deleteBackupById,
   exportBackup,
@@ -137,6 +136,11 @@ import {
   validateBackupEmail,
   validateBackupEmailPair,
 } from "../../services/backupService";
+import {
+  cancelAutoBackup,
+  getAutoBackupScheduleStatus,
+  scheduleAutoBackup,
+} from "../../services/autoBackupScheduler";
 import {
   speakEncouragement,
   stopEncouragement,
@@ -409,6 +413,16 @@ const formatHeaderTime = (value = new Date()) => {
   } catch {
     return "";
   }
+};
+
+const formatBackupClockTime = (value = "00:00") => {
+  const [hourText, minuteText] = String(value).split(":");
+  const hour24 = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isInteger(hour24) || !Number.isInteger(minute)) return "12:00 AM";
+  const period = hour24 >= 12 ? "PM" : "AM";
+  const hour12 = hour24 % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2, "0")} ${period}`;
 };
 
 const getMillisecondsUntilNextMinute = (date = new Date()) => {
@@ -1488,10 +1502,13 @@ export default function Home() {
   const [backupSettings, setBackupSettings] = useState({
     autoEnabled: false,
     autoType: "minimum",
+    autoTime: "00:00",
     lastAutoBackupAt: "",
     lastAutoBackupDate: "",
     lastAutoBackupStatus: "",
     lastAutoBackupError: "",
+    nextAutoBackupAt: "",
+    schedulerStatus: "not_scheduled",
     autoBackupEmailConfigured: false,
   });
   const [availableBackups, setAvailableBackups] = useState([]);
@@ -1512,6 +1529,9 @@ export default function Home() {
   });
   const [backupEmail, setBackupEmail] = useState("");
   const [backupConfirmEmail, setBackupConfirmEmail] = useState("");
+  const [autoBackupTimeModalVisible, setAutoBackupTimeModalVisible] =
+    useState(false);
+  const [autoBackupTimeDraft, setAutoBackupTimeDraft] = useState("00:00");
   const [backupImportUri, setBackupImportUri] = useState("");
   const [backupImported, setBackupImported] = useState(null);
   const [restoreSummaryVisible, setRestoreSummaryVisible] = useState(false);
@@ -6538,61 +6558,66 @@ export default function Home() {
   ]);
 
   useEffect(() => {
-    const runAutoBackup = async () => {
-      if (!tasksHydrated || !backupSettings.autoEnabled) return;
-      let result = null;
-      let showedAutoBackupProgress = false;
-      try {
-        result = await createAutoBackupIfNeeded({
-          dataReady: tasksHydrated,
-          onProgress: (progress) => {
-            showedAutoBackupProgress = true;
-            updateBackupProgress(progress);
-          },
-        });
-        const nextSettings = await getBackupSettings();
-        setBackupSettings(nextSettings);
-      } finally {
-        if (showedAutoBackupProgress) {
-          clearBackupProgress();
+    const verifyAutoBackupSchedule = async () => {
+      if (!tasksHydrated) return;
+      const storedSettings = await getBackupSettings();
+      if (!storedSettings.autoEnabled) {
+        const status = await getAutoBackupScheduleStatus().catch(() => null);
+        if (status?.schedulerStatus !== "not_scheduled") {
+          await cancelAutoBackup().catch(() => null);
         }
+        setBackupSettings(storedSettings);
+        return;
       }
 
-      if (result?.success) {
-        if (!result.skipped) {
-          void loadAvailableBackups({ showLoading: false });
-        }
-        if (result.backupName) {
-          console.log("Auto backup created:", result.backupName);
-        }
-      }
+      const previousNextRun = Date.parse(storedSettings.nextAutoBackupAt || "");
+      const previousSuccessfulRun = Date.parse(storedSettings.lastAutoBackupAt || "");
+      const scheduledBackupWasMissed =
+        Number.isFinite(previousNextRun) &&
+        previousNextRun < Date.now() - 15 * 60 * 1000 &&
+        (!Number.isFinite(previousSuccessfulRun) ||
+          previousSuccessfulRun < previousNextRun);
+
+      const scheduleResult = await scheduleAutoBackup({
+        backupTime: storedSettings.autoTime || "00:00",
+        backupType:
+          storedSettings.autoType === "full" ? "full" : "minimum",
+      }).catch(() => null);
+      const nextSettings = await saveBackupSettings({
+        nextAutoBackupAt: scheduleResult?.nextRunAt
+          ? new Date(scheduleResult.nextRunAt).toISOString()
+          : "",
+        schedulerStatus: scheduleResult?.schedulerStatus || "failed",
+        lastAutoBackupStatus: scheduledBackupWasMissed
+          ? "skipped"
+          : storedSettings.lastAutoBackupStatus,
+        lastAutoBackupError: scheduledBackupWasMissed
+          ? "Last scheduled backup was missed."
+          : storedSettings.lastAutoBackupError,
+      });
+      setBackupSettings(nextSettings);
     };
 
-    let autoBackupTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      autoBackupTimer = null;
-      void runAutoBackup();
-    }, 7000);
+    let schedulerTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      schedulerTimer = null;
+      void verifyAutoBackupSchedule();
+    }, 1200);
     const subscription = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") {
-        if (autoBackupTimer) clearTimeout(autoBackupTimer);
-        autoBackupTimer = setTimeout(() => {
-          autoBackupTimer = null;
-          void runAutoBackup();
-        }, 7000);
+        if (schedulerTimer) clearTimeout(schedulerTimer);
+        schedulerTimer = setTimeout(() => {
+          schedulerTimer = null;
+          void verifyAutoBackupSchedule();
+        }, 1200);
       }
     });
 
     return () => {
-      if (autoBackupTimer) clearTimeout(autoBackupTimer);
+      if (schedulerTimer) clearTimeout(schedulerTimer);
       subscription.remove();
     };
   }, [
-    backupSettings.autoEnabled,
-    backupSettings.lastAutoBackupDate,
-    clearBackupProgress,
-    loadAvailableBackups,
     tasksHydrated,
-    updateBackupProgress,
   ]);
 
   useEffect(() => {
@@ -10762,37 +10787,40 @@ export default function Home() {
     openBackupEmailModal({ purpose: "create", type, mode });
   };
 
+  const scheduleAndSaveAutoBackup = async (settings) => {
+    const result = await scheduleAutoBackup({
+      backupTime: settings.autoTime || "00:00",
+      backupType: settings.autoType === "full" ? "full" : "minimum",
+    });
+    const nextSettings = await saveBackupSettings({
+      nextAutoBackupAt: result?.nextRunAt
+        ? new Date(result.nextRunAt).toISOString()
+        : "",
+      schedulerStatus: result?.schedulerStatus || "failed",
+    });
+    setBackupSettings(nextSettings);
+    return result;
+  };
+
   const handleEnableAutoBackup = async () => {
     if (backupSettings.autoBackupEmailConfigured) {
       setBackupBusy(true);
-      startBackupProgress(
-        "Setting up auto backup",
-        "Checking today's encrypted backup.",
-        5
-      );
       try {
         const nextSettings = await saveBackupSettings({
           autoEnabled: true,
           autoType: backupSettings.autoType || "minimum",
+          autoTime: backupSettings.autoTime || "00:00",
         });
-        setBackupSettings(nextSettings);
-        const result = await createAutoBackupIfNeeded({
-          dataReady: tasksHydrated,
-          onProgress: updateBackupProgress,
-        });
-        const refreshedSettings = await getBackupSettings();
-        setBackupSettings(refreshedSettings);
-        await loadAvailableBackups({ showLoading: false });
+        const result = await scheduleAndSaveAutoBackup(nextSettings);
         Alert.alert(
           "Backup & Restore",
-          result?.success && !result?.skipped
-            ? "Daily auto backup is on. Today's encrypted backup was created."
-            : "Daily auto backup is on."
+          result?.success
+            ? "Automatic backup is on. It will run at the selected time."
+            : result?.message || "Automatic backup could not be scheduled."
         );
       } catch {
-        Alert.alert("Backup & Restore", "Could not enable daily auto backup.");
+        Alert.alert("Backup & Restore", "Could not schedule automatic backup.");
       } finally {
-        clearBackupProgress();
         setBackupBusy(false);
       }
       return;
@@ -10806,14 +10834,42 @@ export default function Home() {
   };
 
   const handleDisableAutoBackup = async () => {
-    const nextSettings = await saveBackupSettings({ autoEnabled: false });
+    await cancelAutoBackup().catch(() => null);
+    const nextSettings = await saveBackupSettings({
+      autoEnabled: false,
+      nextAutoBackupAt: "",
+      schedulerStatus: "not_scheduled",
+    });
     setBackupSettings(nextSettings);
-    Alert.alert("Backup & Restore", "Daily auto backup is off.");
+    Alert.alert("Backup & Restore", "Automatic backup is off.");
   };
 
   const handleAutoBackupTypeChange = async (type) => {
     const nextSettings = await saveBackupSettings({ autoType: type });
     setBackupSettings(nextSettings);
+    if (nextSettings.autoEnabled) {
+      await scheduleAndSaveAutoBackup(nextSettings);
+    }
+  };
+
+  const handleSaveAutoBackupTime = async () => {
+    const normalized = autoBackupTimeDraft.trim();
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(normalized)) {
+      Alert.alert("Backup time", "Enter time as HH:mm, for example 22:30.");
+      return;
+    }
+    const nextSettings = await saveBackupSettings({ autoTime: normalized });
+    setBackupSettings(nextSettings);
+    setAutoBackupTimeModalVisible(false);
+    if (nextSettings.autoEnabled) {
+      const result = await scheduleAndSaveAutoBackup(nextSettings);
+      if (!result?.success) {
+        Alert.alert(
+          "Backup & Restore",
+          result?.message || "Automatic backup could not be rescheduled."
+        );
+      }
+    }
   };
 
   const handleUpdateAutoBackupEmail = () => {
@@ -11022,21 +11078,16 @@ export default function Home() {
         const nextSettings = await saveBackupSettings({
           autoEnabled: true,
           autoType: backupType,
+          autoTime: backupSettings.autoTime || "00:00",
         });
-        setBackupSettings(nextSettings);
-        const autoResult = await createAutoBackupIfNeeded({
-          dataReady: tasksHydrated,
-          onProgress: updateBackupProgress,
-        });
-        const refreshedSettings = await getBackupSettings();
-        setBackupSettings(refreshedSettings);
-        await loadAvailableBackups({ showLoading: false });
+        const scheduleResult = await scheduleAndSaveAutoBackup(nextSettings);
         closeBackupEmailModal();
         Alert.alert(
           "Backup & Restore",
-          autoResult?.success && !autoResult?.skipped
-            ? "Daily auto backup is on. Today's encrypted backup was created."
-            : autoResult?.message || "Daily auto backup is on."
+          scheduleResult?.success
+            ? "Automatic backup is on. It will run at the selected time."
+            : scheduleResult?.message ||
+                "Backup email was saved, but automatic backup could not be scheduled."
         );
         return;
       }
@@ -14504,6 +14555,31 @@ export default function Home() {
                 </TouchableOpacity>
               ))}
             </View>
+            <View className="mt-2 rounded-2xl border border-[#337a7a]/30 bg-[#061414]/45 p-3">
+              <View className="flex-row items-center justify-between">
+                <View className="flex-1 pr-3">
+                  <Text className="text-[#E8F4F4] text-xs font-black">
+                    Backup time
+                  </Text>
+                  <Text className="text-[#66b9b9] text-sm font-black mt-1">
+                    {formatBackupClockTime(backupSettings.autoTime || "00:00")}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  disabled={backupBusy}
+                  onPress={() => {
+                    setAutoBackupTimeDraft(backupSettings.autoTime || "00:00");
+                    setAutoBackupTimeModalVisible(true);
+                  }}
+                  className="px-3 py-2 rounded-full border border-[#66b9b9]/35 bg-[#123131]/80"
+                >
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                    Change time
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
             <Text className="text-[#9FB5B5] text-[11px] mt-1">
               Last backup:{" "}
               {backupSettings.lastAutoBackupAt
@@ -14511,39 +14587,81 @@ export default function Home() {
                 : "Not yet"}
             </Text>
             <Text className="text-[#9FB5B5] text-[11px] mt-1">
+              Next backup:{" "}
+              {backupSettings.nextAutoBackupAt
+                ? formatDateTimeForDisplay(backupSettings.nextAutoBackupAt)
+                : "Not scheduled"}
+            </Text>
+            <Text className="text-[#9FB5B5] text-[11px] mt-1">
               Status:{" "}
               {backupSettings.autoEnabled
                 ? backupSettings.autoBackupEmailConfigured
                   ? backupSettings.lastAutoBackupStatus === "failed"
                     ? "Failed"
-                    : backupSettings.lastAutoBackupStatus === "success"
-                      ? "Success"
-                      : "Ready"
+                    : backupSettings.schedulerStatus === "permission_needed"
+                      ? "Permission needed"
+                      : backupSettings.schedulerStatus === "failed"
+                        ? "Schedule failed"
+                        : backupSettings.lastAutoBackupStatus === "success"
+                          ? "Success — scheduled"
+                          : "Scheduled"
                   : "Needs setup"
                 : "Off"}
             </Text>
             {backupSettings.lastAutoBackupError ? (
               <Text className="text-[#FFCF7A] text-[11px] mt-2 leading-5">
-                Last auto backup could not be created.
+                {backupSettings.lastAutoBackupError ===
+                "Last scheduled backup was missed."
+                  ? "Last scheduled backup was missed. You can run it now if helpful."
+                  : "Last automatic backup could not be created."}
               </Text>
             ) : null}
             <Text className="text-[#9FB5B5] text-[11px] mt-2 leading-5">
-              {backupSettings.autoBackupEmailConfigured
-                ? "Auto backup email is saved securely on this device."
-                : "Auto backup needs setup before it can create encrypted backups."}
+              Automatic backup runs at your selected time, even if the app is closed,
+              when Android allows background work.
             </Text>
-            <TouchableOpacity
-              activeOpacity={0.82}
-              disabled={backupBusy}
-              onPress={handleUpdateAutoBackupEmail}
-              className="self-start mt-3 px-3 py-2 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70"
-            >
-              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-                {backupSettings.autoBackupEmailConfigured
-                  ? "Update backup email"
-                  : "Set backup email"}
-              </Text>
-            </TouchableOpacity>
+            {backupSettings.schedulerStatus === "permission_needed" ? (
+              <View className="mt-2">
+                <Text className="text-[#FFCF7A] text-[11px] leading-5">
+                  Android needs permission to run backup exactly at this time.
+                </Text>
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={() => void openExactAlarmSettings()}
+                  className="self-start mt-2 px-3 py-2 rounded-full border border-[#FFCF7A]/35 bg-[#123131]/70"
+                >
+                  <Text className="text-[#FFCF7A] text-[10px] font-black uppercase tracking-widest">
+                    Allow exact backup schedule
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            <View className="flex-row flex-wrap mt-2">
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={backupBusy}
+                onPress={handleUpdateAutoBackupEmail}
+                className="mt-1 mr-2 px-3 py-2 rounded-full border border-[#66b9b9]/35 bg-[#123131]/70"
+              >
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  {backupSettings.autoBackupEmailConfigured
+                    ? "Update backup email"
+                    : "Set backup email"}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={backupBusy}
+                onPress={() =>
+                  handleCreateBackupRequest(backupSettings.autoType || "minimum", "manual")
+                }
+                className="mt-1 px-3 py-2 rounded-full border border-[#66b9b9]/35 bg-[#061414]/55"
+              >
+                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                  Run backup now
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View className="bg-[#123131]/55 rounded-2xl p-4 border border-[#337a7a]/25 mb-3">
@@ -18227,6 +18345,59 @@ export default function Home() {
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      <Modal
+        visible={autoBackupTimeModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAutoBackupTimeModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          className="flex-1 bg-[#061414]/95 justify-center px-6"
+        >
+          <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/35 shadow-2xl shadow-[#66b9b9]/15">
+            <Text className="text-[#66b9b9] text-xl font-black mb-2 uppercase tracking-tight">
+              Backup time
+            </Text>
+            <Text className="text-[#9FB5B5] text-xs leading-5 mb-4">
+              Enter local device time in 24-hour HH:mm format. Midnight is 00:00.
+            </Text>
+            <TextInput
+              value={autoBackupTimeDraft}
+              onChangeText={(value) =>
+                setAutoBackupTimeDraft(
+                  value.replace(/[^0-9:]/g, "").slice(0, 5)
+                )
+              }
+              placeholder="00:00"
+              placeholderTextColor={COLORS.muted}
+              keyboardType="numbers-and-punctuation"
+              maxLength={5}
+              autoFocus
+              className="bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl mb-5 border border-[#66b9b9]/25 text-center text-xl font-black"
+            />
+            <View className="flex-row justify-between space-x-3">
+              <TouchableOpacity
+                onPress={() => setAutoBackupTimeModalVisible(false)}
+                className="flex-1 p-4 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/40"
+              >
+                <Text className="text-[#9FB5B5] text-center font-bold uppercase tracking-widest text-xs">
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => void handleSaveAutoBackupTime()}
+                className="flex-1 p-4 rounded-2xl bg-[#66b9b9] border border-[#99bdbd]/60"
+              >
+                <Text className="text-[#061414] text-center font-black uppercase tracking-widest text-xs">
+                  Save time
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal

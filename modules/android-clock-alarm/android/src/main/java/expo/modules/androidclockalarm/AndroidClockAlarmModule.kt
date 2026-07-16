@@ -73,6 +73,45 @@ class AndroidClockAlarmModule : Module() {
       openExactAlarmSettings()
     }
 
+    AsyncFunction("scheduleAutoBackup") { options: Map<String, Any?> ->
+      val context = appContext.reactContext
+        ?: return@AsyncFunction errorResult(
+          errorCode = "NATIVE_MODULE_UNAVAILABLE",
+          message = "Android backup scheduling is unavailable."
+        )
+      autoBackupResult(
+        AutoBackupScheduler.schedule(
+          context,
+          options["backupTime"] as? String,
+          options["backupType"] as? String
+        )
+      )
+    }
+
+    AsyncFunction("cancelAutoBackup") {
+      val context = appContext.reactContext
+        ?: return@AsyncFunction errorResult(
+          errorCode = "NATIVE_MODULE_UNAVAILABLE",
+          message = "Android backup scheduling is unavailable."
+        )
+      AutoBackupScheduler.cancel(context)
+      mapOf(
+        "success" to true,
+        "cancelled" to true,
+        "schedulerStatus" to "not_scheduled",
+        "message" to "Automatic backup schedule cancelled."
+      )
+    }
+
+    AsyncFunction("getAutoBackupScheduleStatus") {
+      val context = appContext.reactContext
+        ?: return@AsyncFunction errorResult(
+          errorCode = "NATIVE_MODULE_UNAVAILABLE",
+          message = "Android backup scheduling is unavailable."
+        )
+      autoBackupResult(AutoBackupScheduler.status(context))
+    }
+
     AsyncFunction("scheduleTaskAlarm") { options: Map<String, Any?> ->
       scheduleTaskAlarm(options)
     }
@@ -420,6 +459,18 @@ class AndroidClockAlarmModule : Module() {
       "alarmId" to alarmId,
       "errorCode" to errorCode,
       "message" to message
+    )
+  }
+
+  private fun autoBackupResult(result: AutoBackupScheduleResult): Map<String, Any?> {
+    return mapOf(
+      "success" to result.success,
+      "scheduled" to (result.schedulerStatus == "scheduled" ||
+        result.schedulerStatus == "permission_needed"),
+      "schedulerStatus" to result.schedulerStatus,
+      "nextRunAt" to result.nextRunAt.toDouble(),
+      "errorCode" to result.errorCode,
+      "message" to result.message
     )
   }
 }

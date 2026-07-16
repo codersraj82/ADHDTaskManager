@@ -43,10 +43,13 @@ const BACKUP_MIME_TYPE = "application/octet-stream";
 const BACKUP_SETTING_KEYS = {
   autoEnabled: "backup.autoEnabled",
   autoType: "backup.autoType",
+  autoTime: "backup.autoTime",
   lastAutoBackupAt: "backup.lastAutoBackupAt",
   lastAutoBackupDate: "backup.lastAutoBackupDate",
   lastAutoBackupStatus: "backup.lastAutoBackupStatus",
   lastAutoBackupError: "backup.lastAutoBackupError",
+  nextAutoBackupAt: "backup.nextAutoBackupAt",
+  schedulerStatus: "backup.schedulerStatus",
 };
 
 let backupInProgress = false;
@@ -469,15 +472,29 @@ export const clearAutoBackupEmail = async () => {
 export const getBackupSettings = async () => {
   const settings = getSettingsMap();
   const autoBackupEmailConfigured = validateBackupEmail(await getAutoBackupEmail());
+  const autoEnabled = settings[BACKUP_SETTING_KEYS.autoEnabled] === "true";
+  const autoType =
+    settings[BACKUP_SETTING_KEYS.autoType] === "full" ? "full" : "minimum";
+  const autoTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(
+    settings[BACKUP_SETTING_KEYS.autoTime] || ""
+  )
+    ? settings[BACKUP_SETTING_KEYS.autoTime]
+    : "00:00";
   return {
-    autoEnabled: settings[BACKUP_SETTING_KEYS.autoEnabled] === "true",
-    autoType:
-      settings[BACKUP_SETTING_KEYS.autoType] === "full" ? "full" : "minimum",
+    enabled: autoEnabled,
+    backupType: autoType,
+    backupTime: autoTime,
+    autoEnabled,
+    autoType,
+    autoTime,
     lastAutoBackupAt: settings[BACKUP_SETTING_KEYS.lastAutoBackupAt] || "",
     lastAutoBackupDate: settings[BACKUP_SETTING_KEYS.lastAutoBackupDate] || "",
     lastAutoBackupStatus:
       settings[BACKUP_SETTING_KEYS.lastAutoBackupStatus] || "",
     lastAutoBackupError: settings[BACKUP_SETTING_KEYS.lastAutoBackupError] || "",
+    nextAutoBackupAt: settings[BACKUP_SETTING_KEYS.nextAutoBackupAt] || "",
+    schedulerStatus:
+      settings[BACKUP_SETTING_KEYS.schedulerStatus] || "not_scheduled",
     autoBackupEmailConfigured,
   };
 };
@@ -488,6 +505,10 @@ export const saveBackupSettings = async (settings = {}) => {
   }
   if (settings.autoType === "minimum" || settings.autoType === "full") {
     saveSetting(BACKUP_SETTING_KEYS.autoType, settings.autoType);
+  }
+  const requestedTime = settings.autoTime || settings.backupTime || "";
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(requestedTime)) {
+    saveSetting(BACKUP_SETTING_KEYS.autoTime, requestedTime);
   }
   if (typeof settings.lastAutoBackupAt === "string") {
     saveSetting(BACKUP_SETTING_KEYS.lastAutoBackupAt, settings.lastAutoBackupAt);
@@ -515,6 +536,17 @@ export const saveBackupSettings = async (settings = {}) => {
     } else {
       removeSetting(BACKUP_SETTING_KEYS.lastAutoBackupError);
     }
+  }
+  if (typeof settings.nextAutoBackupAt === "string") {
+    saveSetting(BACKUP_SETTING_KEYS.nextAutoBackupAt, settings.nextAutoBackupAt);
+  }
+  if (
+    settings.schedulerStatus === "scheduled" ||
+    settings.schedulerStatus === "not_scheduled" ||
+    settings.schedulerStatus === "permission_needed" ||
+    settings.schedulerStatus === "failed"
+  ) {
+    saveSetting(BACKUP_SETTING_KEYS.schedulerStatus, settings.schedulerStatus);
   }
 
   return getBackupSettings();
@@ -1752,6 +1784,18 @@ export const createAutoBackupIfNeeded = async (options = {}) => {
   } finally {
     // createBackup owns and always releases the shared creation lock.
   }
+};
+
+export const runScheduledAutoBackup = async () => {
+  const result = await createAutoBackupIfNeeded({ dataReady: true });
+  if (!result?.success && !result?.skipped) {
+    await saveBackupSettings({
+      lastAutoBackupStatus: "failed",
+      lastAutoBackupError:
+        result?.message || "Scheduled automatic backup could not be created.",
+    });
+  }
+  return result;
 };
 
 export const restoreBackupFromPath = async (path, email, options = {}) => {
