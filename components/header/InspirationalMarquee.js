@@ -11,6 +11,8 @@ import {
 const BAR_HEIGHT = 36;
 const GAP = 80;
 const SPEED_PX_PER_SECOND = 24;
+const HORIZONTAL_PADDING = 12;
+const MEASUREMENT_WIDTH = 10000;
 
 export default function InspirationalMarquee({ text, style }) {
   const translateX = useRef(new Animated.Value(0)).current;
@@ -18,7 +20,12 @@ export default function InspirationalMarquee({ text, style }) {
   const [containerWidth, setContainerWidth] = useState(0);
   const [textWidth, setTextWidth] = useState(0);
   const [reduceMotion, setReduceMotion] = useState(false);
-  const shouldScroll = !reduceMotion && textWidth > containerWidth - 6;
+  const availableWidth = Math.max(
+    containerWidth - HORIZONTAL_PADDING * 2,
+    0
+  );
+  const shouldScroll =
+    !reduceMotion && availableWidth > 0 && textWidth > availableWidth;
 
   useEffect(() => {
     let mounted = true;
@@ -49,11 +56,13 @@ export default function InspirationalMarquee({ text, style }) {
           toValue: -distance,
           duration,
           easing: Easing.linear,
+          isInteraction: false,
           useNativeDriver: true,
         }),
         Animated.timing(translateX, {
           toValue: 0,
           duration: 0,
+          isInteraction: false,
           useNativeDriver: true,
         }),
       ])
@@ -62,8 +71,6 @@ export default function InspirationalMarquee({ text, style }) {
     animation.start();
     return () => animation.stop();
   }, [shouldScroll, text, textWidth, translateX]);
-
-  useEffect(() => setTextWidth(0), [text]);
 
   return (
     <View
@@ -85,9 +92,20 @@ export default function InspirationalMarquee({ text, style }) {
         </Text>
       )}
       <Text
+        key={`marquee-measure-${text}`}
+        accessible={false}
         numberOfLines={1}
         pointerEvents="none"
-        onLayout={(event) => setTextWidth(event.nativeEvent.layout.width)}
+        onTextLayout={(event) => {
+          const measuredWidth = Math.ceil(
+            Number(event.nativeEvent.lines?.[0]?.width || 0)
+          );
+          if (measuredWidth > 0) {
+            setTextWidth((currentWidth) =>
+              currentWidth === measuredWidth ? currentWidth : measuredWidth
+            );
+          }
+        }}
         style={styles.measureText}
       >
         {text}
@@ -108,10 +126,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(102,185,185,0.25)",
     backgroundColor: "rgba(18,49,49,0.6)",
-    paddingHorizontal: 12,
+    paddingHorizontal: HORIZONTAL_PADDING,
   },
   track: { flexDirection: "row", alignItems: "center", flexShrink: 0 },
   text: { color: "#E8F4F4", fontSize: 13, fontWeight: "700", lineHeight: 20, flexShrink: 0 },
   staticText: { color: "#E8F4F4", fontSize: 13, fontWeight: "700", lineHeight: 20 },
-  measureText: { position: "absolute", opacity: 0, left: 0, top: 0, fontSize: 13, fontWeight: "700", lineHeight: 20 },
+  measureText: {
+    position: "absolute",
+    opacity: 0,
+    left: 0,
+    top: 0,
+    width: MEASUREMENT_WIDTH,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
 });

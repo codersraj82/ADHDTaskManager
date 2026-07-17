@@ -33,6 +33,7 @@ const YEARLY_BACKUP_DIR_NAME = "yearly";
 const PRE_RESTORE_BACKUP_DIR_NAME = "pre-restore";
 const BACKUP_INDEX_FILE_NAME = "backup-index.json";
 const BACKUP_TEMP_DIR_NAME = "tmp";
+const EXTERNAL_BACKUP_DIR_NAME = "ADHDTaskManager Backups";
 const AUTO_BACKUP_EMAIL_SECURE_KEY = "adhdTaskManager.autoBackupEmail";
 const KDF_ITERATIONS = 210000;
 const KEY_BYTES = 32;
@@ -50,6 +51,8 @@ const BACKUP_SETTING_KEYS = {
   lastAutoBackupError: "backup.lastAutoBackupError",
   nextAutoBackupAt: "backup.nextAutoBackupAt",
   schedulerStatus: "backup.schedulerStatus",
+  externalParentDirectoryUri: "backup.externalParentDirectoryUri",
+  externalDirectoryUri: "backup.externalDirectoryUri",
 };
 
 let backupInProgress = false;
@@ -229,8 +232,29 @@ const createProgressMapper =
   };
 
 const ensureDirectoryAsync = async (dir) => {
-  if (!dir) return;
-  await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => null);
+  if (!dir) {
+    throw new BackupFlowError(
+      "BACKUP_FOLDER_UNAVAILABLE",
+      "The app backup folder is unavailable on this device."
+    );
+  }
+
+  const existing = await FileSystem.getInfoAsync(dir).catch(() => null);
+  let created = false;
+  if (!existing?.exists) {
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+    created = true;
+  }
+
+  const verified = await FileSystem.getInfoAsync(dir).catch(() => null);
+  if (!verified?.exists || verified.isDirectory === false) {
+    throw new BackupFlowError(
+      "BACKUP_FOLDER_CREATE_FAILED",
+      "The app could not create its backup folder."
+    );
+  }
+
+  return { uri: dir, created };
 };
 
 const getBackupBaseDirectory = () => `${FileSystem.documentDirectory}${BACKUP_DIR_NAME}/`;
@@ -469,9 +493,262 @@ export const clearAutoBackupEmail = async () => {
   }
 };
 
+const normalizeSafUriForComparison = (uri = "") => {
+  const value = safeString(uri);
+  if (!value) return "";
+
+  try {
+    return decodeURIComponent(value).replace(/[\\/]+$/, "").toLowerCase();
+  } catch {
+    return value.replace(/[\\/]+$/, "").toLowerCase();
+  }
+};
+
+const isExternalBackupDirectoryUri = (uri = "") => {
+  const normalizedUri = normalizeSafUriForComparison(uri);
+  const normalizedName = EXTERNAL_BACKUP_DIR_NAME.toLowerCase();
+  return (
+    normalizedUri.endsWith(`/${normalizedName}`) ||
+    normalizedUri.endsWith(`:${normalizedName}`)
+  );
+};
+
+const getSafFileName = (uri = "") => {
+  const normalizedUri = normalizeSafUriForComparison(uri);
+  return normalizedUri.split("/").filter(Boolean).pop() || "";
+};
+
+const readSafDirectory = async (directoryUri = "") => {
+  if (
+    Platform.OS !== "android" ||
+    !FileSystem.StorageAccessFramework ||
+    !safeString(directoryUri)
+  ) {
+    return null;
+  }
+
+  try {
+    const entries =
+      await FileSystem.StorageAccessFramework.readDirectoryAsync(directoryUri);
+    return Array.isArray(entries) ? entries : [];
+  } catch {
+    return null;
+  }
+};
+
+const resolveExternalBackupDirectory = async (parentDirectoryUri = "") => {
+  const parentUri = safeString(parentDirectoryUri);
+  const parentEntries = await readSafDirectory(parentUri);
+  if (!parentUri || parentEntries === null) {
+    return {
+      success: false,
+      errorCode: "BACKUP_FOLDER_PERMISSION_REQUIRED",
+      message: "Choose a folder and allow access before creating backups.",
+    };
+  }
+
+  if (isExternalBackupDirectoryUri(parentUri)) {
+    return {
+      success: true,
+      parentDirectoryUri: parentUri,
+      directoryUri: parentUri,
+      folderCreated: false,
+    };
+  }
+
+  const existingDirectoryUri = parentEntries.find((uri) =>
+    isExternalBackupDirectoryUri(uri)
+  );
+  if (existingDirectoryUri && (await readSafDirectory(existingDirectoryUri)) !== null) {
+    return {
+      success: true,
+      parentDirectoryUri: parentUri,
+      directoryUri: existingDirectoryUri,
+      folderCreated: false,
+    };
+  }
+
+  try {
+    const directoryUri =
+      await FileSystem.StorageAccessFramework.makeDirectoryAsync(
+        parentUri,
+        EXTERNAL_BACKUP_DIR_NAME
+      );
+    if ((await readSafDirectory(directoryUri)) === null) {
+      throw new Error("Created backup folder could not be opened.");
+    }
+    return {
+      success: true,
+      parentDirectoryUri: parentUri,
+      directoryUri,
+      folderCreated: true,
+    };
+  } catch {
+    const refreshedEntries = await readSafDirectory(parentUri);
+    const recreatedDirectoryUri = refreshedEntries?.find((uri) =>
+      isExternalBackupDirectoryUri(uri)
+    );
+    if (
+      recreatedDirectoryUri &&
+      (await readSafDirectory(recreatedDirectoryUri)) !== null
+    ) {
+      return {
+        success: true,
+        parentDirectoryUri: parentUri,
+        directoryUri: recreatedDirectoryUri,
+        folderCreated: false,
+      };
+    }
+
+    return {
+      success: false,
+      errorCode: "BACKUP_FOLDER_CREATE_FAILED",
+      message: `Could not create the ${EXTERNAL_BACKUP_DIR_NAME} folder.`,
+    };
+  }
+};
+
+const rememberExternalBackupDirectory = ({
+  parentDirectoryUri = "",
+  directoryUri = "",
+} = {}) => {
+  saveSetting(
+    BACKUP_SETTING_KEYS.externalParentDirectoryUri,
+    safeString(parentDirectoryUri)
+  );
+  saveSetting(BACKUP_SETTING_KEYS.externalDirectoryUri, safeString(directoryUri));
+};
+
+export const getBackupFolderAccess = async () => {
+  if (Platform.OS !== "android" || !FileSystem.StorageAccessFramework) {
+    return {
+      success: true,
+      permissionRequired: false,
+      folderName: EXTERNAL_BACKUP_DIR_NAME,
+    };
+  }
+
+  const settings = getSettingsMap();
+  const storedDirectoryUri = safeString(
+    settings[BACKUP_SETTING_KEYS.externalDirectoryUri]
+  );
+  if (
+    storedDirectoryUri &&
+    (await readSafDirectory(storedDirectoryUri)) !== null
+  ) {
+    return {
+      success: true,
+      permissionRequired: false,
+      directoryUri: storedDirectoryUri,
+      parentDirectoryUri: safeString(
+        settings[BACKUP_SETTING_KEYS.externalParentDirectoryUri]
+      ),
+      folderName: EXTERNAL_BACKUP_DIR_NAME,
+      folderCreated: false,
+    };
+  }
+
+  const storedParentDirectoryUri = safeString(
+    settings[BACKUP_SETTING_KEYS.externalParentDirectoryUri]
+  );
+  if (storedParentDirectoryUri) {
+    const repaired = await resolveExternalBackupDirectory(storedParentDirectoryUri);
+    if (repaired.success) {
+      rememberExternalBackupDirectory(repaired);
+      return {
+        ...repaired,
+        permissionRequired: false,
+        folderName: EXTERNAL_BACKUP_DIR_NAME,
+      };
+    }
+  }
+
+  if (storedDirectoryUri) {
+    removeSetting(BACKUP_SETTING_KEYS.externalDirectoryUri);
+  }
+  return {
+    success: false,
+    permissionRequired: true,
+    errorCode: "BACKUP_FOLDER_PERMISSION_REQUIRED",
+    folderName: EXTERNAL_BACKUP_DIR_NAME,
+    message: "Choose a folder and allow access before creating backups.",
+  };
+};
+
+export const requestBackupFolderAccess = async () => {
+  const currentAccess = await getBackupFolderAccess();
+  if (currentAccess.success || Platform.OS !== "android") return currentAccess;
+
+  if (!FileSystem.StorageAccessFramework) {
+    return {
+      success: false,
+      errorCode: "BACKUP_FOLDER_UNAVAILABLE",
+      message: "Folder access is not available on this Android device.",
+    };
+  }
+
+  try {
+    const settings = getSettingsMap();
+    const initialDirectoryUri =
+      safeString(settings[BACKUP_SETTING_KEYS.externalParentDirectoryUri]) ||
+      FileSystem.StorageAccessFramework.getUriForDirectoryInRoot(
+        EXTERNAL_BACKUP_DIR_NAME
+      );
+    const permissions =
+      await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync(
+        initialDirectoryUri
+      );
+
+    if (!permissions?.granted || !permissions.directoryUri) {
+      return {
+        success: false,
+        cancelled: true,
+        permissionRequired: true,
+        errorCode: "BACKUP_FOLDER_PERMISSION_DENIED",
+        folderName: EXTERNAL_BACKUP_DIR_NAME,
+        message: "Backup folder access was not granted.",
+      };
+    }
+
+    const resolved = await resolveExternalBackupDirectory(
+      permissions.directoryUri
+    );
+    if (!resolved.success) return resolved;
+
+    rememberExternalBackupDirectory(resolved);
+    return {
+      ...resolved,
+      permissionRequested: true,
+      permissionRequired: false,
+      folderName: EXTERNAL_BACKUP_DIR_NAME,
+      message: resolved.folderCreated
+        ? `${EXTERNAL_BACKUP_DIR_NAME} was created and folder access was granted.`
+        : `${EXTERNAL_BACKUP_DIR_NAME} is ready for backups.`,
+    };
+  } catch {
+    return {
+      success: false,
+      permissionRequired: true,
+      errorCode: "BACKUP_FOLDER_PERMISSION_FAILED",
+      folderName: EXTERNAL_BACKUP_DIR_NAME,
+      message: "Could not prepare the backup folder on this device.",
+    };
+  }
+};
+
 export const getBackupSettings = async () => {
   const settings = getSettingsMap();
   const autoBackupEmailConfigured = validateBackupEmail(await getAutoBackupEmail());
+  const storedExternalDirectoryUri = safeString(
+    settings[BACKUP_SETTING_KEYS.externalDirectoryUri]
+  );
+  const backupFolderConfigured =
+    Platform.OS !== "android" ||
+    !FileSystem.StorageAccessFramework ||
+    Boolean(
+      storedExternalDirectoryUri &&
+        (await readSafDirectory(storedExternalDirectoryUri)) !== null
+    );
   const autoEnabled = settings[BACKUP_SETTING_KEYS.autoEnabled] === "true";
   const autoType =
     settings[BACKUP_SETTING_KEYS.autoType] === "full" ? "full" : "minimum";
@@ -496,6 +773,8 @@ export const getBackupSettings = async () => {
     schedulerStatus:
       settings[BACKUP_SETTING_KEYS.schedulerStatus] || "not_scheduled",
     autoBackupEmailConfigured,
+    backupFolderConfigured,
+    backupFolderName: EXTERNAL_BACKUP_DIR_NAME,
   };
 };
 
@@ -1075,6 +1354,27 @@ export const createBackup = async (options = {}) => {
   }
 };
 
+const cleanupOldExternalAutoBackups = async (directoryUri, keepCount = 2) => {
+  if (Platform.OS !== "android" || !FileSystem.StorageAccessFramework) return;
+
+  const entries = await readSafDirectory(directoryUri);
+  if (entries === null) return;
+
+  const oldBackupUris = entries
+    .filter((uri) => {
+      const name = getSafFileName(uri);
+      return name.startsWith("auto-") && name.endsWith(`.${BACKUP_EXTENSION}`);
+    })
+    .sort((left, right) => getSafFileName(right).localeCompare(getSafFileName(left)))
+    .slice(Math.max(0, keepCount));
+
+  for (const uri of oldBackupUris) {
+    await FileSystem.StorageAccessFramework.deleteAsync(uri, {
+      idempotent: true,
+    }).catch(() => null);
+  }
+};
+
 export const exportBackup = async (backupPath, fileName = "", options = {}) => {
   const onProgress = options.onProgress;
   emitBackupProgress(onProgress, {
@@ -1116,22 +1416,27 @@ export const exportBackup = async (backupPath, fileName = "", options = {}) => {
       emitBackupProgress(onProgress, {
         percent: 48,
         label: "Exporting backup",
-        detail: "Choose where to save the file.",
+        detail: "Preparing the backup folder.",
       });
-      const permissions =
-        await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      const folderAccess =
+        options.requestFolderPermission === false
+          ? await getBackupFolderAccess()
+          : await requestBackupFolderAccess();
 
-      if (!permissions?.granted) {
+      if (!folderAccess?.success || !folderAccess.directoryUri) {
         return {
           success: false,
-          cancelled: true,
-          errorCode: "EXPORT_CANCELLED",
-          message: "Export cancelled.",
+          cancelled: Boolean(folderAccess?.cancelled),
+          errorCode:
+            folderAccess?.errorCode || "BACKUP_FOLDER_PERMISSION_REQUIRED",
+          message:
+            folderAccess?.message ||
+            "Backup folder permission is needed before exporting.",
         };
       }
 
       const targetUri = await FileSystem.StorageAccessFramework.createFileAsync(
-        permissions.directoryUri,
+        folderAccess.directoryUri,
         exportName,
         BACKUP_MIME_TYPE
       );
@@ -1143,6 +1448,9 @@ export const exportBackup = async (backupPath, fileName = "", options = {}) => {
       await FileSystem.StorageAccessFramework.writeAsStringAsync(targetUri, contents, {
         encoding: FileSystem.EncodingType.UTF8,
       });
+      if (options.cleanupAutoBackups) {
+        await cleanupOldExternalAutoBackups(folderAccess.directoryUri, 2);
+      }
 
       emitBackupProgress(onProgress, {
         percent: 100,
@@ -1154,7 +1462,10 @@ export const exportBackup = async (backupPath, fileName = "", options = {}) => {
         success: true,
         uri: targetUri,
         fileName: exportName,
-        message: "Backup exported.",
+        directoryUri: folderAccess.directoryUri,
+        folderCreated: Boolean(folderAccess.folderCreated),
+        folderName: EXTERNAL_BACKUP_DIR_NAME,
+        message: `Backup saved in ${EXTERNAL_BACKUP_DIR_NAME}.`,
       };
     }
 
@@ -1742,6 +2053,27 @@ export const createAutoBackupIfNeeded = async (options = {}) => {
     };
   }
 
+  if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
+    // A headless scheduled task cannot open Android's folder picker. Permission is
+    // therefore collected while the user enables auto backup and only reused here.
+    const folderAccess = await getBackupFolderAccess();
+    if (!folderAccess?.success || !folderAccess.directoryUri) {
+      const folderMessage =
+        folderAccess?.message ||
+        "Automatic backup needs permission to use the backup folder.";
+      await saveBackupSettings({
+        lastAutoBackupStatus: "failed",
+        lastAutoBackupError: folderMessage,
+      });
+      return {
+        success: false,
+        errorCode:
+          folderAccess?.errorCode || "BACKUP_FOLDER_PERMISSION_REQUIRED",
+        message: folderMessage,
+      };
+    }
+  }
+
   try {
     const result = await createBackup({
       type: settings.autoType,
@@ -1764,12 +2096,43 @@ export const createAutoBackupIfNeeded = async (options = {}) => {
       };
     }
 
+    let externalBackupUri = "";
+    if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
+      const exportResult = await exportBackup(result.path, result.fileName, {
+        requestFolderPermission: false,
+        cleanupAutoBackups: true,
+      });
+      if (!exportResult?.success) {
+        const folderMessage =
+          exportResult?.message ||
+          "Automatic backup needs permission to use the backup folder.";
+        await saveBackupSettings({
+          lastAutoBackupStatus: "failed",
+          lastAutoBackupError: folderMessage,
+        });
+        return {
+          success: false,
+          backupCreatedInsideApp: true,
+          backupPath: result.path,
+          backupName: result.fileName,
+          errorCode:
+            exportResult?.errorCode || "BACKUP_FOLDER_PERMISSION_REQUIRED",
+          message: folderMessage,
+        };
+      }
+      externalBackupUri = exportResult.uri || "";
+    }
+
     await refreshBackupIndex();
     return {
       success: true,
       backupPath: result.path,
       backupName: result.fileName,
-      message: "Auto backup created.",
+      externalBackupUri,
+      message:
+        Platform.OS === "android"
+          ? `Auto backup saved in ${EXTERNAL_BACKUP_DIR_NAME}.`
+          : "Auto backup created.",
     };
   } catch {
     await saveBackupSettings({

@@ -126,6 +126,7 @@ import {
   deleteBackupById,
   exportBackup,
   exportBackupFromPath,
+  getBackupFolderAccess,
   getBackupSettings,
   getBackupSummaryText,
   importBackup,
@@ -133,6 +134,7 @@ import {
   refreshBackupIndex,
   restoreBackup,
   restoreBackupFromPath,
+  requestBackupFolderAccess,
   saveAutoBackupEmail,
   saveBackupSettings,
   validateBackupEmail,
@@ -1505,6 +1507,8 @@ export default function Home() {
     nextAutoBackupAt: "",
     schedulerStatus: "not_scheduled",
     autoBackupEmailConfigured: false,
+    backupFolderConfigured: false,
+    backupFolderName: "ADHDTaskManager Backups",
   });
   const [availableBackups, setAvailableBackups] = useState([]);
   const [backupListLoading, setBackupListLoading] = useState(false);
@@ -10725,7 +10729,83 @@ export default function Home() {
     setBackupEmailModal((prev) => ({ ...prev, visible: false }));
   };
 
-  const handleCreateBackupRequest = (type, mode = "manual") => {
+  const confirmBackupFolderPermission = (purposeLabel = "backups") =>
+    new Promise<boolean>((resolve) => {
+      Alert.alert(
+        "Allow backup folder access?",
+        `Android will open a folder picker for ${purposeLabel}. Choose a parent location such as Documents or Download. The app will create “ADHDTaskManager Backups” there if it is missing and use that folder for backup files.`,
+        [
+          {
+            text: "Not now",
+            style: "cancel",
+            onPress: () => resolve(false),
+          },
+          { text: "Continue", onPress: () => resolve(true) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(false) }
+      );
+    });
+
+  const showBackupFolderConfirmation = (title, message) =>
+    new Promise<void>((resolve) => {
+      Alert.alert(
+        title,
+        message,
+        [{ text: "OK", onPress: () => resolve() }],
+        { cancelable: true, onDismiss: () => resolve() }
+      );
+    });
+
+  const ensureBackupFolderAccessForUser = async (
+    purposeLabel = "this backup"
+  ) => {
+    const currentAccess = await getBackupFolderAccess();
+    if (currentAccess?.success) {
+      if (currentAccess.folderCreated) {
+        await showBackupFolderConfirmation(
+          "Backup folder created",
+          `${currentAccess.folderName || "ADHDTaskManager Backups"} was missing, so it was created automatically.`
+        );
+      }
+      const refreshedSettings = await getBackupSettings();
+      setBackupSettings(refreshedSettings);
+      return currentAccess;
+    }
+
+    const confirmed = await confirmBackupFolderPermission(purposeLabel);
+    if (!confirmed) {
+      return {
+        success: false,
+        cancelled: true,
+        errorCode: "BACKUP_FOLDER_PERMISSION_CANCELLED",
+      };
+    }
+
+    const access = await requestBackupFolderAccess();
+    if (!access?.success) {
+      if (!access?.cancelled) {
+        Alert.alert(
+          "Backup folder",
+          access?.message || "Backup folder access could not be granted."
+        );
+      }
+      return access;
+    }
+
+    const refreshedSettings = await getBackupSettings();
+    setBackupSettings(refreshedSettings);
+    await showBackupFolderConfirmation(
+      access.folderCreated ? "Backup folder created" : "Backup folder ready",
+      access?.message ||
+        `${access.folderName || "ADHDTaskManager Backups"} is ready for backups.`
+    );
+    return access;
+  };
+
+  const handleCreateBackupRequest = async (type, mode = "manual") => {
+    if (backupBusy) return;
+    const folderAccess = await ensureBackupFolderAccessForUser("this backup");
+    if (!folderAccess?.success) return;
     openBackupEmailModal({ purpose: "create", type, mode });
   };
 
@@ -10745,6 +10825,12 @@ export default function Home() {
   };
 
   const handleEnableAutoBackup = async () => {
+    if (backupBusy) return;
+    const folderAccess = await ensureBackupFolderAccessForUser(
+      "automatic backups"
+    );
+    if (!folderAccess?.success) return;
+
     if (backupSettings.autoBackupEmailConfigured) {
       setBackupBusy(true);
       try {
@@ -10757,7 +10843,7 @@ export default function Home() {
         Alert.alert(
           "Backup & Restore",
           result?.success
-            ? "Automatic backup is on. It will run at the selected time."
+            ? "Automatic backup is on. It will run at the selected time and save files in ADHDTaskManager Backups."
             : result?.message || "Automatic backup could not be scheduled."
         );
       } catch {
@@ -10846,6 +10932,11 @@ export default function Home() {
 
   const handleExportListedBackup = async (backup) => {
     if (!backup?.path || backupBusy) return;
+    const folderAccess = await ensureBackupFolderAccessForUser(
+      "the exported backup"
+    );
+    if (!folderAccess?.success) return;
+
     setBackupBusy(true);
     startBackupProgress(
       "Exporting backup",
@@ -10994,6 +11085,12 @@ export default function Home() {
     const backupPurpose = backupEmailModal.purpose;
     const backupType = backupEmailModal.type;
     const backupMode = backupEmailModal.mode;
+    if (backupPurpose === "enable-auto") {
+      const folderAccess = await ensureBackupFolderAccessForUser(
+        "automatic backups"
+      );
+      if (!folderAccess?.success) return;
+    }
     dismissBackupEmailModalForProcessing();
     setBackupBusy(true);
     startBackupProgress(
@@ -11027,7 +11124,7 @@ export default function Home() {
         Alert.alert(
           "Backup & Restore",
           scheduleResult?.success
-            ? "Automatic backup is on. It will run at the selected time."
+            ? "Automatic backup is on. It will run at the selected time and save files in ADHDTaskManager Backups."
             : scheduleResult?.message ||
                 "Backup email was saved, but automatic backup could not be scheduled."
         );
@@ -14372,11 +14469,20 @@ export default function Home() {
             <Text className="text-[#9FB5B5] text-xs mt-1">
               Choose what to include, then export one encrypted file.
             </Text>
+            {Platform.OS === "android" ? (
+              <Text className="text-[#9FB5B5] text-[11px] mt-2 leading-5">
+                Backup folder: {backupSettings.backupFolderConfigured
+                  ? backupSettings.backupFolderName || "ADHDTaskManager Backups"
+                  : "Permission needed — the folder will be created automatically after you allow access."}
+              </Text>
+            ) : null}
             <View className="mt-3">
               <TouchableOpacity
                 activeOpacity={0.84}
                 disabled={backupBusy}
-                onPress={() => handleCreateBackupRequest("minimum", "manual")}
+                onPress={() =>
+                  void handleCreateBackupRequest("minimum", "manual")
+                }
                 className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-2xl p-3 mb-2"
               >
                 <Text className="text-[#66b9b9] text-xs font-black uppercase tracking-widest">
@@ -14389,7 +14495,7 @@ export default function Home() {
               <TouchableOpacity
                 activeOpacity={0.84}
                 disabled={backupBusy}
-                onPress={() => handleCreateBackupRequest("full", "manual")}
+                onPress={() => void handleCreateBackupRequest("full", "manual")}
                 className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-2xl p-3"
               >
                 <Text className="text-[#66b9b9] text-xs font-black uppercase tracking-widest">
@@ -14414,7 +14520,7 @@ export default function Home() {
                 value={backupSettings.autoEnabled}
                 onValueChange={(value) => {
                   if (value) {
-                    handleEnableAutoBackup();
+                    void handleEnableAutoBackup();
                   } else {
                     void handleDisableAutoBackup();
                   }
@@ -14503,6 +14609,34 @@ export default function Home() {
                   : "Needs setup"
                 : "Off"}
             </Text>
+            {Platform.OS === "android" ? (
+              <Text
+                className={`text-[11px] mt-1 ${
+                  backupSettings.backupFolderConfigured
+                    ? "text-[#9FB5B5]"
+                    : "text-[#FFCF7A]"
+                }`}
+              >
+                Backup folder: {backupSettings.backupFolderConfigured
+                  ? backupSettings.backupFolderName || "ADHDTaskManager Backups"
+                  : "Permission needed"}
+              </Text>
+            ) : null}
+            {Platform.OS === "android" &&
+            !backupSettings.backupFolderConfigured ? (
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={backupBusy}
+                onPress={() =>
+                  void ensureBackupFolderAccessForUser("automatic backups")
+                }
+                className="self-start mt-2 px-3 py-2 rounded-full border border-[#FFCF7A]/35 bg-[#123131]/70"
+              >
+                <Text className="text-[#FFCF7A] text-[10px] font-black uppercase tracking-widest">
+                  Allow backup folder
+                </Text>
+              </TouchableOpacity>
+            ) : null}
             {backupSettings.lastAutoBackupError ? (
               <Text className="text-[#FFCF7A] text-[11px] mt-2 leading-5">
                 {backupSettings.lastAutoBackupError ===
@@ -14548,7 +14682,10 @@ export default function Home() {
                 activeOpacity={0.82}
                 disabled={backupBusy}
                 onPress={() =>
-                  handleCreateBackupRequest(backupSettings.autoType || "minimum", "manual")
+                  void handleCreateBackupRequest(
+                    backupSettings.autoType || "minimum",
+                    "manual"
+                  )
                 }
                 className="mt-1 px-3 py-2 rounded-full border border-[#66b9b9]/35 bg-[#061414]/55"
               >
@@ -14738,7 +14875,9 @@ export default function Home() {
               <TouchableOpacity
                 activeOpacity={0.82}
                 disabled={backupBusy}
-                onPress={() => handleCreateBackupRequest("minimum", "monthly")}
+                onPress={() =>
+                  void handleCreateBackupRequest("minimum", "monthly")
+                }
                 className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-full px-3 py-2 mr-2 mb-2"
               >
                 <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
@@ -14748,7 +14887,7 @@ export default function Home() {
               <TouchableOpacity
                 activeOpacity={0.82}
                 disabled={backupBusy}
-                onPress={() => handleCreateBackupRequest("full", "monthly")}
+                onPress={() => void handleCreateBackupRequest("full", "monthly")}
                 className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-full px-3 py-2 mr-2 mb-2"
               >
                 <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
@@ -14763,7 +14902,9 @@ export default function Home() {
               <TouchableOpacity
                 activeOpacity={0.82}
                 disabled={backupBusy}
-                onPress={() => handleCreateBackupRequest("minimum", "yearly")}
+                onPress={() =>
+                  void handleCreateBackupRequest("minimum", "yearly")
+                }
                 className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-full px-3 py-2 mr-2 mb-2"
               >
                 <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
@@ -14773,7 +14914,7 @@ export default function Home() {
               <TouchableOpacity
                 activeOpacity={0.82}
                 disabled={backupBusy}
-                onPress={() => handleCreateBackupRequest("full", "yearly")}
+                onPress={() => void handleCreateBackupRequest("full", "yearly")}
                 className="bg-[#061414]/50 border border-[#337a7a]/30 rounded-full px-3 py-2 mr-2 mb-2"
               >
                 <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
