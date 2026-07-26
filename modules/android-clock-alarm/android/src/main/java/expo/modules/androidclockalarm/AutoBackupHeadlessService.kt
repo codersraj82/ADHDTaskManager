@@ -34,7 +34,7 @@ class AutoBackupHeadlessService : HeadlessJsTaskService() {
       AutoBackupContract.HEADLESS_TASK_NAME,
       data,
       5 * 60 * 1000L,
-      false
+      true
     )
   }
 

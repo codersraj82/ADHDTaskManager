@@ -122,6 +122,7 @@ import {
   updateFocusLockScreenSession,
 } from "../../services/focusLockScreen";
 import {
+  createAutoBackupIfNeeded,
   createBackup,
   deleteBackupById,
   exportBackup,
@@ -10908,6 +10909,57 @@ export default function Home() {
     });
   };
 
+  const handleRunAutoBackupNow = async () => {
+    if (backupBusy) return;
+    if (!backupSettings.autoEnabled) {
+      Alert.alert(
+        "Backup & Restore",
+        "Turn on automatic backup first, or use Create backup above."
+      );
+      return;
+    }
+
+    const folderAccess = await ensureBackupFolderAccessForUser(
+      "automatic backups"
+    );
+    if (!folderAccess?.success) return;
+
+    setBackupBusy(true);
+    backupCancelTokenRef.current = { cancelled: false };
+    startBackupProgress(
+      "Running automatic backup",
+      "Preparing the scheduled backup now.",
+      5
+    );
+    try {
+      const result = await createAutoBackupIfNeeded({
+        dataReady: tasksHydrated,
+        onProgress: updateBackupProgress,
+        cancelToken: backupCancelTokenRef.current,
+      });
+      const refreshedSettings = await getBackupSettings();
+      setBackupSettings(refreshedSettings);
+      await loadAvailableBackups({ showLoading: false });
+
+      Alert.alert(
+        "Backup & Restore",
+        result?.message ||
+          (result?.success
+            ? "Automatic backup completed."
+            : "Automatic backup could not be created.")
+      );
+    } catch {
+      Alert.alert(
+        "Backup & Restore",
+        "Automatic backup could not be created."
+      );
+    } finally {
+      backupCancelTokenRef.current = null;
+      clearBackupProgress();
+      setBackupBusy(false);
+    }
+  };
+
   const handleRefreshBackupList = async () => {
     setBackupListLoading(true);
     try {
@@ -14642,7 +14694,7 @@ export default function Home() {
                 {backupSettings.lastAutoBackupError ===
                 "Last scheduled backup was missed."
                   ? "Last scheduled backup was missed. You can run it now if helpful."
-                  : "Last automatic backup could not be created."}
+                  : backupSettings.lastAutoBackupError}
               </Text>
             ) : null}
             <Text className="text-[#9FB5B5] text-[11px] mt-2 leading-5">
@@ -14681,12 +14733,7 @@ export default function Home() {
               <TouchableOpacity
                 activeOpacity={0.82}
                 disabled={backupBusy}
-                onPress={() =>
-                  void handleCreateBackupRequest(
-                    backupSettings.autoType || "minimum",
-                    "manual"
-                  )
-                }
+                onPress={() => void handleRunAutoBackupNow()}
                 className="mt-1 px-3 py-2 rounded-full border border-[#66b9b9]/35 bg-[#061414]/55"
               >
                 <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">

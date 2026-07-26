@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import com.facebook.react.HeadlessJsTaskService
 
 class AutoBackupReceiver : BroadcastReceiver() {
@@ -28,8 +29,12 @@ class AutoBackupReceiver : BroadcastReceiver() {
         context.startService(serviceIntent)
       }
       HeadlessJsTaskService.acquireWakeLockNow(context)
-    } catch (_: Exception) {
-      // The next daily alarm is already scheduled. JS records execution failures when started.
+    } catch (error: Exception) {
+      Log.e(
+        "AutoBackupReceiver",
+        "Could not start the scheduled automatic backup service.",
+        error
+      )
     }
   }
 }
