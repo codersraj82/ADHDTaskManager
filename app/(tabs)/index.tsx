@@ -151,6 +151,13 @@ import {
   stopEncouragement,
 } from "../../services/speechService";
 import {
+  playFocusReminderBeep,
+  playFocusSessionBeep,
+  preloadFocusBeeps,
+  stopFocusBeeps,
+  unloadFocusBeeps,
+} from "../../services/focusSoundService";
+import {
   getMoodMeta,
   getMoodScore,
   getMoodTypeFromAverageScore,
@@ -511,6 +518,11 @@ const FOCUS_AUTO_DISMISS_COUNTDOWN_SECONDS = Math.max(
   1,
   Math.round(FOCUS_AUTO_DISMISS_DELAY_MS / 1000)
 );
+const FOCUS_DURATION_OPTIONS_MINUTES = [2, 5, 10, 15, 20, 25, 30];
+const MINIMUM_CUSTOM_FOCUS_MINUTES = 1;
+const MAXIMUM_CUSTOM_FOCUS_MINUTES = 180;
+const FOCUS_REMINDER_INTERVAL_SECONDS = 2 * 60;
+const FOCUS_REMINDER_END_BUFFER_SECONDS = 10;
 const APP_HORIZONTAL_PADDING = 16;
 const APP_HEADER_SAFE_TOP_GAP = 4;
 const APP_HEADER_CONTENT_HEIGHT = 70;
@@ -1413,11 +1425,11 @@ export default function Home() {
   const [currentDuration, setCurrentDuration] = useState(1500);
 
   const [timeModalVisible, setTimeModalVisible] = useState(false);
-  const [customHour, setCustomHour] = useState("");
-  const [customMinute, setCustomMinute] = useState("");
+  const [customMinute, setCustomMinute] = useState("10");
+  const [isCustomFocusTime, setIsCustomFocusTime] = useState(false);
+  const [customFocusTimeError, setCustomFocusTimeError] = useState("");
   const [currentTaskForTime, setCurrentTaskForTime] = useState(null);
   const [lastCompletedTaskId, setLastCompletedTaskId] = useState(null);
-  const [showDurationError, setShowDurationError] = useState(null); // store taskId
 
   const [celebration, setCelebration] = useState({
     visible: false,
@@ -2980,6 +2992,8 @@ export default function Home() {
   const focusCompletionNotificationIdRef = useRef(null);
   const focusLockScreenSessionIdRef = useRef(null);
   const timerCompletionStampRef = useRef(null);
+  const focusStopInProgressRef = useRef(false);
+  const lastFocusReminderBoundaryRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
   const headerClockTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasPlayedWelcomeVoiceRef = useRef(false);
@@ -3028,6 +3042,13 @@ export default function Home() {
   useEffect(() => {
     currentFocusedTaskIdRef.current = currentFocusedTaskId;
   }, [currentFocusedTaskId]);
+
+  useEffect(() => {
+    void preloadFocusBeeps();
+    return () => {
+      void unloadFocusBeeps();
+    };
+  }, []);
 
   const saveSetting = useCallback((key, value) => {
     db.runSync("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", [
@@ -3703,6 +3724,13 @@ export default function Home() {
         sectionId: targetTask?.isPinned ? "Pinned" : targetTask?.section || null,
         endTimestamp,
       });
+      const sessionStillActive =
+        !focusStopInProgressRef.current &&
+        Number(activeTaskIdRef.current) === Number(taskId);
+      if (!sessionStillActive) {
+        await cancelNotificationById(notificationId);
+        return;
+      }
       focusCompletionNotificationIdRef.current = notificationId;
     },
     [cancelFocusCompletionReminder, getTaskById, getTaskTitleById]
@@ -3766,6 +3794,17 @@ export default function Home() {
       }
 
       const result = await startFocusLockScreenSession(options);
+      if (focusStopInProgressRef.current || activeTaskIdRef.current === null) {
+        if (result.success) {
+          await stopFocusLockScreenSession(options.sessionId);
+        }
+        return {
+          success: false,
+          sessionId: options.sessionId,
+          errorCode: "FOCUS_SESSION_ENDED",
+          message: "Focus session ended before the lock-screen view opened.",
+        };
+      }
       if (result.success) {
         focusLockScreenSessionIdRef.current = options.sessionId;
         await cancelFocusCompletionReminder();
@@ -3822,19 +3861,26 @@ export default function Home() {
   const completeFocusSession = useCallback(
     (
       completionTimestamp = Date.now(),
-      options: { suppressSpeech?: boolean } = {}
+      options: { suppressSpeech?: boolean; suppressSound?: boolean } = {}
     ) => {
+      if (focusStopInProgressRef.current || isFocusCompletedRef.current) return;
       const completionKey = `${activeTaskId || "none"}-${completionTimestamp}`;
       if (timerCompletionStampRef.current === completionKey) return;
       timerCompletionStampRef.current = completionKey;
       const nativeSessionId = focusLockScreenSessionIdRef.current;
       focusLockScreenSessionIdRef.current = null;
+      lastFocusReminderBoundaryRef.current = null;
+      isFocusCompletedRef.current = true;
 
       setIsTimerRunning(false);
       setIsFocusCompleted(true);
       setFocusStartTimestamp(null);
       setFocusEndTimestamp(null);
       setFocusTime(currentDuration);
+
+      if (!options?.suppressSound) {
+        void stopFocusBeeps().then(() => playFocusSessionBeep());
+      }
 
       const completionMessage = getRandomAffirmation(FOCUS_COMPLETION_AFFIRMATIONS);
       showCelebration(completionMessage, "⏱");
@@ -3882,6 +3928,94 @@ export default function Home() {
     ]
   );
 
+  const stopActiveFocusSession = useCallback(
+    async ({ nativeSessionId = null } = {}) => {
+      const stoppedTaskId = activeTaskId;
+      if (!stoppedTaskId || isFocusCompletedRef.current) return false;
+
+      focusStopInProgressRef.current = true;
+      const elapsedForSave =
+        isTimerRunning && focusStartTimestamp
+          ? getElapsedSecondsFromTimestamp({
+              startTimestamp: focusStartTimestamp,
+              nowTimestamp: Date.now(),
+              maxDurationSeconds: currentDuration,
+            })
+          : focusTime;
+      const sessionIdToStop =
+        nativeSessionId ||
+        focusLockScreenSessionIdRef.current ||
+        (focusStartTimestamp
+          ? buildFocusLockScreenSessionId({
+              taskId: stoppedTaskId,
+              startedAt: focusStartTimestamp,
+            })
+          : null);
+
+      if (elapsedForSave > 0 && !focusSessionRecordedRef.current) {
+        recordFocusSession(elapsedForSave);
+        focusSessionRecordedRef.current = true;
+      }
+
+      clearFocusCompletionAutoClose({ resetCountdown: true });
+      lastFocusReminderBoundaryRef.current = null;
+      activeTaskIdRef.current = null;
+      isFocusCompletedRef.current = false;
+      focusLockScreenSessionIdRef.current = null;
+      setIsTimerRunning(false);
+      setIsFocusCompleted(false);
+      setFocusTime(0);
+      setFocusStartTimestamp(null);
+      setFocusEndTimestamp(null);
+      setActiveTaskId(null);
+      setCurrentFocusedTaskId((prev) =>
+        Number(prev) === Number(stoppedTaskId) ? null : prev
+      );
+      focusSessionRecordedRef.current = false;
+      timerCompletionStampRef.current = null;
+      clearPersistedFocusTimerState();
+
+      await Promise.all([
+        stopFocusBeeps(),
+        stopFocusLockScreenSession(sessionIdToStop),
+        cancelFocusCompletionReminder(),
+      ]);
+      return true;
+    },
+    [
+      activeTaskId,
+      cancelFocusCompletionReminder,
+      clearFocusCompletionAutoClose,
+      clearPersistedFocusTimerState,
+      currentDuration,
+      focusStartTimestamp,
+      focusTime,
+      isTimerRunning,
+      recordFocusSession,
+    ]
+  );
+
+  const handleEndFocus = useCallback(() => {
+    if (!activeTaskId || isFocusCompleted) return;
+
+    Alert.alert(
+      "End focus session?",
+      "You can stop this focus session now. Your task will stay available.",
+      [
+        {
+          text: "Continue focus",
+          style: "cancel",
+        },
+        {
+          text: "End focus",
+          onPress: () => {
+            void stopActiveFocusSession();
+          },
+        },
+      ]
+    );
+  }, [activeTaskId, isFocusCompleted, stopActiveFocusSession]);
+
   const reconcileNativeFocusLockScreenStatus = useCallback(async () => {
     const nativeStatus = await getCurrentFocusLockScreenSession();
     if (!nativeStatus?.success || !nativeStatus.sessionId || !nativeStatus.status) {
@@ -3904,7 +4038,7 @@ export default function Home() {
       if (!isFocusCompleted) {
         completeFocusSession(
           nativeStatus.expectedEndAtMillis || focusEndTimestamp || Date.now(),
-          { suppressSpeech: true }
+          { suppressSpeech: true, suppressSound: true }
         );
       }
       await stopFocusLockScreenSession(nativeStatus.sessionId);
@@ -3912,53 +4046,18 @@ export default function Home() {
     }
 
     if (nativeStatus.status === "stopped") {
-      const elapsedForSave =
-        isTimerRunning && focusStartTimestamp
-          ? getElapsedSecondsFromTimestamp({
-              startTimestamp: focusStartTimestamp,
-              nowTimestamp: Date.now(),
-              maxDurationSeconds: currentDuration,
-            })
-          : focusTime;
-
-      if (elapsedForSave > 0 && !focusSessionRecordedRef.current) {
-        recordFocusSession(elapsedForSave);
-        focusSessionRecordedRef.current = true;
-      }
-
-      clearFocusCompletionAutoClose({ resetCountdown: true });
-      setIsTimerRunning(false);
-      setIsFocusCompleted(false);
-      setFocusTime(0);
-      setFocusStartTimestamp(null);
-      setFocusEndTimestamp(null);
-      setActiveTaskId(null);
-      setCurrentFocusedTaskId((prev) =>
-        Number(prev) === Number(activeTaskId) ? null : prev
-      );
-      focusLockScreenSessionIdRef.current = null;
-      focusSessionRecordedRef.current = false;
-      timerCompletionStampRef.current = null;
-      clearPersistedFocusTimerState();
-      await stopFocusLockScreenSession(nativeStatus.sessionId);
-      await cancelFocusCompletionReminder();
+      await stopActiveFocusSession({ nativeSessionId: nativeStatus.sessionId });
       return true;
     }
 
     return false;
   }, [
     activeTaskId,
-    cancelFocusCompletionReminder,
-    clearFocusCompletionAutoClose,
-    clearPersistedFocusTimerState,
     completeFocusSession,
-    currentDuration,
     focusEndTimestamp,
     focusStartTimestamp,
-    focusTime,
     isFocusCompleted,
-    isTimerRunning,
-    recordFocusSession,
+    stopActiveFocusSession,
   ]);
 
   const ensureProfileImageDirectory = async () => {
@@ -5181,10 +5280,12 @@ export default function Home() {
             restoredTimerState.isFocusCompleted
           );
           setActiveTaskId(restoredTimerState.activeTaskId);
+          activeTaskIdRef.current = restoredTimerState.activeTaskId;
           setFocusTime(restoredTimerState.focusTime || 0);
           setCurrentDuration(restoredTimerState.currentDuration || 1500);
           setIsTimerRunning(Boolean(restoredTimerState.isTimerRunning));
           setIsFocusCompleted(restoredIsFocusCompleted);
+          isFocusCompletedRef.current = restoredIsFocusCompleted;
           setFocusCompletionCountdown(
             restoredIsFocusCompleted
               ? FOCUS_AUTO_DISMISS_COUNTDOWN_SECONDS
@@ -5219,6 +5320,14 @@ export default function Home() {
                   restoredTask?.isPinned ? "Pinned" : restoredTask?.section || null,
                 endTimestamp: restoredEndTimestamp,
               });
+              const sessionStillActive =
+                !focusStopInProgressRef.current &&
+                Number(activeTaskIdRef.current) ===
+                  Number(restoredTimerState.activeTaskId);
+              if (!sessionStillActive) {
+                await cancelNotificationById(notificationId);
+                return;
+              }
               focusCompletionNotificationIdRef.current = notificationId;
             };
 
@@ -6007,6 +6116,22 @@ export default function Home() {
 
       if (remainingSeconds <= 0) {
         completeFocusSession(focusEndTimestamp);
+        return;
+      }
+
+      const reminderBoundary =
+        Math.floor(elapsedSeconds / FOCUS_REMINDER_INTERVAL_SECONDS) *
+        FOCUS_REMINDER_INTERVAL_SECONDS;
+      const secondsPastBoundary = elapsedSeconds - reminderBoundary;
+      const shouldPlayReminder =
+        reminderBoundary > 0 &&
+        secondsPastBoundary <= 2 &&
+        remainingSeconds > FOCUS_REMINDER_END_BUFFER_SECONDS &&
+        lastFocusReminderBoundaryRef.current !== reminderBoundary;
+
+      if (shouldPlayReminder) {
+        lastFocusReminderBoundaryRef.current = reminderBoundary;
+        void playFocusReminderBeep();
       }
     };
 
@@ -6085,6 +6210,9 @@ export default function Home() {
     }
 
     clearFocusCompletionAutoClose({ resetCountdown: true });
+    focusStopInProgressRef.current = true;
+    lastFocusReminderBoundaryRef.current = null;
+    void stopFocusBeeps();
     setIsTimerRunning(false);
     setIsFocusCompleted(false);
     setFocusTime(0);
@@ -7459,6 +7587,8 @@ export default function Home() {
     setFocusSectionLayout(null);
     setIsFocusSectionVisible(false);
     setReturnToFocusButtonVisible(false);
+    focusStopInProgressRef.current = false;
+    lastFocusReminderBoundaryRef.current = null;
     focusSessionRecordedRef.current = false;
     timerCompletionStampRef.current = null;
     setIsFocusCompleted(false);
@@ -7470,11 +7600,13 @@ export default function Home() {
     });
 
     setActiveTaskId(taskId);
+    activeTaskIdRef.current = taskId;
     setFocusTime(0);
     setCurrentDuration(duration);
     setFocusStartTimestamp(session.startTimestamp);
     setFocusEndTimestamp(session.endTimestamp);
     setIsTimerRunning(true);
+    isFocusCompletedRef.current = false;
 
     persistFocusTimerState({
       activeTaskId: taskId,
@@ -7492,6 +7624,7 @@ export default function Home() {
       durationSeconds: duration,
     });
     void stopEncouragement();
+    void stopFocusBeeps().then(() => playFocusSessionBeep());
 
     scheduleScrollToFocusSection();
   };
@@ -7511,6 +7644,7 @@ export default function Home() {
       setIsTimerRunning(false);
       setFocusStartTimestamp(null);
       setFocusEndTimestamp(null);
+      void stopFocusBeeps();
       persistFocusTimerState({
         activeTaskId,
         focusTime: pausedElapsed,
@@ -7562,25 +7696,61 @@ export default function Home() {
 
   const activeTask = tasks.find((t) => t.id === activeTaskId);
 
+  const closeFocusDurationSelector = () => {
+    setTimeModalVisible(false);
+    setIsCustomFocusTime(false);
+    setCustomFocusTimeError("");
+    setCurrentTaskForTime(null);
+  };
+
+  const openFocusDurationSelector = (taskId) => {
+    const selectedMinutes = Math.round((taskDurations[taskId] || 600) / 60);
+    setCurrentTaskForTime(taskId);
+    setCustomMinute(
+      String(
+        Math.min(
+          MAXIMUM_CUSTOM_FOCUS_MINUTES,
+          Math.max(MINIMUM_CUSTOM_FOCUS_MINUTES, selectedMinutes)
+        )
+      )
+    );
+    setIsCustomFocusTime(false);
+    setCustomFocusTimeError("");
+    setTimeModalVisible(true);
+  };
+
+  const startSelectedFocusDuration = (minutes) => {
+    if (!currentTaskForTime) return;
+    const taskId = currentTaskForTime;
+    const durationSeconds = minutes * 60;
+    setTaskDurations((prev) => ({
+      ...prev,
+      [taskId]: durationSeconds,
+    }));
+    closeFocusDurationSelector();
+    startFocus(taskId, durationSeconds);
+  };
+
   const saveCustomTime = () => {
-    const hours = parseInt(customHour) || 0;
-    const minutes = parseInt(customMinute) || 0;
-
-    const totalSeconds = hours * 3600 + minutes * 60;
-
-    if (totalSeconds === 0) {
-      setTimeModalVisible(false);
+    const normalizedMinutes = String(customMinute || "").trim();
+    if (!normalizedMinutes || !/^\d+$/.test(normalizedMinutes)) {
+      setCustomFocusTimeError("Enter focus time in minutes.");
       return;
     }
 
-    setTaskDurations((prev) => ({
-      ...prev,
-      [currentTaskForTime]: totalSeconds,
-    }));
+    const minutes = Number(normalizedMinutes);
+    if (
+      minutes < MINIMUM_CUSTOM_FOCUS_MINUTES ||
+      minutes > MAXIMUM_CUSTOM_FOCUS_MINUTES
+    ) {
+      setCustomFocusTimeError(
+        "Focus time should be between 1 and 180 minutes."
+      );
+      return;
+    }
 
-    setCustomHour("0");
-    setCustomMinute("0");
-    setTimeModalVisible(false);
+    setCustomFocusTimeError("");
+    startSelectedFocusDuration(minutes);
   };
 
   const formatDuration = (seconds) => {
@@ -16515,66 +16685,6 @@ export default function Home() {
                             className="text-[#E8F4F4] text-xs py-1 border-b border-[#66b9b9]/35"
                           />
                         </View>
-                    {!isEarlyRecurringPreview ? (
-                      <>
-                        <Animated.View
-                          style={{ transform: [{ translateX: shakeAnim }] }}
-                          className="flex-row mt-3 items-center flex-wrap"
-                        >
-                          {[10, 20, 30].map((min) => (
-                            <TouchableOpacity
-                              key={min}
-                              onPress={() =>
-                                setTaskDurations((prev) => ({
-                                  ...prev,
-                                  [task.id]: min * 60,
-                                }))
-                              }
-                              className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
-                                showDurationError === task.id
-                                  ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
-                                  : taskDurations[task.id] === min * 60
-                                  ? "bg-[#66b9b9] border-[#66b9b9]"
-                                  : "bg-[#123131]/80 border-[#337a7a]/40"
-                              }`}
-                            >
-                              <Text
-                                className={`text-[11px] font-bold ${
-                                  taskDurations[task.id] === min * 60
-                                    ? "text-[#061414]"
-                                    : "text-[#E8F4F4]"
-                                }`}
-                              >
-                                {min}m
-                              </Text>
-                            </TouchableOpacity>
-                          ))}
-
-                          <TouchableOpacity
-                            onPress={() => {
-                              setCurrentTaskForTime(task.id);
-                              setTimeModalVisible(true);
-                            }}
-                            className={`p-1.5 px-3 rounded-full mr-2 mb-2 border ${
-                              showDurationError === task.id
-                                ? "bg-[#FF7B7B]/20 border-[#FF7B7B]"
-                                : "bg-[#123131]/80 border-[#337a7a]/40"
-                            }`}
-                          >
-                            <Text className="text-[#E8F4F4] text-[11px] font-bold">
-                              Custom
-                            </Text>
-                          </TouchableOpacity>
-                        </Animated.View>
-
-                        {showDurationError === task.id && (
-                          <Text className="text-[#FF7B7B] text-[10px] mt-1 font-bold">
-                            Please select focus time
-                          </Text>
-                        )}
-                      </>
-                    ) : null}
-
                     {lastCompletedTaskId === task.id && (
                       <Text className="text-[#7DFFB3] text-[10px] mt-2 font-bold uppercase tracking-widest">
                         Last completed
@@ -16598,36 +16708,24 @@ export default function Home() {
                           return;
                         }
 
-                        const duration = taskDurations[task.id];
-
-                        if (!duration) {
-                          setShowDurationError(task.id);
-                          triggerShake();
-
-                          setTimeout(() => setShowDurationError(null), 2000);
-                          return;
-                        }
-
-                        startFocus(task.id);
+                        openFocusDurationSelector(task.id);
                       }}
-                      className={`mt-2 self-start px-3 py-2 rounded-full border ${
+                      className={`mt-3 self-start px-3 py-2 rounded-full border ${
                         isEarlyRecurringPreview
                           ? "bg-[#2A2218]/75 border-[#D9A441]/35"
-                          : taskDurations[task.id]
-                          ? "bg-[#66b9b9]/15 border-[#66b9b9]/40"
-                          : "bg-[#123131]/70 border-[#337a7a]/35"
+                          : "bg-[#66b9b9]/15 border-[#66b9b9]/40"
                       }`}
                     >
                       <Text
                         className={`font-bold text-xs uppercase tracking-widest ${
                           isEarlyRecurringPreview
                             ? "text-[#D9A441]"
-                            : taskDurations[task.id] ? "text-[#66b9b9]" : "text-[#9FB5B5]"
+                            : "text-[#66b9b9]"
                         }`}
                       >
                         {isEarlyRecurringPreview
                           ? "Scheduled Tomorrow"
-                          : taskDurations[task.id] ? "Start Focus" : "Select Focus Time"}
+                          : "Start Focus"}
                       </Text>
                     </TouchableOpacity>
 
@@ -17251,11 +17349,29 @@ export default function Home() {
                     </Text>
                   </View>
                 ) : (
-                  <TouchableOpacity onPress={toggleTimer} className="mt-5 bg-[#66b9b9]/15 px-6 py-3 rounded-full border border-[#66b9b9]/40 shadow-md shadow-[#66b9b9]/10">
-                    <Text className="text-[#5EEAD4] font-black uppercase tracking-widest text-xs">
-                      {isTimerRunning ? "⏸ Pause" : "▶ Resume"}
-                    </Text>
-                  </TouchableOpacity>
+                  <View className="flex-row items-center mt-5">
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel={isTimerRunning ? "Pause focus" : "Resume focus"}
+                      onPress={toggleTimer}
+                      className="bg-[#66b9b9]/15 px-5 py-3 rounded-full border border-[#66b9b9]/40 shadow-md shadow-[#66b9b9]/10 mr-2"
+                    >
+                      <Text className="text-[#5EEAD4] font-black uppercase tracking-widest text-xs">
+                        {isTimerRunning ? "⏸ Pause" : "▶ Resume"}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel="End focus"
+                      accessibilityHint="Asks before ending the active focus session"
+                      onPress={handleEndFocus}
+                      className="bg-[#123131]/75 px-5 py-3 rounded-full border border-[#9FB5B5]/40"
+                    >
+                      <Text className="text-[#CDE7E7] font-black uppercase tracking-widest text-xs">
+                        End Focus
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 )}
               </View>
             )}
@@ -18645,47 +18761,90 @@ export default function Home() {
         </View>
       </Modal>
 
-      {/* Section Date Time Modal */}
-      <Modal visible={timeModalVisible} transparent animationType="fade">
+      {/* Focus duration selector */}
+      <Modal
+        visible={timeModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeFocusDurationSelector}
+      >
         <View className="flex-1 bg-[#061414]/95 justify-center px-6">
           <View className="bg-[#0B1F1F] p-6 rounded-[32px] border border-[#66b9b9]/30 shadow-2xl shadow-[#66b9b9]/15">
-            <Text className="text-[#E8F4F4] text-xl font-black mb-6 uppercase tracking-tighter text-center">
-              Set Focus Time ⏱
+            <Text className="text-[#E8F4F4] text-xl font-black tracking-tight text-center">
+              Choose focus time
+            </Text>
+            <Text className="text-[#9FB5B5] text-sm font-semibold text-center mt-2 mb-5">
+              Pick what feels doable right now.
             </Text>
 
-            {/* Inputs */}
-            <View className="flex-row space-x-3 mb-6">
-              <TextInput
-                keyboardType="numeric"
-                value={customHour}
-                onChangeText={setCustomHour}
-                placeholder="HH"
-                placeholderTextColor={COLORS.muted}
-                className="flex-1 bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl text-center text-lg font-bold border border-[#66b9b9]/25"
-              />
+            {isCustomFocusTime ? (
+              <>
+                <Text className="text-[#CDE7E7] text-xs font-black uppercase tracking-widest mb-2">
+                  Custom minutes
+                </Text>
+                <TextInput
+                  autoFocus
+                  keyboardType="number-pad"
+                  maxLength={3}
+                  value={customMinute}
+                  onChangeText={(value) => {
+                    setCustomMinute(value);
+                    if (customFocusTimeError) setCustomFocusTimeError("");
+                  }}
+                  placeholder="10"
+                  placeholderTextColor={COLORS.muted}
+                  className="bg-[#061414]/60 text-[#E8F4F4] p-4 rounded-2xl text-center text-lg font-bold border border-[#66b9b9]/30"
+                />
+                {customFocusTimeError ? (
+                  <Text className="text-[#FFD166] text-xs font-semibold mt-2">
+                    {customFocusTimeError}
+                  </Text>
+                ) : null}
 
-              <TextInput
-                keyboardType="numeric"
-                value={customMinute}
-                onChangeText={setCustomMinute}
-                placeholder="MM"
-                placeholderTextColor={COLORS.muted}
-                className="flex-1 bg-[#061414]/45 text-[#E8F4F4] p-4 rounded-2xl text-center text-lg font-bold border border-[#66b9b9]/25"
-              />
-            </View>
+                <TouchableOpacity
+                  onPress={saveCustomTime}
+                  className="bg-[#66b9b9] p-4 rounded-2xl mt-5 border border-[#99bdbd]/60"
+                >
+                  <Text className="text-center text-[#061414] font-black uppercase tracking-widest text-xs">
+                    Start focus
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <View className="flex-row flex-wrap justify-between">
+                {FOCUS_DURATION_OPTIONS_MINUTES.map((minutes) => (
+                  <TouchableOpacity
+                    key={minutes}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${minutes} minute focus`}
+                    onPress={() => startSelectedFocusDuration(minutes)}
+                    className="w-[48%] mb-3 py-3 rounded-2xl bg-[#123131]/80 border border-[#337a7a]/45"
+                  >
+                    <Text className="text-[#E8F4F4] text-center text-xs font-black uppercase tracking-widest">
+                      {minutes} min
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Custom focus duration"
+                  onPress={() => {
+                    setIsCustomFocusTime(true);
+                    setCustomFocusTimeError("");
+                  }}
+                  className="w-[48%] mb-3 py-3 rounded-2xl bg-[#123131]/80 border border-[#66b9b9]/45"
+                >
+                  <Text className="text-[#5EEAD4] text-center text-xs font-black uppercase tracking-widest">
+                    Custom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
-            {/* Save */}
             <TouchableOpacity
-              onPress={saveCustomTime}
-              className="bg-[#66b9b9] p-4 rounded-2xl shadow-lg shadow-[#66b9b9]/30 border border-[#99bdbd]/60"
+              onPress={closeFocusDurationSelector}
+              className="mt-2 p-2"
             >
-              <Text className="text-center text-[#061414] font-black uppercase tracking-widest">
-                Save Time
-              </Text>
-            </TouchableOpacity>
-
-            {/* Cancel */}
-            <TouchableOpacity onPress={() => setTimeModalVisible(false)} className="mt-4 p-2">
               <Text className="text-[#9FB5B5] text-center font-bold text-xs uppercase tracking-widest">
                 Cancel
               </Text>
