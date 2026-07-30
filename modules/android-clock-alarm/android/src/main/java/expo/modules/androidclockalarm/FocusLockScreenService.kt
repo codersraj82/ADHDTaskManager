@@ -17,11 +17,16 @@ class FocusLockScreenService : Service() {
     private const val AUTO_LOCK_FIRST_ATTEMPT_DELAY_MS = 650L
     private const val AUTO_LOCK_SECOND_ATTEMPT_DELAY_MS = 1_800L
     private const val LOCK_STATE_CHECK_INTERVAL_MS = 5_000L
+    private const val REMINDER_INTERVAL_MS = 120_000L
+    private const val REMINDER_BOUNDARY_GRACE_MS = 7_500L
+    private const val REMINDER_END_BUFFER_MS = 10_000L
   }
 
   private val handler = Handler(Looper.getMainLooper())
   private var screenReceiver: BroadcastReceiver? = null
   private var activeSessionId: String? = null
+  private var reminderSessionId: String? = null
+  private var lastReminderBoundaryMs: Long? = null
 
   private val completionTicker = object : Runnable {
     override fun run() {
@@ -35,7 +40,8 @@ class FocusLockScreenService : Service() {
         return
       }
 
-      val remainingMillis = session.expectedEndAtMillis - System.currentTimeMillis()
+      val nowMillis = System.currentTimeMillis()
+      val remainingMillis = session.expectedEndAtMillis - nowMillis
       if (remainingMillis <= 0L) {
         FocusLockScreenController.complete(
           context = applicationContext,
@@ -46,6 +52,7 @@ class FocusLockScreenService : Service() {
         return
       }
 
+      playReminderIfDue(session, nowMillis, remainingMillis)
       showActivityIfLocked(session)
       handler.postDelayed(
         this,
@@ -111,6 +118,10 @@ class FocusLockScreenService : Service() {
 
   private fun startOrUpdateForeground(session: FocusLockScreenSession) {
     activeSessionId = session.sessionId
+    if (reminderSessionId != session.sessionId) {
+      reminderSessionId = session.sessionId
+      lastReminderBoundaryMs = null
+    }
     FocusNotificationHelper.ensureChannels(applicationContext)
     val notification = FocusNotificationHelper.buildOngoingNotification(applicationContext, session)
 
@@ -173,6 +184,7 @@ class FocusLockScreenService : Service() {
   }
 
   private fun scheduleAutoLockFocusView(session: FocusLockScreenSession) {
+    if (!session.showLockScreen) return
     if (FocusLockScreenLaunchGate.isSuppressed(applicationContext)) return
 
     FocusNotificationHelper.showOngoing(applicationContext, session)
@@ -204,6 +216,7 @@ class FocusLockScreenService : Service() {
     session: FocusLockScreenSession,
     refreshFullScreenNotification: Boolean = false
   ) {
+    if (!session.showLockScreen) return
     if (FocusLockScreenLaunchGate.isSuppressed(applicationContext)) return
 
     val keyguardManager = getSystemService(KeyguardManager::class.java)
@@ -221,5 +234,30 @@ class FocusLockScreenService : Service() {
     } catch (_: Exception) {
       // Android may restrict full-screen activity launches; the notification remains.
     }
+  }
+
+  private fun playReminderIfDue(
+    session: FocusLockScreenSession,
+    nowMillis: Long,
+    remainingMillis: Long
+  ) {
+    if (remainingMillis <= REMINDER_END_BUFFER_MS) return
+
+    val elapsedMillis = (nowMillis - session.startedAtMillis)
+      .coerceIn(0L, session.totalMillis)
+    val reminderBoundaryMs =
+      (elapsedMillis / REMINDER_INTERVAL_MS) * REMINDER_INTERVAL_MS
+    val millisecondsPastBoundary = elapsedMillis - reminderBoundaryMs
+    val isNearBoundary = millisecondsPastBoundary <= REMINDER_BOUNDARY_GRACE_MS
+    if (
+      reminderBoundaryMs <= 0L ||
+      !isNearBoundary ||
+      lastReminderBoundaryMs == reminderBoundaryMs
+    ) {
+      return
+    }
+
+    lastReminderBoundaryMs = reminderBoundaryMs
+    FocusSoundPlayer.playReminder(applicationContext)
   }
 }

@@ -7,8 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.speech.tts.TextToSpeech
@@ -29,7 +27,7 @@ internal object FocusNotificationHelper {
     val showFocusIntent = buildShowFocusPendingIntent(context, session, 2)
     val stopIntent = buildStopPendingIntent(context, session, 3)
 
-    return NotificationCompat.Builder(context, FocusLockScreenContract.FOCUS_CHANNEL_ID)
+    val builder = NotificationCompat.Builder(context, FocusLockScreenContract.FOCUS_CHANNEL_ID)
       .setSmallIcon(notificationSmallIconResource(context))
       .setContentTitle("Focus session active")
       .setContentText("Working on: ${session.taskTitle}")
@@ -41,11 +39,16 @@ internal object FocusNotificationHelper {
       .setOnlyAlertOnce(true)
       .setSilent(true)
       .setContentIntent(openAppIntent)
-      .setFullScreenIntent(showFocusIntent, true)
       .addAction(0, "Open app", openAppIntent)
-      .addAction(0, "Show focus", showFocusIntent)
       .addAction(0, "Stop", stopIntent)
-      .build()
+
+    if (session.showLockScreen) {
+      builder
+        .setFullScreenIntent(showFocusIntent, true)
+        .addAction(0, "Show focus", showFocusIntent)
+    }
+
+    return builder.build()
   }
 
   fun showOngoing(context: Context, session: FocusLockScreenSession) {
@@ -76,6 +79,7 @@ internal object FocusNotificationHelper {
       .setCategory(NotificationCompat.CATEGORY_REMINDER)
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
       .setAutoCancel(true)
+      .setSilent(true)
       .setContentIntent(openAppIntent)
       .addAction(0, "Open app", openAppIntent)
       .addAction(0, "Done", doneIntent)
@@ -149,11 +153,6 @@ internal object FocusNotificationHelper {
     }
 
     if (notificationManager.getNotificationChannel(FocusLockScreenContract.COMPLETION_CHANNEL_ID) == null) {
-      val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-      val audioAttributes = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-        .build()
       val completionChannel = NotificationChannel(
         FocusLockScreenContract.COMPLETION_CHANNEL_ID,
         FocusLockScreenContract.COMPLETION_CHANNEL_NAME,
@@ -161,7 +160,8 @@ internal object FocusNotificationHelper {
       ).apply {
         description = FocusLockScreenContract.COMPLETION_CHANNEL_DESCRIPTION
         lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-        setSound(soundUri, audioAttributes)
+        setSound(null, null)
+        enableVibration(false)
       }
       notificationManager.createNotificationChannel(completionChannel)
     }

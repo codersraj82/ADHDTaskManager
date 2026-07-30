@@ -17,6 +17,7 @@ export type FocusLockScreenSessionStatus = FocusLockScreenResult & {
   expectedEndAtMillis?: number | null;
   durationMinutes?: number | null;
   readAloudOnComplete?: boolean;
+  showLockScreen?: boolean;
   status?: "active" | "paused" | "completed" | "stopped" | null;
 };
 
@@ -28,6 +29,7 @@ export type FocusLockScreenOptions = {
   expectedEndAt: string | number;
   durationMinutes: number;
   readAloudOnComplete?: boolean;
+  showLockScreen?: boolean;
   status?: "active" | "paused" | "completed" | "stopped";
 };
 

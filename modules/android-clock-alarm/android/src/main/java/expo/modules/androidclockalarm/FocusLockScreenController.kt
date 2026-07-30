@@ -16,6 +16,7 @@ internal object FocusLockScreenController {
 
     val appContext = context.applicationContext
     val activeSession = session.copy(status = FocusLockScreenContract.STATUS_ACTIVE)
+    FocusSoundPlayer.stopAll()
     FocusLockScreenStore.save(appContext, activeSession)
     FocusLockScreenScheduler.scheduleCompletion(appContext, activeSession)
 
@@ -69,6 +70,7 @@ internal object FocusLockScreenController {
   fun stopFromJs(context: Context, sessionId: String): Map<String, Any?> {
     val appContext = context.applicationContext
     FocusLockScreenScheduler.cancelCompletion(appContext, sessionId)
+    FocusSoundPlayer.stopAll()
     FocusNotificationHelper.cancelOngoing(appContext)
     FocusLockScreenStore.remove(appContext)
     sendCloseActivityBroadcast(appContext, sessionId)
@@ -100,6 +102,7 @@ internal object FocusLockScreenController {
 
     FocusLockScreenStore.save(appContext, stoppedSession)
     FocusLockScreenScheduler.cancelCompletion(appContext, sessionId)
+    FocusSoundPlayer.stopAll()
     FocusNotificationHelper.cancelOngoing(appContext)
     sendCloseActivityBroadcast(appContext, sessionId)
     stopServiceSafely(appContext)
@@ -140,6 +143,7 @@ internal object FocusLockScreenController {
     FocusNotificationHelper.cancelOngoing(appContext)
 
     if (!wasAlreadyNotified) {
+      FocusSoundPlayer.playSessionEnd(appContext)
       if (notify) {
         FocusNotificationHelper.showCompletion(appContext, completedSession)
       }

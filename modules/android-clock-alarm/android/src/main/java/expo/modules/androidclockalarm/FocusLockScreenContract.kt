@@ -18,6 +18,7 @@ internal data class FocusLockScreenSession(
   val expectedEndAtMillis: Long,
   val durationMinutes: Int,
   val readAloudOnComplete: Boolean,
+  val showLockScreen: Boolean = true,
   val status: String = FocusLockScreenContract.STATUS_ACTIVE,
   val completionNotifiedAtMillis: Long? = null
 ) {
@@ -32,6 +33,7 @@ internal data class FocusLockScreenSession(
     intent.putExtra(FocusLockScreenContract.EXTRA_EXPECTED_END_AT_MILLIS, expectedEndAtMillis)
     intent.putExtra(FocusLockScreenContract.EXTRA_DURATION_MINUTES, durationMinutes)
     intent.putExtra(FocusLockScreenContract.EXTRA_READ_ALOUD_ON_COMPLETE, readAloudOnComplete)
+    intent.putExtra(FocusLockScreenContract.EXTRA_SHOW_LOCK_SCREEN, showLockScreen)
     intent.putExtra(FocusLockScreenContract.EXTRA_STATUS, status)
     completionNotifiedAtMillis?.let {
       intent.putExtra(FocusLockScreenContract.EXTRA_COMPLETION_NOTIFIED_AT_MILLIS, it)
@@ -48,6 +50,7 @@ internal data class FocusLockScreenSession(
     "expectedEndAtMillis" to expectedEndAtMillis,
     "durationMinutes" to durationMinutes,
     "readAloudOnComplete" to readAloudOnComplete,
+    "showLockScreen" to showLockScreen,
     "status" to status,
     "completionNotifiedAtMillis" to completionNotifiedAtMillis
   )
@@ -89,6 +92,10 @@ internal data class FocusLockScreenSession(
           FocusLockScreenContract.EXTRA_READ_ALOUD_ON_COMPLETE,
           false
         ),
+        showLockScreen = intent.getBooleanExtra(
+          FocusLockScreenContract.EXTRA_SHOW_LOCK_SCREEN,
+          true
+        ),
         status = sanitizeStatus(
           intent.getStringExtra(FocusLockScreenContract.EXTRA_STATUS)
         ),
@@ -117,6 +124,7 @@ internal data class FocusLockScreenSession(
         expectedEndAtMillis = expectedEndAtMillis,
         durationMinutes = durationMinutes.coerceAtLeast(1),
         readAloudOnComplete = options["readAloudOnComplete"] as? Boolean ?: false,
+        showLockScreen = options["showLockScreen"] as? Boolean ?: true,
         status = sanitizeStatus(options["status"] as? String),
         completionNotifiedAtMillis = parseTimestampMillis(
           options["completionNotifiedAtMillis"] ?: options["completionNotifiedAt"]
@@ -131,7 +139,7 @@ internal object FocusLockScreenContract {
   const val FOCUS_CHANNEL_NAME = "Active focus"
   const val FOCUS_CHANNEL_DESCRIPTION =
     "Ongoing focus timer shown on the lock screen when Android allows it."
-  const val COMPLETION_CHANNEL_ID = "adhd_focus_complete"
+  const val COMPLETION_CHANNEL_ID = "adhd_focus_complete_v2"
   const val COMPLETION_CHANNEL_NAME = "Focus completion"
   const val COMPLETION_CHANNEL_DESCRIPTION = "Gentle completion notices for focus sessions."
 
@@ -164,6 +172,7 @@ internal object FocusLockScreenContract {
   const val EXTRA_EXPECTED_END_AT_MILLIS = "extra_focus_expected_end_at_millis"
   const val EXTRA_DURATION_MINUTES = "extra_focus_duration_minutes"
   const val EXTRA_READ_ALOUD_ON_COMPLETE = "extra_focus_read_aloud_on_complete"
+  const val EXTRA_SHOW_LOCK_SCREEN = "extra_focus_show_lock_screen"
   const val EXTRA_STATUS = "extra_focus_status"
   const val EXTRA_COMPLETION_NOTIFIED_AT_MILLIS =
     "extra_focus_completion_notified_at_millis"
@@ -193,6 +202,7 @@ internal object FocusLockScreenStore {
       put(FocusLockScreenContract.EXTRA_EXPECTED_END_AT_MILLIS, session.expectedEndAtMillis)
       put(FocusLockScreenContract.EXTRA_DURATION_MINUTES, session.durationMinutes)
       put(FocusLockScreenContract.EXTRA_READ_ALOUD_ON_COMPLETE, session.readAloudOnComplete)
+      put(FocusLockScreenContract.EXTRA_SHOW_LOCK_SCREEN, session.showLockScreen)
       put(FocusLockScreenContract.EXTRA_STATUS, session.status)
       session.completionNotifiedAtMillis?.let {
         put(FocusLockScreenContract.EXTRA_COMPLETION_NOTIFIED_AT_MILLIS, it)
@@ -244,6 +254,10 @@ internal object FocusLockScreenStore {
         readAloudOnComplete = json.optBoolean(
           FocusLockScreenContract.EXTRA_READ_ALOUD_ON_COMPLETE,
           false
+        ),
+        showLockScreen = json.optBoolean(
+          FocusLockScreenContract.EXTRA_SHOW_LOCK_SCREEN,
+          true
         ),
         status = sanitizeStatus(
           json.optString(FocusLockScreenContract.EXTRA_STATUS)

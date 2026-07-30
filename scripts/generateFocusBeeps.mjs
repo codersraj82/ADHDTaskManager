@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import lamejs from "@breezystack/lamejs";
@@ -10,6 +10,10 @@ const MP3_BLOCK_SIZE = 1_152;
 const MAX_AMPLITUDE = 0.16;
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const OUTPUT_DIRECTORY = resolve(SCRIPT_DIRECTORY, "../assets/sounds");
+const ANDROID_RAW_DIRECTORY = resolve(
+  SCRIPT_DIRECTORY,
+  "../modules/android-clock-alarm/android/src/main/res/raw"
+);
 
 const clamp = (value, minimum, maximum) =>
   Math.min(maximum, Math.max(minimum, value));
@@ -59,12 +63,18 @@ const encodeMp3 = (samples) => {
 };
 
 const writeTone = (fileName, options) => {
+  const encodedTone = encodeMp3(buildTone(options));
   const outputPath = resolve(OUTPUT_DIRECTORY, fileName);
-  writeFileSync(outputPath, encodeMp3(buildTone(options)));
+  const androidRawPath = resolve(ANDROID_RAW_DIRECTORY, fileName);
+  rmSync(outputPath, { force: true });
+  rmSync(androidRawPath, { force: true });
+  writeFileSync(outputPath, encodedTone);
+  writeFileSync(androidRawPath, encodedTone);
   return outputPath;
 };
 
 mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
+mkdirSync(ANDROID_RAW_DIRECTORY, { recursive: true });
 
 const sessionPath = writeTone("focus_session_beep.mp3", {
   durationSeconds: 0.64,
