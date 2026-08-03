@@ -77,7 +77,8 @@ class FocusLockScreenModule : Module() {
         context = context,
         sessionId = sanitizedSessionId,
         notify = true,
-        readAloud = false
+        readAloud = false,
+        playSound = false
       )
     }
 

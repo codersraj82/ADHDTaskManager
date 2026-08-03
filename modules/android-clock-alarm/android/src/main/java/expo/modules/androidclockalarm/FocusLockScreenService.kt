@@ -1,5 +1,6 @@
 package expo.modules.androidclockalarm
 
+import android.app.ActivityManager
 import android.app.KeyguardManager
 import android.app.Service
 import android.content.BroadcastReceiver
@@ -20,6 +21,7 @@ class FocusLockScreenService : Service() {
     private const val REMINDER_INTERVAL_MS = 120_000L
     private const val REMINDER_BOUNDARY_GRACE_MS = 7_500L
     private const val REMINDER_END_BUFFER_MS = 10_000L
+    private const val WAKE_LOCK_END_BUFFER_MS = 30_000L
   }
 
   private val handler = Handler(Looper.getMainLooper())
@@ -27,6 +29,7 @@ class FocusLockScreenService : Service() {
   private var activeSessionId: String? = null
   private var reminderSessionId: String? = null
   private var lastReminderBoundaryMs: Long? = null
+  private var sessionWakeLock: PowerManager.WakeLock? = null
 
   private val completionTicker = object : Runnable {
     override fun run() {
@@ -110,6 +113,7 @@ class FocusLockScreenService : Service() {
 
   override fun onDestroy() {
     handler.removeCallbacksAndMessages(null)
+    releaseSessionWakeLock()
     unregisterScreenReceiver()
     super.onDestroy()
   }
@@ -122,6 +126,7 @@ class FocusLockScreenService : Service() {
       reminderSessionId = session.sessionId
       lastReminderBoundaryMs = null
     }
+    acquireSessionWakeLock(session)
     FocusNotificationHelper.ensureChannels(applicationContext)
     val notification = FocusNotificationHelper.buildOngoingNotification(applicationContext, session)
 
@@ -258,6 +263,50 @@ class FocusLockScreenService : Service() {
     }
 
     lastReminderBoundaryMs = reminderBoundaryMs
+    if (isAppVisiblyActive()) return
     FocusSoundPlayer.playReminder(applicationContext)
+  }
+
+  private fun isAppVisiblyActive(): Boolean {
+    val powerManager = getSystemService(PowerManager::class.java)
+    if (powerManager?.isInteractive != true) return false
+
+    val keyguardManager = getSystemService(KeyguardManager::class.java)
+    if (keyguardManager?.isKeyguardLocked == true) return false
+
+    val processInfo = ActivityManager.RunningAppProcessInfo()
+    ActivityManager.getMyMemoryState(processInfo)
+    return processInfo.importance ==
+      ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+  }
+
+  private fun acquireSessionWakeLock(session: FocusLockScreenSession) {
+    val remainingMillis = session.expectedEndAtMillis - System.currentTimeMillis()
+    if (remainingMillis <= 0L) return
+
+    releaseSessionWakeLock()
+    try {
+      val powerManager = getSystemService(PowerManager::class.java) ?: return
+      sessionWakeLock = powerManager.newWakeLock(
+        PowerManager.PARTIAL_WAKE_LOCK,
+        "$packageName:focus-session-timer"
+      ).apply {
+        setReferenceCounted(false)
+        acquire(remainingMillis + WAKE_LOCK_END_BUFFER_MS)
+      }
+    } catch (_: Exception) {
+      sessionWakeLock = null
+    }
+  }
+
+  private fun releaseSessionWakeLock() {
+    val wakeLock = sessionWakeLock
+    sessionWakeLock = null
+    if (wakeLock?.isHeld != true) return
+    try {
+      wakeLock.release()
+    } catch (_: Exception) {
+      // The timeout may have released the wake lock already.
+    }
   }
 }

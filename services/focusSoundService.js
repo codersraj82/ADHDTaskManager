@@ -32,7 +32,7 @@ export const preloadFocusBeeps = async () => {
   preloadPromise = (async () => {
     try {
       await setAudioModeAsync({
-        playsInSilentMode: false,
+        playsInSilentMode: true,
         interruptionMode: "mixWithOthers",
       });
 

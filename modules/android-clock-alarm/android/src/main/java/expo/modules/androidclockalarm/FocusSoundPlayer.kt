@@ -4,23 +4,28 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.util.Log
 
 internal object FocusSoundPlayer {
+  private const val TAG = "FocusSoundPlayer"
+  private const val SESSION_VOLUME = 0.22f
+  private const val REMINDER_VOLUME = 0.17f
+
   private val audioAttributes = AudioAttributes.Builder()
-    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+    .setUsage(AudioAttributes.USAGE_MEDIA)
+    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
     .build()
 
   private var activePlayer: MediaPlayer? = null
 
   @Synchronized
   fun playReminder(context: Context) {
-    play(context, R.raw.focus_reminder_beep)
+    play(context, R.raw.focus_reminder_beep, REMINDER_VOLUME, "reminder")
   }
 
   @Synchronized
   fun playSessionEnd(context: Context) {
-    play(context, R.raw.focus_session_beep)
+    play(context, R.raw.focus_session_beep, SESSION_VOLUME, "completion")
   }
 
   @Synchronized
@@ -29,7 +34,12 @@ internal object FocusSoundPlayer {
     activePlayer = null
   }
 
-  private fun play(context: Context, soundResource: Int) {
+  private fun play(
+    context: Context,
+    soundResource: Int,
+    volume: Float,
+    soundKind: String
+  ) {
     releasePlayer(activePlayer)
     activePlayer = null
 
@@ -39,10 +49,13 @@ internal object FocusSoundPlayer {
         soundResource,
         audioAttributes,
         AudioManager.AUDIO_SESSION_ID_GENERATE
-      ) ?: return
+      ) ?: run {
+        Log.w(TAG, "Android could not create the native focus $soundKind player.")
+        return
+      }
 
       activePlayer = player
-      player.setVolume(1.0f, 1.0f)
+      player.setVolume(volume, volume)
       player.setOnCompletionListener { completedPlayer ->
         synchronized(this) {
           if (activePlayer === completedPlayer) {
@@ -61,7 +74,9 @@ internal object FocusSoundPlayer {
         true
       }
       player.start()
-    } catch (_: Exception) {
+      Log.d(TAG, "Playing native focus $soundKind sound.")
+    } catch (error: Exception) {
+      Log.w(TAG, "Unable to play native focus $soundKind sound.", error)
       releasePlayer(activePlayer)
       activePlayer = null
     }

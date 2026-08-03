@@ -39,7 +39,8 @@ internal object FocusLockScreenController {
         context = context,
         sessionId = session.sessionId,
         notify = true,
-        readAloud = session.readAloudOnComplete
+        readAloud = session.readAloudOnComplete,
+        playSound = false
       )
       return mapOf(
         "success" to true,
@@ -118,7 +119,8 @@ internal object FocusLockScreenController {
     context: Context,
     sessionId: String,
     notify: Boolean,
-    readAloud: Boolean
+    readAloud: Boolean,
+    playSound: Boolean = true
   ): Map<String, Any?> {
     val appContext = context.applicationContext
     val storedSession = FocusLockScreenStore.get(appContext)
@@ -143,7 +145,9 @@ internal object FocusLockScreenController {
     FocusNotificationHelper.cancelOngoing(appContext)
 
     if (!wasAlreadyNotified) {
-      FocusSoundPlayer.playSessionEnd(appContext)
+      if (playSound) {
+        FocusSoundPlayer.playSessionEnd(appContext)
+      }
       if (notify) {
         FocusNotificationHelper.showCompletion(appContext, completedSession)
       }

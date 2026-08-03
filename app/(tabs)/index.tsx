@@ -522,6 +522,7 @@ const FOCUS_DURATION_OPTIONS_MINUTES = [2, 5, 10, 15, 20, 25, 30];
 const MINIMUM_CUSTOM_FOCUS_MINUTES = 1;
 const MAXIMUM_CUSTOM_FOCUS_MINUTES = 180;
 const FOCUS_REMINDER_INTERVAL_SECONDS = 2 * 60;
+const FOCUS_REMINDER_BOUNDARY_GRACE_SECONDS = 7;
 const FOCUS_REMINDER_END_BUFFER_SECONDS = 10;
 const APP_HORIZONTAL_PADDING = 16;
 const APP_HEADER_SAFE_TOP_GAP = 4;
@@ -3866,8 +3867,6 @@ export default function Home() {
       if (timerCompletionStampRef.current === completionKey) return;
       timerCompletionStampRef.current = completionKey;
       const nativeSessionId = focusLockScreenSessionIdRef.current;
-      const nativeOwnsAndroidCompletionSound =
-        Platform.OS === "android" && Boolean(nativeSessionId);
       focusLockScreenSessionIdRef.current = null;
       lastFocusReminderBoundaryRef.current = null;
       isFocusCompletedRef.current = true;
@@ -3878,7 +3877,7 @@ export default function Home() {
       setFocusEndTimestamp(null);
       setFocusTime(currentDuration);
 
-      if (!options?.suppressSound && !nativeOwnsAndroidCompletionSound) {
+      if (!options?.suppressSound) {
         void stopFocusBeeps().then(() => playFocusSessionBeep());
       }
 
@@ -3900,17 +3899,7 @@ export default function Home() {
         focusEndTimestamp: null,
       });
 
-      void completeFocusLockScreenSession(nativeSessionId).then((result) => {
-        if (
-          !options?.suppressSound &&
-          nativeOwnsAndroidCompletionSound &&
-          !result.success &&
-          !focusStopInProgressRef.current &&
-          isFocusCompletedRef.current
-        ) {
-          void stopFocusBeeps().then(() => playFocusSessionBeep());
-        }
-      });
+      void completeFocusLockScreenSession(nativeSessionId);
 
       const shouldSpeak =
         !options?.suppressSpeech &&
@@ -6121,18 +6110,21 @@ export default function Home() {
       const secondsPastBoundary = elapsedSeconds - reminderBoundary;
       const shouldPlayReminder =
         reminderBoundary > 0 &&
-        secondsPastBoundary <= 2 &&
+        secondsPastBoundary <= FOCUS_REMINDER_BOUNDARY_GRACE_SECONDS &&
         remainingSeconds > FOCUS_REMINDER_END_BUFFER_SECONDS &&
         lastFocusReminderBoundaryRef.current !== reminderBoundary;
 
       if (shouldPlayReminder) {
         lastFocusReminderBoundaryRef.current = reminderBoundary;
-        const nativeOwnsAndroidReminderSound =
-          Platform.OS === "android" &&
-          Boolean(focusLockScreenSessionIdRef.current);
-        if (!nativeOwnsAndroidReminderSound) {
-          void playFocusReminderBeep();
-        }
+        void playFocusReminderBeep().then((didPlay) => {
+          if (
+            !didPlay &&
+            appStateRef.current === "active" &&
+            lastFocusReminderBoundaryRef.current === reminderBoundary
+          ) {
+            lastFocusReminderBoundaryRef.current = null;
+          }
+        });
       }
     };
 
