@@ -125,7 +125,7 @@ class FocusLockScreenActivity : Activity() {
     })
 
     ringView = FocusProgressRingView(this)
-    root.addView(ringView, layoutParams(match = false, width = dp(236), height = dp(236)).apply {
+    root.addView(ringView, layoutParams(match = false, width = dp(252), height = dp(252)).apply {
       bottomMargin = dp(18)
     })
 
@@ -260,9 +260,11 @@ class FocusLockScreenActivity : Activity() {
   private fun updateProgress(currentSession: FocusLockScreenSession) {
     val now = System.currentTimeMillis()
     val remainingMillis = (currentSession.expectedEndAtMillis - now).coerceAtLeast(0L)
+    val elapsedMillis = (now - currentSession.startedAtMillis)
+      .coerceIn(0L, currentSession.totalMillis)
     val progress = 1f - (remainingMillis.toFloat() / currentSession.totalMillis.toFloat())
 
-    ringView?.setProgress(progress, remainingMillis)
+    ringView?.setProgress(progress, elapsedMillis)
     remainingView?.text = formatRemainingText(remainingMillis)
 
     if (remainingMillis <= 0L) {

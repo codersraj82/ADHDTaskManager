@@ -3907,7 +3907,7 @@ export default function Home() {
       if (shouldSpeak) {
         void speakEncouragement({
           muted: isVoiceMuted,
-          message: buildFocusCompletionSpeechMessage(getTaskTitleById(activeTaskId)),
+          message: buildFocusCompletionSpeechMessage(),
         });
       }
 
@@ -16157,27 +16157,54 @@ export default function Home() {
                         ) : null}
 
                         {!task.completed && !isEarlyRecurringPreview ? (
-                          <TouchableOpacity
-                            accessibilityLabel="Help Me Start"
-                            accessibilityHint="Opens gentle start options for this task"
-                            activeOpacity={0.85}
-                            onPress={(event) => {
-                              event.stopPropagation?.();
-                              setStartAssistTaskId(task.id);
-                              setStartAssistMode("main");
-                              setStartAssistFirstActionDraft(task.firstAction || "");
-                              setStartAssistBreakdownDraft("");
-                              setStartAssistMinimumVersionDraft(
-                                task.minimumVersion || ""
-                              );
-                              setIsStartAssistVisible(true);
-                            }}
-                            className="self-start mt-2 px-2.5 py-1 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/75"
-                          >
-                            <Text className="text-[#D9A441] text-[9px] font-black uppercase tracking-widest">
-                              Help Me Start
-                            </Text>
-                          </TouchableOpacity>
+                          <>
+                            <View className="flex-row items-center flex-wrap mt-2">
+                              <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel="Help Me Start"
+                                accessibilityHint="Opens gentle start options for this task"
+                                activeOpacity={0.85}
+                                onPress={(event) => {
+                                  event.stopPropagation?.();
+                                  setStartAssistTaskId(task.id);
+                                  setStartAssistMode("main");
+                                  setStartAssistFirstActionDraft(task.firstAction || "");
+                                  setStartAssistBreakdownDraft("");
+                                  setStartAssistMinimumVersionDraft(
+                                    task.minimumVersion || ""
+                                  );
+                                  setIsStartAssistVisible(true);
+                                }}
+                                className="mr-2 mb-1 px-3 py-1.5 rounded-full border border-[#D9A441]/45 bg-[#2A2218]/75"
+                              >
+                                <Text className="text-[#D9A441] text-[10px] font-black uppercase tracking-widest">
+                                  Help Me Start
+                                </Text>
+                              </TouchableOpacity>
+
+                              <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel="Start Focus"
+                                accessibilityHint="Choose a focus-session duration for this task"
+                                activeOpacity={0.85}
+                                onPress={(event) => {
+                                  event.stopPropagation?.();
+                                  openFocusDurationSelector(task.id);
+                                }}
+                                className="mb-1 px-3 py-1.5 rounded-full border border-[#66b9b9]/40 bg-[#66b9b9]/15"
+                              >
+                                <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
+                                  Start Focus
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+
+                            {taskDurations[task.id] ? (
+                              <Text className="text-[#99bdbd] text-[9px] mt-0.5 font-semibold">
+                                {formatDuration(taskDurations[task.id])} selected
+                              </Text>
+                            ) : null}
+                          </>
                         ) : null}
                       </View>
 
@@ -16690,43 +16717,21 @@ export default function Home() {
                       </Text>
                     )}
 
-                    <TouchableOpacity
-                      onPress={() => {
-                        if (task.completed) return;
-                        if (isEarlyRecurringPreview) {
+                    {isEarlyRecurringPreview ? (
+                      <TouchableOpacity
+                        onPress={() =>
                           showCelebration(
                             "This repeating task is scheduled for tomorrow.",
                             "OK"
-                          );
-                          return;
+                          )
                         }
-
-                        openFocusDurationSelector(task.id);
-                      }}
-                      className={`mt-3 self-start px-3 py-2 rounded-full border ${
-                        isEarlyRecurringPreview
-                          ? "bg-[#2A2218]/75 border-[#D9A441]/35"
-                          : "bg-[#66b9b9]/15 border-[#66b9b9]/40"
-                      }`}
-                    >
-                      <Text
-                        className={`font-bold text-xs uppercase tracking-widest ${
-                          isEarlyRecurringPreview
-                            ? "text-[#D9A441]"
-                            : "text-[#66b9b9]"
-                        }`}
+                        className="mt-3 self-start px-3 py-2 rounded-full border bg-[#2A2218]/75 border-[#D9A441]/35"
                       >
-                        {isEarlyRecurringPreview
-                          ? "Scheduled Tomorrow"
-                          : "Start Focus"}
-                      </Text>
-                    </TouchableOpacity>
-
-                    {taskDurations[task.id] && !isEarlyRecurringPreview && (
-                      <Text className="text-[#99bdbd] text-[10px] mt-1.5 font-semibold">
-                        {formatDuration(taskDurations[task.id])} selected
-                      </Text>
-                    )}
+                        <Text className="font-bold text-xs uppercase tracking-widest text-[#D9A441]">
+                          Scheduled Tomorrow
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
 
                     {renderAttachmentList(task)}
 

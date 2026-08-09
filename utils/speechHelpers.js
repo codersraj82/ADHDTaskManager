@@ -9,11 +9,9 @@ const cleanTaskTitle = (title) => {
   return title.trim();
 };
 
-export const buildFocusCompletionSpeechMessage = (taskTitle = "") => {
+export const buildFocusCompletionSpeechMessage = () => {
   const base = getRandomAffirmation(FOCUS_COMPLETION_VOICE_AFFIRMATIONS);
-  const cleanTitle = cleanTaskTitle(taskTitle);
-  if (!cleanTitle) return base;
-  return `${base} Task completed: ${cleanTitle}.`;
+  return `${base} Focus session completed.`;
 };
 
 export const buildTaskCompletionSpeechMessage = (taskTitle = "") => {

@@ -332,9 +332,9 @@ internal object FocusCompletionSpeaker {
       cleanTitle.length <= 60 &&
       !cleanTitle.equals("Focus Session", ignoreCase = true)
     ) {
-      "Focus complete for $cleanTitle. Good work."
+      "Focus session completed for $cleanTitle. Good work."
     } else {
-      "Focus session complete. Good work. Take a gentle break."
+      "Focus session completed. Good work. Take a gentle break."
     }
   }
 
