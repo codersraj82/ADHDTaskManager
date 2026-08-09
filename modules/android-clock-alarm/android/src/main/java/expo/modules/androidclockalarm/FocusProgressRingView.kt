@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
@@ -51,7 +50,6 @@ class FocusProgressRingView @JvmOverloads constructor(
   }
 
   private val oval = RectF()
-  private val textBounds = Rect()
   private var progress = 0f
   private var elapsedText = "00:00:00"
 
@@ -89,9 +87,16 @@ class FocusProgressRingView @JvmOverloads constructor(
     canvas.drawArc(oval, 0f, 360f, false, backgroundPaint)
     canvas.drawArc(oval, 90f, progress * 360f, false, progressPaint)
 
-    textPaint.getTextBounds(elapsedText, 0, elapsedText.length, textBounds)
-    val textY = height / 2f - textBounds.exactCenterY()
-    canvas.drawText(elapsedText, width / 2f, textY, textPaint)
+    textPaint.textSize = sp(40f)
+    val maximumTextWidth = (ringRadius * 2f - dp(28f)).coerceAtLeast(dp(1f))
+    val measuredTextWidth = textPaint.measureText(elapsedText)
+    if (measuredTextWidth > maximumTextWidth && measuredTextWidth > 0f) {
+      textPaint.textSize *= maximumTextWidth / measuredTextWidth
+    }
+
+    val fontMetrics = textPaint.fontMetrics
+    val textBaseline = centerY - (fontMetrics.ascent + fontMetrics.descent) / 2f
+    canvas.drawText(elapsedText, centerX, textBaseline, textPaint)
   }
 
   private fun formatElapsedText(elapsedMillis: Long): String {

@@ -24,7 +24,6 @@ class FocusLockScreenActivity : Activity() {
   private var session: FocusLockScreenSession? = null
   private var ringView: FocusProgressRingView? = null
   private var taskTitleView: TextView? = null
-  private var remainingView: TextView? = null
   private var closeReceiver: BroadcastReceiver? = null
 
   private val tickRunnable = object : Runnable {
@@ -127,16 +126,6 @@ class FocusLockScreenActivity : Activity() {
     ringView = FocusProgressRingView(this)
     root.addView(ringView, layoutParams(match = false, width = dp(252), height = dp(252)).apply {
       bottomMargin = dp(18)
-    })
-
-    remainingView = TextView(this).apply {
-      setTextColor(Color.parseColor("#99BDBD"))
-      textSize = 15f
-      typeface = Typeface.DEFAULT_BOLD
-      gravity = Gravity.CENTER
-    }
-    root.addView(remainingView, layoutParams(match = false, width = -1, height = -2).apply {
-      bottomMargin = dp(12)
     })
 
     val supportText = TextView(this).apply {
@@ -265,7 +254,6 @@ class FocusLockScreenActivity : Activity() {
     val progress = 1f - (remainingMillis.toFloat() / currentSession.totalMillis.toFloat())
 
     ringView?.setProgress(progress, elapsedMillis)
-    remainingView?.text = formatRemainingText(remainingMillis)
 
     if (remainingMillis <= 0L) {
       FocusLockScreenController.complete(
