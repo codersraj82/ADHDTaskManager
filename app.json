@@ -27,6 +27,9 @@
         "WAKE_LOCK",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_SPECIAL_USE",
+        "PACKAGE_USAGE_STATS",
+        "SYSTEM_ALERT_WINDOW",
+        "RECEIVE_BOOT_COMPLETED",
         "USE_FULL_SCREEN_INTENT",
         "com.android.alarm.permission.SET_ALARM",
         "SCHEDULE_EXACT_ALARM"

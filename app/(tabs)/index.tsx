@@ -456,6 +456,8 @@ const MENU_ITEMS = [
   { key: "special", label: "Special Tasks", icon: "⭐" },
   { key: "tasks", label: "Tasks", icon: "🗓️" },
   { key: "mood-tracker", label: "Mood Tracker", icon: "🧠" },
+  { key: "screen-awareness", label: "Screen Awareness", icon: "👁️" },
+  { key: "screen-usage", label: "Screen Usage Reports", icon: "📊" },
   { key: "settings", label: "Settings", icon: "⚙️" },
   { key: "about", label: "About This App", icon: "ℹ️" },
   { key: "support", label: "Support This Project", icon: "❤️" },
@@ -11876,6 +11878,13 @@ export default function Home() {
       router.push("/profile/edit");
       return;
     }
+    if (pageKey === "screen-awareness" || pageKey === "screen-usage") {
+      Keyboard.dismiss();
+      router.push(
+        (pageKey === "screen-awareness" ? "/screen-awareness" : "/screen-usage") as never
+      );
+      return;
+    }
     if (pageKey === "tasks") {
       setTasksMenuPeriod("today");
       resetTasksMenuNavigation();
@@ -13490,39 +13499,44 @@ export default function Home() {
           ]}
           className={themedClassName("w-[82%] max-w-[320px] h-full bg-[#0B1F1F] border-r border-[#66b9b9]/30 px-5 pt-14 pb-8 shadow-2xl shadow-[#66b9b9]/20")}
         >
-          <Pressable>
-            <View className="flex-row items-center mb-6">
-              {renderAvatar("small")}
-              <View className="ml-3 flex-1">
-                <Text className="text-[#E8F4F4] font-black text-lg">
-                  {profile.name || "Welcome"}
-                </Text>
-                <Text className="text-[#9FB5B5] text-xs font-semibold">
-                  {getStreakLabel()}
-                </Text>
+          <Pressable className="flex-1">
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 8 }}
+            >
+              <View className="flex-row items-center mb-6">
+                {renderAvatar("small")}
+                <View className="ml-3 flex-1">
+                  <Text className="text-[#E8F4F4] font-black text-lg">
+                    {profile.name || "Welcome"}
+                  </Text>
+                  <Text className="text-[#9FB5B5] text-xs font-semibold">
+                    {getStreakLabel()}
+                  </Text>
+                </View>
               </View>
-            </View>
-            {MENU_ITEMS.map((item) => (
-              <TouchableOpacity
-                key={item.key}
-                activeOpacity={0.82}
-                onPress={() => openMenuPage(item.key)}
-                accessibilityRole="button"
-                accessibilityLabel={item.key === "tasks" ? "Tasks" : item.label}
-                accessibilityHint={
-                  item.key === "tasks"
-                    ? "Open pending and completed tasks by calendar period"
-                    : undefined
-                }
-                className="flex-row items-center bg-[#123131]/55 border border-[#337a7a]/25 rounded-2xl px-4 py-3 mb-2"
-              >
-                <Text className="text-lg mr-3">{item.icon}</Text>
-                <Text className="text-[#E8F4F4] font-bold flex-1">
-                  {item.label}
-                </Text>
-                <Text className="text-[#66b9b9] font-black">›</Text>
-              </TouchableOpacity>
-            ))}
+              {MENU_ITEMS.map((item) => (
+                <TouchableOpacity
+                  key={item.key}
+                  activeOpacity={0.82}
+                  onPress={() => openMenuPage(item.key)}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.key === "tasks" ? "Tasks" : item.label}
+                  accessibilityHint={
+                    item.key === "tasks"
+                      ? "Open pending and completed tasks by calendar period"
+                      : undefined
+                  }
+                  className="flex-row items-center bg-[#123131]/55 border border-[#337a7a]/25 rounded-2xl px-4 py-3 mb-2"
+                >
+                  <Text className="text-lg mr-3">{item.icon}</Text>
+                  <Text className="text-[#E8F4F4] font-bold flex-1">
+                    {item.label}
+                  </Text>
+                  <Text className="text-[#66b9b9] font-black">›</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </Pressable>
         </Animated.View>
       </Pressable>
