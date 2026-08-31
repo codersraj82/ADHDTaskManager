@@ -20,6 +20,7 @@ import {
   ScreenUsageReport,
 } from "../../services/screenAwareness";
 import ScreenAwarenessShell from "./ScreenAwarenessShell";
+import ScreenPatternInsightsSection from "./ScreenPatternInsightsSection";
 
 type RangeKey = "today" | "7days" | "30days";
 type SessionFilter = "all" | "30" | "45" | "60";
@@ -170,21 +171,29 @@ export default function ScreenUsageReportScreen() {
           </View>
 
           {continuous ? (
-            <ContinuousSessionsSection
-              range={range}
-              activeSession={activeSession}
-              sessions={filteredSessions}
-              dailySummaries={filteredDaily}
-              filter={sessionFilter}
-              expandedDates={expandedDates}
-              migrationMessage={continuous.migrationMessage}
-              onFilterChange={setSessionFilter}
-              onToggleDate={(date) =>
-                setExpandedDates((current) => ({ ...current, [date]: !current[date] }))
-              }
-              onSelectSession={setSelectedSession}
-              onSelectDay={setSelectedDay}
-            />
+            <>
+              <ContinuousSessionsSection
+                range={range}
+                activeSession={activeSession}
+                sessions={filteredSessions}
+                dailySummaries={filteredDaily}
+                filter={sessionFilter}
+                expandedDates={expandedDates}
+                migrationMessage={continuous.migrationMessage}
+                onFilterChange={setSessionFilter}
+                onToggleDate={(date) =>
+                  setExpandedDates((current) => ({ ...current, [date]: !current[date] }))
+                }
+                onSelectSession={setSelectedSession}
+                onSelectDay={setSelectedDay}
+              />
+              <ScreenPatternInsightsSection
+                enabled={continuous.insightsSettings?.patternInsightsEnabled ?? true}
+                range={range}
+                sessions={continuous.sessions}
+                reEntrySupport={continuous.reEntrySupport}
+              />
+            </>
           ) : null}
 
           <View className="flex-row items-end justify-between mb-3">

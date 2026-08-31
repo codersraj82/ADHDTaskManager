@@ -184,6 +184,20 @@ internal object ScreenAwarenessUsageRepository {
       }
       .sortedByDescending { it["date"] as String }
 
+    val settings = ScreenAwarenessStore.getSettings(context)
+    val reEntryEvents = ScreenAwarenessReEntryManager.getHandledEvents(context, startMs, endMs)
+      .sortedByDescending { it.optLong("timestamp", 0L) }
+      .map { item ->
+        mapOf(
+          "eventId" to item.optString("eventId", ""),
+          "action" to item.optString("action", ""),
+          "thresholdMinutes" to item.optInt("thresholdMinutes", 0),
+          "taskId" to item.optLong("taskId", -1L).takeIf { it > 0L },
+          "timestamp" to item.optLong("timestamp", 0L)
+        )
+      }
+    val reEntryCounts = reEntryEvents.groupingBy { it["action"] as? String ?: "" }.eachCount()
+
     return mapOf(
       "schemaVersion" to ScreenAwarenessContract.SESSION_SCHEMA_VERSION,
       "retentionDays" to ScreenAwarenessContract.SESSION_RETENTION_DAYS,
@@ -199,7 +213,21 @@ internal object ScreenAwarenessUsageRepository {
       ),
       "activeSession" to getCurrentSessionReport(context),
       "sessions" to completed,
-      "dailySummaries" to dailySummaries
+      "dailySummaries" to dailySummaries,
+      "insightsSettings" to mapOf(
+        "patternInsightsEnabled" to settings.patternInsightsEnabled,
+        "reEntryEnabled" to settings.reEntryEnabled,
+        "showCurrentTaskInReminder" to settings.showCurrentTaskInReminder,
+        "reEntryThresholdMinutes" to settings.reEntryThresholdMinutes
+      ),
+      "reEntrySupport" to mapOf(
+        "returnedToCurrentTask" to (reEntryCounts["return_current_task"] ?: 0),
+        "usedHelpMeStart" to (reEntryCounts["help_me_start"] ?: 0),
+        "usedQuickWin" to (reEntryCounts["quick_win"] ?: 0),
+        "usedEnergyMatch" to (reEntryCounts["energy_match"] ?: 0),
+        "continuedIntentionally" to (reEntryCounts["continue_intentionally"] ?: 0),
+        "events" to reEntryEvents
+      )
     )
   }
 

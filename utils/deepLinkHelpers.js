@@ -1,5 +1,12 @@
 const TASK_LINK_PATHS = new Set(["task", "open-task"]);
 const ALARM_LINK_PATH = "alarm";
+const SCREEN_REENTRY_ACTIONS = new Set([
+  "return_current_task",
+  "help_me_start",
+  "quick_win",
+  "energy_match",
+  "continue_intentionally",
+]);
 
 export const TASK_DEEP_LINK_FALLBACK_MESSAGE =
   "Task could not be found. It may have been completed or removed.";
@@ -24,6 +31,9 @@ const normalizeSource = ({ source, alarmId, alarmAction }) => {
     return "strong_alarm";
   }
   if (normalized === "notification") return "notification";
+  if (normalized === "screen_awareness" || normalized === "screenawareness") {
+    return "screen_awareness";
+  }
   if (alarmId || alarmAction) return "strong_alarm";
   return "unknown";
 };
@@ -110,6 +120,43 @@ export const parseTaskDeepLink = (url) => {
     ...(alarmAction ? { alarmAction } : {}),
     ...(sectionId ? { sectionId } : {}),
     source,
+  };
+};
+
+export const parseScreenReEntryDeepLink = (url) => {
+  const parsedUrl = parseUrl(url);
+  if (!parsedUrl) return null;
+
+  const action = getStringParam(parsedUrl.searchParams, [
+    "screenReEntryAction",
+    "screen_reentry_action",
+    "reEntryAction",
+  ])
+    .toLowerCase()
+    .replace(/-/g, "_");
+  if (!SCREEN_REENTRY_ACTIONS.has(action)) return null;
+
+  const taskId = getStringParam(parsedUrl.searchParams, [
+    "taskId",
+    "taskID",
+    "task_id",
+    "id",
+  ]);
+  const taskTitle = getStringParam(parsedUrl.searchParams, ["taskTitle", "title"]);
+  const eventId = getStringParam(parsedUrl.searchParams, ["eventId", "reEntryEventId"]);
+  const thresholdRaw = getStringParam(parsedUrl.searchParams, ["thresholdMinutes"]);
+  const thresholdMinutes = Number(thresholdRaw);
+
+  return {
+    type: "screen_reentry",
+    action,
+    ...(eventId ? { eventId } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(taskTitle ? { taskTitle } : {}),
+    ...(Number.isFinite(thresholdMinutes) && thresholdMinutes > 0
+      ? { thresholdMinutes }
+      : {}),
+    source: "screen_awareness",
   };
 };
 

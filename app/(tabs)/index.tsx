@@ -182,9 +182,15 @@ import {
 } from "../../utils/taskNavigationHelpers";
 import {
   isTaskDeepLinkUrl,
+  parseScreenReEntryDeepLink,
   parseTaskDeepLink,
   TASK_DEEP_LINK_FALLBACK_MESSAGE,
 } from "../../utils/deepLinkHelpers";
+import {
+  acknowledgeScreenReEntryAction,
+  consumePendingScreenReEntryAction,
+  updateScreenReEntryContext,
+} from "../../services/screenAwareness";
 import { searchTasks } from "../../utils/taskSearchHelpers";
 import {
   getTaskAvoidanceSignal,
@@ -568,6 +574,13 @@ const REMINDER_ACTIONS = Object.freeze({
   SNOOZE_30: "snooze_30",
   MOVE_GENTLY: "move_gently",
   MAKE_SMALLER: "make_smaller",
+});
+const SCREEN_REENTRY_ACTIONS = Object.freeze({
+  RETURN_CURRENT_TASK: "return_current_task",
+  HELP_ME_START: "help_me_start",
+  QUICK_WIN: "quick_win",
+  ENERGY_MATCH: "energy_match",
+  CONTINUE_INTENTIONALLY: "continue_intentionally",
 });
 const STRONG_ALARM_ACTIONS = Object.freeze({
   OPEN_TASK: "open_task",
@@ -2046,6 +2059,21 @@ export default function Home() {
   const currentTaskQuickTask = currentTaskQuickTarget?.task || null;
   const currentTaskQuickTaskId = currentTaskQuickTarget?.taskId || null;
   const currentTaskQuickReason = currentTaskQuickTarget?.reason || "";
+  useEffect(() => {
+    if (!tasksHydrated) return;
+    void updateScreenReEntryContext(
+      currentTaskQuickTaskId
+        ? {
+            taskId: currentTaskQuickTaskId,
+            taskTitle: currentTaskQuickTask?.title || "",
+          }
+        : null
+    );
+  }, [
+    currentTaskQuickTask?.title,
+    currentTaskQuickTaskId,
+    tasksHydrated,
+  ]);
   const startAssistTask = useMemo(
     () => tasks.find((task) => task.id === startAssistTaskId) || null,
     [startAssistTaskId, tasks]
@@ -3012,6 +3040,7 @@ export default function Home() {
   const handledNotificationResponseKeysRef = useRef(new Set());
   const handledNotificationResponseKeyOrderRef = useRef([]);
   const notificationActionContextRef = useRef(null);
+  const handledScreenReEntryIdsRef = useRef(new Set());
   const snoozeAffirmationTimeoutRef = useRef(null);
   const todayPlanCelebrationTimeoutRef = useRef(null);
   const todayPlanRescheduleTaskIdRef = useRef(null);
@@ -5635,6 +5664,7 @@ export default function Home() {
     notificationActionContextRef.current = actionMeta;
     setPendingNotificationTaskTarget({
       ...payload,
+      ...actionMeta,
       handled: false,
       actionIdentifier: actionMeta.actionIdentifier || null,
       reminderAction: actionMeta.reminderAction || null,
@@ -5647,6 +5677,67 @@ export default function Home() {
       { text: "OK", style: "cancel" },
     ]);
   }, []);
+
+  const handleScreenReEntryPayload = useCallback(
+    (payload) => {
+      const action = String(payload?.action || "").trim().toLowerCase();
+      if (!Object.values(SCREEN_REENTRY_ACTIONS).some((value) => value === action)) return false;
+
+      const eventId = String(payload?.eventId || "").trim();
+      if (eventId && handledScreenReEntryIdsRef.current.has(eventId)) return true;
+      if (eventId) handledScreenReEntryIdsRef.current.add(eventId);
+
+      const acknowledge = () => {
+        if (eventId) void acknowledgeScreenReEntryAction(eventId);
+      };
+
+      if (action === SCREEN_REENTRY_ACTIONS.QUICK_WIN) {
+        closeTaskSearchSurfaces();
+        handleEnergyMatchSelect("quickWin");
+        acknowledge();
+        return true;
+      }
+
+      if (action === SCREEN_REENTRY_ACTIONS.ENERGY_MATCH) {
+        closeTaskSearchSurfaces();
+        closeEnergyTaskMatchingSurfaces();
+        setEnergyDropdownVisible(true);
+        acknowledge();
+        return true;
+      }
+
+      if (action === SCREEN_REENTRY_ACTIONS.CONTINUE_INTENTIONALLY) {
+        acknowledge();
+        return true;
+      }
+
+      const navigationPayload = extractTaskNavigationPayload({
+        taskId: payload?.taskId,
+        taskTitle: payload?.taskTitle,
+      });
+      if (!navigationPayload?.taskId) return false;
+
+      return queueNotificationTaskNavigation(navigationPayload, {
+        screenReEntryAction: action,
+        screenReEntryEventId: eventId,
+        source: "screenAwareness",
+      });
+    },
+    [
+      closeEnergyTaskMatchingSurfaces,
+      closeTaskSearchSurfaces,
+      handleEnergyMatchSelect,
+      queueNotificationTaskNavigation,
+    ]
+  );
+
+  const handleScreenReEntryDeepLink = useCallback(
+    (url) => {
+      const payload = parseScreenReEntryDeepLink(url);
+      return payload ? handleScreenReEntryPayload(payload) : false;
+    },
+    [handleScreenReEntryPayload]
+  );
 
   const handleStrongAlarmDeepLink = useCallback(
     (url) => {
@@ -5724,20 +5815,32 @@ export default function Home() {
   useEffect(() => {
     const handleUrl = ({ url }) => {
       if (!url) return;
-      handleStrongAlarmDeepLink(url);
+      if (!handleScreenReEntryDeepLink(url)) {
+        handleStrongAlarmDeepLink(url);
+      }
     };
 
     const subscription = Linking.addEventListener("url", handleUrl);
     Linking.getInitialURL()
       .then((url) => {
         if (url) {
-          handleStrongAlarmDeepLink(url);
+          if (!handleScreenReEntryDeepLink(url)) {
+            handleStrongAlarmDeepLink(url);
+          }
         }
       })
       .catch(() => null);
 
+    void consumePendingScreenReEntryAction().then((action) => {
+      if (action) handleScreenReEntryPayload(action);
+    });
+
     return () => subscription.remove();
-  }, [handleStrongAlarmDeepLink]);
+  }, [
+    handleScreenReEntryDeepLink,
+    handleScreenReEntryPayload,
+    handleStrongAlarmDeepLink,
+  ]);
 
   useEffect(() => {
     const checkSystemSchedule = async () => {
@@ -8305,11 +8408,23 @@ export default function Home() {
       notificationActionContextRef.current?.snoozeMinutes ??
       null;
     const pendingSnoozeMinutes = Number(pendingSnoozeMinutesRaw);
+    const pendingScreenReEntryAction =
+      pendingNotificationTaskTarget.screenReEntryAction ||
+      notificationActionContextRef.current?.screenReEntryAction ||
+      null;
+    const pendingScreenReEntryEventId =
+      pendingNotificationTaskTarget.screenReEntryEventId ||
+      notificationActionContextRef.current?.screenReEntryEventId ||
+      "";
 
     if (!task || task.completed) {
       notificationActionContextRef.current = null;
       setPendingNotificationTaskTarget(null);
-      showTaskNavigationFallback();
+      if (pendingScreenReEntryAction) {
+        handleEnergyMatchSelect("quickWin");
+      } else {
+        showTaskNavigationFallback();
+      }
       return;
     }
 
@@ -8359,6 +8474,26 @@ export default function Home() {
           setIsStartAssistVisible(true);
         }
 
+        if (
+          pendingScreenReEntryAction === SCREEN_REENTRY_ACTIONS.HELP_ME_START
+        ) {
+          const reEntryTask = task as typeof task & {
+            firstAction?: string;
+            minimumVersion?: string;
+          };
+          setFirstStepOnlyTaskId(null);
+          setStartAssistTaskId(task.id);
+          setStartAssistMode("main");
+          setStartAssistFirstActionDraft(reEntryTask.firstAction || "");
+          setStartAssistBreakdownDraft("");
+          setStartAssistMinimumVersionDraft(reEntryTask.minimumVersion || "");
+          setIsStartAssistVisible(true);
+        }
+
+        if (pendingScreenReEntryEventId) {
+          void acknowledgeScreenReEntryAction(pendingScreenReEntryEventId);
+        }
+
         notificationActionContextRef.current = null;
         setPendingNotificationTaskTarget(null);
       },
@@ -8367,10 +8502,15 @@ export default function Home() {
     if (!didNavigate) {
       notificationActionContextRef.current = null;
       setPendingNotificationTaskTarget(null);
-      showTaskNavigationFallback();
+      if (pendingScreenReEntryAction) {
+        handleEnergyMatchSelect("quickWin");
+      } else {
+        showTaskNavigationFallback();
+      }
     }
   }, [
     closeEnergyTaskMatchingSurfaces,
+    handleEnergyMatchSelect,
     openMoveGentlyForTask,
     pendingNotificationTaskTarget,
     scrollToTask,

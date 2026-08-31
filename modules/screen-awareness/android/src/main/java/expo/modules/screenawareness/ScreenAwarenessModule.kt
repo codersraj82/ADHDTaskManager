@@ -79,6 +79,36 @@ class ScreenAwarenessModule : Module() {
       )
     }
 
+    AsyncFunction("updateScreenReEntryContext") { values: Map<String, Any?> ->
+      val context = appContext.reactContext
+        ?: return@AsyncFunction unavailableResult()
+      val taskId = when (val value = values["taskId"]) {
+        is Number -> value.toLong().takeIf { it > 0L }
+        is String -> value.toLongOrNull()?.takeIf { it > 0L }
+        else -> null
+      }
+      val title = values["taskTitle"] as? String
+      ScreenAwarenessReEntryManager.updateTaskContext(context, taskId, title)
+      mapOf("success" to true)
+    }
+
+    AsyncFunction("consumePendingScreenReEntryAction") {
+      val context = appContext.reactContext
+        ?: return@AsyncFunction unavailableResult()
+      mapOf(
+        "success" to true,
+        "action" to ScreenAwarenessReEntryManager.consumePendingAction(context)
+      )
+    }
+
+    AsyncFunction("acknowledgeScreenReEntryAction") { eventId: String ->
+      val context = appContext.reactContext
+        ?: return@AsyncFunction unavailableResult()
+      mapOf(
+        "success" to ScreenAwarenessReEntryManager.acknowledgeAction(context, eventId)
+      )
+    }
+
     AsyncFunction("getUsageReport") { range: String ->
       val context = appContext.reactContext
         ?: return@AsyncFunction unavailableResult()

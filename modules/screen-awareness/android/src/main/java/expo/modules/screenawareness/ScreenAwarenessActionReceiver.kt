@@ -7,12 +7,23 @@ import android.content.Intent
 class ScreenAwarenessActionReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent?) {
     val action = intent?.action ?: return
-    if (
-      action != ScreenAwarenessContract.ACTION_TAKE_BREAK &&
-      action != ScreenAwarenessContract.ACTION_SNOOZE &&
-      action != ScreenAwarenessContract.ACTION_CONTINUE
-    ) return
     val threshold = intent.getIntExtra(ScreenAwarenessContract.EXTRA_THRESHOLD_MINUTES, 20)
-    ScreenAwarenessForegroundService.dispatchAction(context.applicationContext, action, threshold)
+    when (action) {
+      ScreenAwarenessContract.ACTION_TAKE_BREAK,
+      ScreenAwarenessContract.ACTION_SNOOZE,
+      ScreenAwarenessContract.ACTION_CONTINUE ->
+        ScreenAwarenessForegroundService.dispatchAction(context.applicationContext, action, threshold)
+      ScreenAwarenessContract.ACTION_REENTRY_CONTINUE,
+      ScreenAwarenessContract.ACTION_RETURN_CURRENT_TASK,
+      ScreenAwarenessContract.ACTION_HELP_ME_START,
+      ScreenAwarenessContract.ACTION_QUICK_WIN,
+      ScreenAwarenessContract.ACTION_ENERGY_MATCH ->
+        ScreenAwarenessForegroundService.dispatchReEntryAction(
+          context.applicationContext,
+          action,
+          threshold
+        )
+      else -> return
+    }
   }
 }

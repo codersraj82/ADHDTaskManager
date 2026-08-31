@@ -5,6 +5,7 @@
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
+    "test:screen-patterns": "node ./scripts/validateScreenPatternAnalyzer.mjs",
     "android": "expo run:android",
     "generate-focus-beeps": "node ./scripts/generateFocusBeeps.mjs",
     "ios": "expo run:ios",

@@ -23,6 +23,11 @@ internal object ScreenAwarenessContract {
   const val ACTION_TAKE_BREAK = "expo.modules.screenawareness.ACTION_TAKE_BREAK"
   const val ACTION_SNOOZE = "expo.modules.screenawareness.ACTION_SNOOZE"
   const val ACTION_CONTINUE = "expo.modules.screenawareness.ACTION_CONTINUE"
+  const val ACTION_REENTRY_CONTINUE = "expo.modules.screenawareness.ACTION_REENTRY_CONTINUE"
+  const val ACTION_RETURN_CURRENT_TASK = "expo.modules.screenawareness.ACTION_RETURN_CURRENT_TASK"
+  const val ACTION_HELP_ME_START = "expo.modules.screenawareness.ACTION_HELP_ME_START"
+  const val ACTION_QUICK_WIN = "expo.modules.screenawareness.ACTION_QUICK_WIN"
+  const val ACTION_ENERGY_MATCH = "expo.modules.screenawareness.ACTION_ENERGY_MATCH"
   const val EXTRA_THRESHOLD_MINUTES = "extra_threshold_minutes"
 
   const val POLL_INTERVAL_MS = 12_000L
@@ -32,6 +37,7 @@ internal object ScreenAwarenessContract {
   const val UNKNOWN_APP_PACKAGE = "__screen_awareness_other__"
   const val MAX_REASONABLE_SESSION_MS = 24 * 60 * 60_000L
   val SUPPORTED_THRESHOLDS = listOf(20, 30, 45, 60)
+  val SUPPORTED_REENTRY_THRESHOLDS = listOf(30, 45, 60)
 }
 
 internal object ScreenSessionEndReason {
@@ -50,7 +56,11 @@ internal data class ScreenAwarenessSettings(
   val showOverlay: Boolean = true,
   val showNotification: Boolean = true,
   val soundEnabled: Boolean = false,
-  val vibrationEnabled: Boolean = false
+  val vibrationEnabled: Boolean = false,
+  val patternInsightsEnabled: Boolean = true,
+  val reEntryEnabled: Boolean = false,
+  val showCurrentTaskInReminder: Boolean = false,
+  val reEntryThresholdMinutes: Int = 45
 ) {
   fun enabledThresholds(): List<Int> = buildList {
     if (threshold20Enabled) add(20)
@@ -69,7 +79,11 @@ internal data class ScreenAwarenessSettings(
     "showOverlay" to showOverlay,
     "showNotification" to showNotification,
     "soundEnabled" to soundEnabled,
-    "vibrationEnabled" to vibrationEnabled
+    "vibrationEnabled" to vibrationEnabled,
+    "patternInsightsEnabled" to patternInsightsEnabled,
+    "reEntryEnabled" to reEntryEnabled,
+    "showCurrentTaskInReminder" to showCurrentTaskInReminder,
+    "reEntryThresholdMinutes" to reEntryThresholdMinutes
   )
 }
 
@@ -170,6 +184,10 @@ internal object ScreenAwarenessStore {
   private const val KEY_SHOW_NOTIFICATION = "show_notification"
   private const val KEY_SOUND_ENABLED = "sound_enabled"
   private const val KEY_VIBRATION_ENABLED = "vibration_enabled"
+  private const val KEY_PATTERN_INSIGHTS_ENABLED = "pattern_insights_enabled_v3"
+  private const val KEY_REENTRY_ENABLED = "reentry_enabled_v3"
+  private const val KEY_SHOW_CURRENT_TASK = "show_current_task_v3"
+  private const val KEY_REENTRY_THRESHOLD = "reentry_threshold_v3"
   private const val KEY_SESSION = "current_session"
   private const val KEY_HISTORY = "session_history"
   private const val KEY_WARNING_HISTORY = "warning_history"
@@ -189,7 +207,13 @@ internal object ScreenAwarenessStore {
       showOverlay = prefs.getBoolean(KEY_SHOW_OVERLAY, true),
       showNotification = prefs.getBoolean(KEY_SHOW_NOTIFICATION, true),
       soundEnabled = prefs.getBoolean(KEY_SOUND_ENABLED, false),
-      vibrationEnabled = prefs.getBoolean(KEY_VIBRATION_ENABLED, false)
+      vibrationEnabled = prefs.getBoolean(KEY_VIBRATION_ENABLED, false),
+      patternInsightsEnabled = prefs.getBoolean(KEY_PATTERN_INSIGHTS_ENABLED, true),
+      reEntryEnabled = prefs.getBoolean(KEY_REENTRY_ENABLED, false),
+      showCurrentTaskInReminder = prefs.getBoolean(KEY_SHOW_CURRENT_TASK, false),
+      reEntryThresholdMinutes = prefs.getInt(KEY_REENTRY_THRESHOLD, 45)
+        .takeIf { it in ScreenAwarenessContract.SUPPORTED_REENTRY_THRESHOLDS }
+        ?: 45
     )
   }
 
@@ -208,6 +232,9 @@ internal object ScreenAwarenessStore {
     val breakMinutes = values.intValue("breakResetMinutes")
       ?.coerceIn(1, 180)
       ?: current.breakResetMinutes
+    val reEntryThreshold = values.intValue("reEntryThresholdMinutes")
+      ?.takeIf { it in ScreenAwarenessContract.SUPPORTED_REENTRY_THRESHOLDS }
+      ?: current.reEntryThresholdMinutes
     context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
       .edit()
       .putBoolean(KEY_THRESHOLD_20, values.booleanValue("threshold20Enabled") ?: current.threshold20Enabled)
@@ -219,6 +246,16 @@ internal object ScreenAwarenessStore {
       .putBoolean(KEY_SHOW_NOTIFICATION, values.booleanValue("showNotification") ?: current.showNotification)
       .putBoolean(KEY_SOUND_ENABLED, values.booleanValue("soundEnabled") ?: current.soundEnabled)
       .putBoolean(KEY_VIBRATION_ENABLED, values.booleanValue("vibrationEnabled") ?: current.vibrationEnabled)
+      .putBoolean(
+        KEY_PATTERN_INSIGHTS_ENABLED,
+        values.booleanValue("patternInsightsEnabled") ?: current.patternInsightsEnabled
+      )
+      .putBoolean(KEY_REENTRY_ENABLED, values.booleanValue("reEntryEnabled") ?: current.reEntryEnabled)
+      .putBoolean(
+        KEY_SHOW_CURRENT_TASK,
+        values.booleanValue("showCurrentTaskInReminder") ?: current.showCurrentTaskInReminder
+      )
+      .putInt(KEY_REENTRY_THRESHOLD, reEntryThreshold)
       .apply()
     return getSettings(context)
   }
@@ -461,6 +498,7 @@ internal object ScreenAwarenessStore {
       .remove(KEY_HISTORY)
       .remove(KEY_WARNING_HISTORY)
       .apply()
+    ScreenAwarenessReEntryManager.clearHistory(context)
   }
 
   @Synchronized

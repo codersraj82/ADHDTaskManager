@@ -98,11 +98,17 @@ class ScreenAwarenessForegroundService : Service() {
 
   private fun showWarning(warning: ScreenAwarenessWarning) {
     val settings = ScreenAwarenessStore.getSettings(applicationContext)
+    val reEntryOffer = ScreenAwarenessReEntryManager.buildOffer(
+      applicationContext,
+      warning.thresholdMinutes,
+      warning.followUp
+    )
     val overlayShown = if (settings.showOverlay) {
       ScreenAwarenessOverlayManager.show(
         applicationContext,
         warning.thresholdMinutes,
-        warning.followUp
+        warning.followUp,
+        reEntryOffer
       )
     } else {
       false
@@ -124,6 +130,17 @@ class ScreenAwarenessForegroundService : Service() {
     tracker.applyAction(action, thresholdMinutes)
     ScreenAwarenessOverlayManager.remove()
     ScreenAwarenessNotificationHelper.cancelWarning(applicationContext)
+  }
+
+  private fun handleReEntryAction(action: String, thresholdMinutes: Int) {
+    tracker.applyAction(ScreenAwarenessContract.ACTION_CONTINUE, thresholdMinutes)
+    ScreenAwarenessOverlayManager.remove()
+    ScreenAwarenessNotificationHelper.cancelWarning(applicationContext)
+    ScreenAwarenessReEntryManager.selectAction(
+      applicationContext,
+      action,
+      thresholdMinutes
+    )
   }
 
   private fun registerScreenReceiver() {
@@ -235,6 +252,24 @@ class ScreenAwarenessForegroundService : Service() {
         ScreenAwarenessOverlayManager.remove()
         ScreenAwarenessNotificationHelper.cancelWarning(context.applicationContext)
         ScreenAwarenessController.ensureRunning(context.applicationContext)
+      }
+    }
+
+    fun dispatchReEntryAction(context: Context, action: String, thresholdMinutes: Int) {
+      val safeThreshold = thresholdMinutes.takeIf {
+        it in ScreenAwarenessContract.SUPPORTED_THRESHOLDS
+      } ?: 45
+      val appContext = context.applicationContext
+      val service = activeInstance
+      if (service != null) {
+        service.handler.post { service.handleReEntryAction(action, safeThreshold) }
+      } else {
+        ScreenAwarenessSessionTracker(appContext)
+          .applyAction(ScreenAwarenessContract.ACTION_CONTINUE, safeThreshold)
+        ScreenAwarenessOverlayManager.remove()
+        ScreenAwarenessNotificationHelper.cancelWarning(appContext)
+        ScreenAwarenessReEntryManager.selectAction(appContext, action, safeThreshold)
+        ScreenAwarenessController.ensureRunning(appContext)
       }
     }
   }

@@ -46,6 +46,10 @@ const DEFAULT_SETTINGS: ScreenAwarenessSettings = {
   showNotification: true,
   soundEnabled: false,
   vibrationEnabled: false,
+  patternInsightsEnabled: true,
+  reEntryEnabled: false,
+  showCurrentTaskInReminder: false,
+  reEntryThresholdMinutes: 45,
 };
 
 export default function ScreenAwarenessSettingsScreen() {
@@ -389,6 +393,62 @@ export default function ScreenAwarenessSettingsScreen() {
           last
           onChange={(value) => void savePatch({ vibrationEnabled: value })}
         />
+      </View>
+
+      <SectionTitle
+        title="Insights & Re-Entry"
+        subtitle="Local pattern observations and optional ways back into what you planned."
+      />
+      <View className="bg-[#123131]/60 border border-[#337a7a]/30 rounded-3xl px-4 mb-4">
+        <SettingSwitchRow
+          label="Screen pattern insights"
+          value={settings.patternInsightsEnabled}
+          disabled={saving}
+          onChange={(value) => void savePatch({ patternInsightsEnabled: value })}
+        />
+        <SettingSwitchRow
+          label="Offer task re-entry after long screen sessions"
+          value={settings.reEntryEnabled}
+          disabled={saving}
+          onChange={(value) => void savePatch({ reEntryEnabled: value })}
+        />
+        <SettingSwitchRow
+          label="Show current task in screen reminder"
+          value={settings.showCurrentTaskInReminder}
+          disabled={saving || !settings.reEntryEnabled}
+          last
+          onChange={(value) => void savePatch({ showCurrentTaskInReminder: value })}
+        />
+        <Text className="text-[#9FB5B5] text-xs leading-5 pt-3">
+          Re-entry offers are off by default. Task titles stay hidden unless you enable them here, and are never added to lock-screen notifications.
+        </Text>
+        <Text className="text-[#E8F4F4] text-sm font-black mt-4 mb-3">
+          Offer re-entry after
+        </Text>
+        <View className="flex-row pb-4">
+          {([30, 45, 60] as const).map((minutes) => {
+            const selected = settings.reEntryThresholdMinutes === minutes;
+            return (
+              <TouchableOpacity
+                key={minutes}
+                accessibilityRole="button"
+                accessibilityState={{ selected, disabled: !settings.reEntryEnabled }}
+                activeOpacity={0.82}
+                disabled={saving || !settings.reEntryEnabled}
+                onPress={() => void savePatch({ reEntryThresholdMinutes: minutes })}
+                className={`min-h-11 flex-1 rounded-full border items-center justify-center mr-2 ${
+                  selected
+                    ? "bg-[#66b9b9] border-[#66b9b9]"
+                    : "bg-[#061414]/55 border-[#337a7a]/40"
+                } ${settings.reEntryEnabled ? "" : "opacity-45"}`}
+              >
+                <Text className={`text-xs font-black ${selected ? "text-[#061414]" : "text-[#9FB5B5]"}`}>
+                  {minutes} min
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
       <TouchableOpacity

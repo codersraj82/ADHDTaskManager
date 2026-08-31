@@ -12,6 +12,10 @@ export type ScreenAwarenessSettings = {
   showNotification: boolean;
   soundEnabled: boolean;
   vibrationEnabled: boolean;
+  patternInsightsEnabled: boolean;
+  reEntryEnabled: boolean;
+  showCurrentTaskInReminder: boolean;
+  reEntryThresholdMinutes: 30 | 45 | 60;
 };
 
 export type ScreenAwarenessPermissions = {
@@ -109,6 +113,46 @@ export type ContinuousSessionReport = {
   activeSession?: ContinuousScreenSession | null;
   sessions: ContinuousScreenSession[];
   dailySummaries: DailyScreenSessionSummary[];
+  insightsSettings?: {
+    patternInsightsEnabled: boolean;
+    reEntryEnabled: boolean;
+    showCurrentTaskInReminder: boolean;
+    reEntryThresholdMinutes: 30 | 45 | 60;
+  };
+  reEntrySupport?: ScreenReEntrySummary;
+};
+
+export type ScreenReEntryActionType =
+  | "return_current_task"
+  | "help_me_start"
+  | "quick_win"
+  | "energy_match"
+  | "continue_intentionally";
+
+export type ScreenReEntryEvent = {
+  eventId: string;
+  action: ScreenReEntryActionType;
+  thresholdMinutes: number;
+  taskId?: number | null;
+  timestamp: number;
+};
+
+export type PendingScreenReEntryAction = {
+  eventId: string;
+  action: ScreenReEntryActionType;
+  taskId?: number | null;
+  taskTitle?: string;
+  thresholdMinutes: number;
+  createdAt: number;
+};
+
+export type ScreenReEntrySummary = {
+  returnedToCurrentTask: number;
+  usedHelpMeStart: number;
+  usedQuickWin: number;
+  usedEnergyMatch: number;
+  continuedIntentionally: number;
+  events: ScreenReEntryEvent[];
 };
 
 export type ScreenUsageReport = {
@@ -145,6 +189,15 @@ type ScreenAwarenessNativeModule = {
     success: boolean;
     retentionDays?: number;
   }>;
+  updateScreenReEntryContext(context: {
+    taskId?: number | null;
+    taskTitle?: string | null;
+  }): Promise<{ success: boolean }>;
+  consumePendingScreenReEntryAction(): Promise<{
+    success: boolean;
+    action?: PendingScreenReEntryAction | null;
+  }>;
+  acknowledgeScreenReEntryAction(eventId: string): Promise<{ success: boolean }>;
   getUsageReport(range: string): Promise<ScreenUsageReport>;
 };
 
@@ -251,6 +304,41 @@ export const clearScreenUsageHistory = async (): Promise<{ success: boolean }> =
   if (!module) return { success: false };
   try {
     return await module.clearContinuousSessionHistory();
+  } catch {
+    return { success: false };
+  }
+};
+
+export const updateScreenReEntryContext = async (
+  context: { taskId?: number | null; taskTitle?: string | null } | null
+): Promise<{ success: boolean }> => {
+  const module = getModule();
+  if (!module) return { success: false };
+  try {
+    return await module.updateScreenReEntryContext(context || { taskId: null });
+  } catch {
+    return { success: false };
+  }
+};
+
+export const consumePendingScreenReEntryAction = async (): Promise<PendingScreenReEntryAction | null> => {
+  const module = getModule();
+  if (!module) return null;
+  try {
+    const result = await module.consumePendingScreenReEntryAction();
+    return result.success ? result.action || null : null;
+  } catch {
+    return null;
+  }
+};
+
+export const acknowledgeScreenReEntryAction = async (
+  eventId: string
+): Promise<{ success: boolean }> => {
+  const module = getModule();
+  if (!module || !eventId) return { success: false };
+  try {
+    return await module.acknowledgeScreenReEntryAction(eventId);
   } catch {
     return { success: false };
   }
