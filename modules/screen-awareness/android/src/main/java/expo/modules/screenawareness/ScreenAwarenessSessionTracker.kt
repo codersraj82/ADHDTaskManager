@@ -17,11 +17,22 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
     val nowWall = System.currentTimeMillis()
     val nowElapsed = SystemClock.elapsedRealtime()
     val restored = ScreenAwarenessStore.getSession(appContext)
-    state = if (restored != null && isSameBoot(restored, nowWall, nowElapsed)) {
-      restored
-    } else {
-      ScreenAwarenessStore.clearSession(appContext)
-      ScreenSessionState()
+    state = when {
+      restored == null -> ScreenSessionState()
+      isSameBoot(restored, nowWall, nowElapsed) -> restored.apply {
+        schemaVersion = ScreenAwarenessContract.SESSION_SCHEMA_VERSION
+      }
+      else -> {
+        ScreenAwarenessStore.recordFinishedSession(
+          appContext,
+          restored,
+          restored.lastActiveWallMs.coerceAtLeast(restored.startedAtWallMs),
+          ScreenSessionEndReason.DEVICE_REBOOT,
+          completedNormally = false
+        )
+        ScreenAwarenessStore.clearSession(appContext)
+        ScreenSessionState()
+      }
     }
   }
 
@@ -29,14 +40,21 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
   fun onServiceStarted(interactive: Boolean) {
     val nowWall = System.currentTimeMillis()
     val nowElapsed = SystemClock.elapsedRealtime()
+    val settings = ScreenAwarenessStore.getSettings(appContext)
     if (!state.active && interactive) {
-      state = newScreenSession(nowWall, nowElapsed)
+      state = newScreenSession(nowWall, nowElapsed, settings.breakResetMinutes)
     } else if (state.active && interactive) {
       resumeOrResetAfterBreak(nowWall, nowElapsed)
     } else if (state.active && state.lastNonInteractiveElapsedMs == null) {
-      settleInteractiveTime(nowElapsed)
+      // Android may recreate the service after killing the process. The exact screen-off
+      // instant is unknowable then, so treat unobserved time as a conservative pause.
+      val unknownGapMs = (nowWall - state.lastActiveWallMs)
+        .coerceIn(0L, ScreenAwarenessContract.MAX_REASONABLE_SESSION_MS)
       state.lastInteractiveElapsedMs = null
-      state.lastNonInteractiveElapsedMs = nowElapsed
+      state.lastInteractiveWallMs = null
+      state.lastNonInteractiveElapsedMs = (nowElapsed - unknownGapMs).coerceAtLeast(0L)
+      state.lastNonInteractiveWallMs = (nowWall - unknownGapMs).coerceAtLeast(state.startedAtWallMs)
+      state.currentForegroundPackage = null
     }
     persist()
   }
@@ -44,12 +62,16 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
   @Synchronized
   fun onScreenOff() {
     if (!state.active) return
+    val nowWall = System.currentTimeMillis()
     val nowElapsed = SystemClock.elapsedRealtime()
-    settleInteractiveTime(nowElapsed)
+    settleInteractiveTime(nowWall, nowElapsed)
     state.lastInteractiveElapsedMs = null
+    state.lastInteractiveWallMs = null
     if (state.lastNonInteractiveElapsedMs == null) {
       state.lastNonInteractiveElapsedMs = nowElapsed
+      state.lastNonInteractiveWallMs = nowWall
     }
+    state.currentForegroundPackage = null
     persist()
   }
 
@@ -58,7 +80,11 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
     val nowWall = System.currentTimeMillis()
     val nowElapsed = SystemClock.elapsedRealtime()
     val reset = if (!state.active) {
-      state = newScreenSession(nowWall, nowElapsed)
+      state = newScreenSession(
+        nowWall,
+        nowElapsed,
+        ScreenAwarenessStore.getSettings(appContext).breakResetMinutes
+      )
       true
     } else {
       resumeOrResetAfterBreak(nowWall, nowElapsed)
@@ -68,7 +94,31 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
   }
 
   @Synchronized
-  fun tick(interactive: Boolean): ScreenAwarenessWarning? {
+  fun millisecondsUntilMeaningfulBreak(): Long? {
+    if (!state.active) return null
+    val nonInteractiveAt = state.lastNonInteractiveElapsedMs ?: return null
+    val resetAfterMs = ScreenAwarenessStore.getSettings(appContext).breakResetMinutes * 60_000L
+    return (resetAfterMs - (SystemClock.elapsedRealtime() - nonInteractiveAt)).coerceAtLeast(0L)
+  }
+
+  @Synchronized
+  fun finalizeMeaningfulBreakIfDue(): Boolean {
+    if (!state.active) return false
+    val nonInteractiveAt = state.lastNonInteractiveElapsedMs ?: return false
+    val nowElapsed = SystemClock.elapsedRealtime()
+    val settings = ScreenAwarenessStore.getSettings(appContext)
+    if (nowElapsed - nonInteractiveAt < settings.breakResetMinutes * 60_000L) return false
+    finishMeaningfulBreak(settings.breakResetMinutes)
+    return true
+  }
+
+  @Synchronized
+  fun tick(
+    interactive: Boolean,
+    observedForegroundPackage: String?,
+    appObservationAvailable: Boolean,
+    allowWarnings: Boolean
+  ): ScreenAwarenessWarning? {
     if (!interactive) {
       onScreenOff()
       return null
@@ -77,11 +127,30 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
     val nowWall = System.currentTimeMillis()
     val nowElapsed = SystemClock.elapsedRealtime()
     if (!state.active) {
-      state = newScreenSession(nowWall, nowElapsed)
+      state = newScreenSession(
+        nowWall,
+        nowElapsed,
+        ScreenAwarenessStore.getSettings(appContext).breakResetMinutes
+      )
     } else if (state.lastInteractiveElapsedMs == null) {
       resumeOrResetAfterBreak(nowWall, nowElapsed)
     }
-    settleInteractiveTime(nowElapsed)
+
+    // Credit the interval to the package seen during the preceding poll, then retain
+    // the latest package for the next interval. This avoids overlapping app time.
+    settleInteractiveTime(nowWall, nowElapsed)
+    if (appObservationAvailable) {
+      if (!observedForegroundPackage.isNullOrBlank()) {
+        state.currentForegroundPackage = observedForegroundPackage
+      }
+    } else {
+      state.currentForegroundPackage = null
+    }
+
+    if (!allowWarnings) {
+      persist()
+      return null
+    }
 
     val settings = ScreenAwarenessStore.getSettings(appContext)
     val snoozeUntil = state.snoozeUntilElapsedMs
@@ -93,8 +162,9 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
       val snoozedThreshold = state.snoozedThresholdMinutes
       state.snoozeUntilElapsedMs = null
       state.snoozedThresholdMinutes = null
-      persist()
       if (snoozedThreshold != null && !isActiveFocusSession()) {
+        recordWarningEvent(snoozedThreshold, nowWall, followUp = true)
+        persist()
         ScreenAwarenessStore.recordWarning(appContext, snoozedThreshold, nowWall)
         return ScreenAwarenessWarning(snoozedThreshold, followUp = true)
       }
@@ -111,6 +181,7 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
     val threshold = reached.maxOrNull()
     if (threshold != null) {
       state.triggeredThresholds.addAll(reached)
+      recordWarningEvent(threshold, nowWall, followUp = false)
       persist()
       ScreenAwarenessStore.recordWarning(appContext, threshold, nowWall)
       return ScreenAwarenessWarning(threshold)
@@ -118,13 +189,6 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
 
     persist()
     return null
-  }
-
-  @Synchronized
-  fun updateForegroundPackage(packageName: String?) {
-    if (state.currentForegroundPackage == packageName) return
-    state.currentForegroundPackage = packageName
-    persist()
   }
 
   @Synchronized
@@ -150,9 +214,26 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
 
   @Synchronized
   fun finishForDisable() {
-    val nowElapsed = SystemClock.elapsedRealtime()
-    settleInteractiveTime(nowElapsed)
-    ScreenAwarenessStore.recordFinishedSession(appContext, state, System.currentTimeMillis())
+    if (!state.active) {
+      ScreenAwarenessStore.clearSession(appContext)
+      return
+    }
+    val nowWall = System.currentTimeMillis()
+    if (state.lastInteractiveElapsedMs != null) {
+      settleInteractiveTime(nowWall, SystemClock.elapsedRealtime())
+    }
+    val endedAt = if (state.lastNonInteractiveWallMs != null) {
+      state.lastActiveWallMs
+    } else {
+      nowWall
+    }
+    ScreenAwarenessStore.recordFinishedSession(
+      appContext,
+      state,
+      endedAt,
+      ScreenSessionEndReason.FEATURE_DISABLED,
+      completedNormally = false
+    )
     state = ScreenSessionState()
     ScreenAwarenessStore.clearSession(appContext)
   }
@@ -164,24 +245,63 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
     val nonInteractiveAt = state.lastNonInteractiveElapsedMs
     if (nonInteractiveAt != null) {
       val breakMs = (nowElapsed - nonInteractiveAt).coerceAtLeast(0L)
-      val resetAfterMs = ScreenAwarenessStore.getSettings(appContext)
-        .breakResetMinutes * 60_000L
+      val settings = ScreenAwarenessStore.getSettings(appContext)
+      val resetAfterMs = settings.breakResetMinutes * 60_000L
       if (breakMs >= resetAfterMs) {
-        ScreenAwarenessStore.recordFinishedSession(appContext, state, nowWall)
-        state = newScreenSession(nowWall, nowElapsed)
+        finishMeaningfulBreak(settings.breakResetMinutes)
+        state = newScreenSession(nowWall, nowElapsed, settings.breakResetMinutes)
         return true
       }
+      state.accumulatedPauseMs = (state.accumulatedPauseMs + breakMs)
+        .coerceAtMost(ScreenAwarenessContract.MAX_REASONABLE_SESSION_MS)
     }
     state.lastNonInteractiveElapsedMs = null
+    state.lastNonInteractiveWallMs = null
     state.lastInteractiveElapsedMs = nowElapsed
+    state.lastInteractiveWallMs = nowWall
+    state.currentForegroundPackage = null
     return false
   }
 
-  private fun settleInteractiveTime(nowElapsed: Long) {
+  private fun finishMeaningfulBreak(meaningfulBreakMinutes: Int) {
+    val endedAt = (state.lastNonInteractiveWallMs ?: state.lastActiveWallMs)
+      .coerceAtLeast(state.startedAtWallMs)
+    ScreenAwarenessStore.recordFinishedSession(
+      appContext,
+      state,
+      endedAt,
+      ScreenSessionEndReason.MEANINGFUL_BREAK,
+      completedNormally = true,
+      meaningfulBreakMinutes = meaningfulBreakMinutes
+    )
+    state = ScreenSessionState()
+    ScreenAwarenessStore.clearSession(appContext)
+  }
+
+  private fun settleInteractiveTime(nowWall: Long, nowElapsed: Long) {
     val previous = state.lastInteractiveElapsedMs ?: return
-    val delta = (nowElapsed - previous).coerceAtLeast(0L)
-    state.accumulatedInteractiveMs += delta
+    val remaining = (ScreenAwarenessContract.MAX_REASONABLE_SESSION_MS -
+      state.accumulatedInteractiveMs).coerceAtLeast(0L)
+    val delta = (nowElapsed - previous).coerceIn(0L, remaining)
+    if (delta > 0L) {
+      state.accumulatedInteractiveMs += delta
+      val packageName = state.currentForegroundPackage
+        ?: ScreenAwarenessContract.UNKNOWN_APP_PACKAGE
+      state.appUsageMs[packageName] = (state.appUsageMs[packageName] ?: 0L) + delta
+      state.lastActiveWallMs = nowWall
+    }
     state.lastInteractiveElapsedMs = nowElapsed
+    state.lastInteractiveWallMs = nowWall
+  }
+
+  private fun recordWarningEvent(thresholdMinutes: Int, nowWall: Long, followUp: Boolean) {
+    state.warningEvents.add(
+      ScreenWarningEvent(
+        thresholdMinutes = thresholdMinutes,
+        timestampWallMs = nowWall,
+        followUp = followUp
+      )
+    )
   }
 
   private fun persist() {

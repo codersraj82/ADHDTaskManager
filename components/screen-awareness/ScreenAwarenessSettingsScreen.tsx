@@ -13,6 +13,7 @@ import {
   View,
 } from "react-native";
 import {
+  clearScreenUsageHistory,
   getScreenAwarenessStatus,
   openOverlaySettings,
   openScreenAwarenessNotificationSettings,
@@ -123,6 +124,31 @@ export default function ScreenAwarenessSettingsScreen() {
       await openScreenAwarenessNotificationSettings();
     }
     await refresh();
+  };
+
+  const confirmClearHistory = () => {
+    Alert.alert(
+      "Clear screen usage history?",
+      "This will delete saved Screen Awareness sessions and usage history from this device.\n\nYour Screen Awareness settings will stay unchanged.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear History",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              const result = await clearScreenUsageHistory();
+              Alert.alert(
+                result.success ? "History cleared" : "Could not clear history",
+                result.success
+                  ? "Saved Screen Awareness history was removed. Your settings and current monitoring session are unchanged."
+                  : "Please try again."
+              );
+            })();
+          },
+        },
+      ]
+    );
   };
 
   const applyCustomReset = () => {
@@ -385,8 +411,19 @@ export default function ScreenAwarenessSettingsScreen() {
       <View className="bg-[#061414]/65 border border-[#337a7a]/25 rounded-3xl p-4">
         <Text className="text-[#E8F4F4] font-black">Your usage data stays on this device.</Text>
         <Text className="text-[#9FB5B5] text-xs leading-5 mt-2">
-          Android&apos;s local usage statistics are used to calculate screen time. Screen Awareness does not read messages, typed text, photos, passwords, URLs, or screen content.
+          Android&apos;s local usage statistics are used to calculate screen time. Session history is kept for 30 days. Screen Awareness does not read messages, typed text, photos, passwords, URLs, or screen content.
         </Text>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Clear Screen Usage History"
+          activeOpacity={0.84}
+          onPress={confirmClearHistory}
+          className="self-start mt-4 min-h-11 px-4 rounded-full border border-[#D98383]/55 items-center justify-center"
+        >
+          <Text className="text-[#F2AAAA] text-xs font-black uppercase tracking-widest">
+            Clear Screen Usage History
+          </Text>
+        </TouchableOpacity>
       </View>
     </ScreenAwarenessShell>
   );

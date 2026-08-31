@@ -33,11 +33,7 @@ export type ScreenAwarenessStatus = {
     | "active_without_popup_access"
     | "active_without_notification_access"
     | "active_without_reminder_access";
-  currentSession?: {
-    active?: boolean;
-    activeDurationMs?: number;
-    currentForegroundPackage?: string | null;
-  } | null;
+  currentSession?: ContinuousScreenSession | null;
   errorCode?: string;
   message?: string;
 };
@@ -49,6 +45,70 @@ export type ScreenUsageApp = {
   durationMs: number;
   percentage: number;
   dailyUsage: { date: string; durationMs: number }[];
+};
+
+export type ScreenSessionAppUsage = {
+  packageName: string;
+  appName: string;
+  durationMs: number;
+};
+
+export type ScreenSessionWarning = {
+  thresholdMinutes: number;
+  timestamp: number;
+  followUp: boolean;
+};
+
+export type ContinuousScreenSession = {
+  schemaVersion: number;
+  active: boolean;
+  sessionId: string;
+  startTime: number;
+  endTime?: number | null;
+  activeDurationMs: number;
+  elapsedSpanMs: number;
+  pauseDurationMs: number;
+  screenInteractive?: boolean;
+  currentForegroundPackage?: string | null;
+  currentForegroundApp?: Pick<ScreenSessionAppUsage, "packageName" | "appName"> | null;
+  thresholdsTriggered: number[];
+  warningCount: number;
+  warningEvents: ScreenSessionWarning[];
+  appUsageBreakdown: ScreenSessionAppUsage[];
+  topApp?: ScreenSessionAppUsage | null;
+  sessionDateLocal: string;
+  meaningfulBreakMinutes: number;
+  completedNormally: boolean;
+  endReason?: "MEANINGFUL_BREAK" | "FEATURE_DISABLED" | "DEVICE_REBOOT" | string | null;
+};
+
+export type DailyScreenSessionSummary = {
+  date: string;
+  sessionCount: number;
+  totalDurationMs: number;
+  averageDurationMs: number;
+  longestDurationMs: number;
+  over30Count: number;
+  over45Count: number;
+  over60Count: number;
+};
+
+export type ContinuousSessionReport = {
+  schemaVersion: number;
+  retentionDays: number;
+  migrationMessage: string;
+  summary: {
+    totalSessions: number;
+    totalDurationMs: number;
+    averageDurationMs: number;
+    longestDurationMs: number;
+    over30Count: number;
+    over45Count: number;
+    over60Count: number;
+  };
+  activeSession?: ContinuousScreenSession | null;
+  sessions: ContinuousScreenSession[];
+  dailySummaries: DailyScreenSessionSummary[];
 };
 
 export type ScreenUsageReport = {
@@ -63,6 +123,7 @@ export type ScreenUsageReport = {
     warningCount: number;
   };
   apps?: ScreenUsageApp[];
+  continuousSessions?: ContinuousSessionReport;
   errorCode?: string;
   message?: string;
 };
@@ -78,7 +139,11 @@ type ScreenAwarenessNativeModule = {
   openNotificationSettings(): Promise<{ success: boolean }>;
   getCurrentContinuousSession(): Promise<{
     success: boolean;
-    session?: ScreenAwarenessStatus["currentSession"];
+    session?: ContinuousScreenSession | null;
+  }>;
+  clearContinuousSessionHistory(): Promise<{
+    success: boolean;
+    retentionDays?: number;
   }>;
   getUsageReport(range: string): Promise<ScreenUsageReport>;
 };
@@ -167,5 +232,26 @@ export const getScreenUsageReport = async (
       ...unsupportedStatus(),
       message: "Screen usage could not be loaded right now.",
     };
+  }
+};
+
+export const getCurrentContinuousSession = async (): Promise<ContinuousScreenSession | null> => {
+  const module = getModule();
+  if (!module) return null;
+  try {
+    const result = await module.getCurrentContinuousSession();
+    return result.success ? result.session || null : null;
+  } catch {
+    return null;
+  }
+};
+
+export const clearScreenUsageHistory = async (): Promise<{ success: boolean }> => {
+  const module = getModule();
+  if (!module) return { success: false };
+  try {
+    return await module.clearContinuousSessionHistory();
+  } catch {
+    return { success: false };
   }
 };

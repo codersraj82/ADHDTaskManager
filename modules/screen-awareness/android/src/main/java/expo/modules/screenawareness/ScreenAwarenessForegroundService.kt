@@ -18,6 +18,14 @@ class ScreenAwarenessForegroundService : Service() {
   private var screenReceiver: BroadcastReceiver? = null
   private var lastStatusUsageAccess: Boolean? = null
 
+  private val breakFinalizeRunnable = Runnable {
+    if (tracker.finalizeMeaningfulBreakIfDue()) {
+      ScreenAwarenessNotificationHelper.cancelWarning(applicationContext)
+    } else {
+      scheduleBreakFinalization()
+    }
+  }
+
   private val tickRunnable = object : Runnable {
     override fun run() {
       if (!ScreenAwarenessStore.getSettings(applicationContext).enabled) {
@@ -28,16 +36,24 @@ class ScreenAwarenessForegroundService : Service() {
       val usageGranted = ScreenAwarenessAccess.hasUsageAccess(applicationContext)
       updateStatusNotification(usageGranted)
 
-      if (interactive && usageGranted) {
-        tracker.updateForegroundPackage(
+      if (interactive) {
+        val observedPackage = if (usageGranted) {
           ScreenAwarenessUsageRepository.getRecentForegroundPackage(applicationContext)
-        )
-        tracker.tick(interactive = true)?.let(::showWarning)
+        } else {
+          null
+        }
+        tracker.tick(
+          interactive = true,
+          observedForegroundPackage = observedPackage,
+          appObservationAvailable = usageGranted,
+          allowWarnings = usageGranted
+        )?.let(::showWarning)
       } else if (!interactive) {
         tracker.onScreenOff()
+        scheduleBreakFinalization()
       }
 
-      if (interactive || !usageGranted) {
+      if (interactive) {
         handler.postDelayed(this, ScreenAwarenessContract.POLL_INTERVAL_MS)
       }
     }
@@ -45,12 +61,15 @@ class ScreenAwarenessForegroundService : Service() {
 
   override fun onCreate() {
     super.onCreate()
+    ScreenAwarenessStore.purgeOldHistory(applicationContext, System.currentTimeMillis())
     tracker = ScreenAwarenessSessionTracker(applicationContext)
     activeInstance = this
     registerScreenReceiver()
     val usageGranted = ScreenAwarenessAccess.hasUsageAccess(applicationContext)
     startAsForeground(usageGranted)
-    tracker.onServiceStarted(isScreenInteractive())
+    val interactive = isScreenInteractive()
+    tracker.onServiceStarted(interactive)
+    if (!interactive) scheduleBreakFinalization()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -115,9 +134,11 @@ class ScreenAwarenessForegroundService : Service() {
           Intent.ACTION_SCREEN_OFF -> {
             handler.removeCallbacks(tickRunnable)
             tracker.onScreenOff()
+            scheduleBreakFinalization()
             ScreenAwarenessOverlayManager.remove()
           }
           Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+            handler.removeCallbacks(breakFinalizeRunnable)
             val reset = tracker.onScreenOn()
             if (reset) {
               ScreenAwarenessNotificationHelper.cancelWarning(applicationContext)
@@ -154,6 +175,12 @@ class ScreenAwarenessForegroundService : Service() {
     } catch (_: Exception) {
       // Receiver may already have been removed during process teardown.
     }
+  }
+
+  private fun scheduleBreakFinalization() {
+    handler.removeCallbacks(breakFinalizeRunnable)
+    val delay = tracker.millisecondsUntilMeaningfulBreak() ?: return
+    handler.postDelayed(breakFinalizeRunnable, delay.coerceAtLeast(250L))
   }
 
   private fun startAsForeground(usageGranted: Boolean) {

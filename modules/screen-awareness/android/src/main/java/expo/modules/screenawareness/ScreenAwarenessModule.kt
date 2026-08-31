@@ -63,13 +63,19 @@ class ScreenAwarenessModule : Module() {
     AsyncFunction("getCurrentContinuousSession") {
       val context = appContext.reactContext
         ?: return@AsyncFunction unavailableResult()
-      val state = ScreenAwarenessStore.getSession(context)
       mapOf(
         "success" to true,
-        "session" to (state?.toMap(android.os.SystemClock.elapsedRealtime()) ?: mapOf(
-          "active" to false,
-          "activeDurationMs" to 0L
-        ))
+        "session" to ScreenAwarenessUsageRepository.getCurrentSessionReport(context)
+      )
+    }
+
+    AsyncFunction("clearContinuousSessionHistory") {
+      val context = appContext.reactContext
+        ?: return@AsyncFunction unavailableResult()
+      ScreenAwarenessStore.clearContinuousSessionHistory(context)
+      mapOf(
+        "success" to true,
+        "retentionDays" to ScreenAwarenessContract.SESSION_RETENTION_DAYS
       )
     }
 
