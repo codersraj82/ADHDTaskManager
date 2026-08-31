@@ -37,15 +37,16 @@ class ScreenAwarenessForegroundService : Service() {
       updateStatusNotification(usageGranted)
 
       if (interactive) {
-        val observedPackage = if (usageGranted) {
-          ScreenAwarenessUsageRepository.getRecentForegroundPackage(applicationContext)
+        val foregroundObservation = if (usageGranted) {
+          ScreenAwarenessUsageRepository.getRecentForegroundAppObservation(applicationContext)
         } else {
           null
         }
         tracker.tick(
           interactive = true,
-          observedForegroundPackage = observedPackage,
+          observedForegroundPackage = foregroundObservation?.packageName,
           appObservationAvailable = usageGranted,
+          foregroundObservationChanged = foregroundObservation?.changed == true,
           allowWarnings = usageGranted
         )?.let(::showWarning)
       } else if (!interactive) {

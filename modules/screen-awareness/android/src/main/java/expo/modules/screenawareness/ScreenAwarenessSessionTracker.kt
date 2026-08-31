@@ -117,6 +117,7 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
     interactive: Boolean,
     observedForegroundPackage: String?,
     appObservationAvailable: Boolean,
+    foregroundObservationChanged: Boolean,
     allowWarnings: Boolean
   ): ScreenAwarenessWarning? {
     if (!interactive) {
@@ -139,12 +140,12 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
     // Credit the interval to the package seen during the preceding poll, then retain
     // the latest package for the next interval. This avoids overlapping app time.
     settleInteractiveTime(nowWall, nowElapsed)
-    if (appObservationAvailable) {
-      if (!observedForegroundPackage.isNullOrBlank()) {
-        state.currentForegroundPackage = observedForegroundPackage
-      }
-    } else {
+    if (!appObservationAvailable) {
       state.currentForegroundPackage = null
+    } else if (foregroundObservationChanged) {
+      // A pause, stop, screen/keyguard transition, launcher, or system utility clears
+      // attribution instead of allowing the previously visible app to keep accumulating.
+      state.currentForegroundPackage = observedForegroundPackage?.takeIf(String::isNotBlank)
     }
 
     if (!allowWarnings) {
@@ -285,9 +286,9 @@ internal class ScreenAwarenessSessionTracker(context: Context) {
     val delta = (nowElapsed - previous).coerceIn(0L, remaining)
     if (delta > 0L) {
       state.accumulatedInteractiveMs += delta
-      val packageName = state.currentForegroundPackage
-        ?: ScreenAwarenessContract.UNKNOWN_APP_PACKAGE
-      state.appUsageMs[packageName] = (state.appUsageMs[packageName] ?: 0L) + delta
+      state.currentForegroundPackage?.let { packageName ->
+        state.appUsageMs[packageName] = (state.appUsageMs[packageName] ?: 0L) + delta
+      }
       state.lastActiveWallMs = nowWall
     }
     state.lastInteractiveElapsedMs = nowElapsed

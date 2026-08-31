@@ -199,7 +199,9 @@ export default function ScreenUsageReportScreen() {
           <View className="flex-row items-end justify-between mb-3">
             <View>
               <Text className="text-[#E8F4F4] text-lg font-black">Most Used Apps</Text>
-              <Text className="text-[#9FB5B5] text-xs mt-1">Android-reported foreground time</Text>
+              <Text className="text-[#9FB5B5] text-xs leading-5 mt-1">
+                Visible on-screen time. Background apps and Android utilities are excluded.
+              </Text>
             </View>
             <Text className="text-[#66B9B9] text-[10px] font-black uppercase tracking-widest">
               Local only

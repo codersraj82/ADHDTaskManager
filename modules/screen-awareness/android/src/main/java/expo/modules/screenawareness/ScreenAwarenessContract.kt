@@ -129,13 +129,9 @@ internal data class ScreenSessionState(
       .coerceIn(0L, ScreenAwarenessContract.MAX_REASONABLE_SESSION_MS)
     val liveAppUsage = appUsageMs.toMutableMap()
     if (liveDelta > 0L) {
-      val packageName = currentForegroundPackage ?: ScreenAwarenessContract.UNKNOWN_APP_PACKAGE
-      liveAppUsage[packageName] = (liveAppUsage[packageName] ?: 0L) + liveDelta
-    }
-    val unattributedMs = (liveActiveDuration - liveAppUsage.values.sum()).coerceAtLeast(0L)
-    if (unattributedMs > 0L) {
-      val unknown = ScreenAwarenessContract.UNKNOWN_APP_PACKAGE
-      liveAppUsage[unknown] = (liveAppUsage[unknown] ?: 0L) + unattributedMs
+      currentForegroundPackage?.let { packageName ->
+        liveAppUsage[packageName] = (liveAppUsage[packageName] ?: 0L) + liveDelta
+      }
     }
     return mapOf(
       "schemaVersion" to schemaVersion,
@@ -412,11 +408,6 @@ internal object ScreenAwarenessStore {
     }
 
     val completeAppUsage = state.appUsageMs.toMutableMap()
-    val unattributedMs = (activeDuration - completeAppUsage.values.sum()).coerceAtLeast(0L)
-    if (unattributedMs > 0L) {
-      val unknown = ScreenAwarenessContract.UNKNOWN_APP_PACKAGE
-      completeAppUsage[unknown] = (completeAppUsage[unknown] ?: 0L) + unattributedMs
-    }
     val appUsageBreakdown = JSONArray().apply {
       completeAppUsage.entries
         .filter { it.value > 0L }

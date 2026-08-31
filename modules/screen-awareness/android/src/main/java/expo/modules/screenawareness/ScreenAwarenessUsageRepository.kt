@@ -10,6 +10,7 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.SystemClock
 import android.util.Base64
+import android.view.inputmethod.InputMethodManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -17,36 +18,97 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+
+internal data class ScreenForegroundAppObservation(
+  val changed: Boolean,
+  val packageName: String?
+)
 
 internal object ScreenAwarenessUsageRepository {
   private const val MAX_REPORT_APPS = 30
+  private const val REPORT_LOOKBACK_MS = 24 * 60 * 60_000L
 
-  fun getRecentForegroundPackage(context: Context, lookbackMs: Long = 45_000L): String? {
-    if (!ScreenAwarenessAccess.hasUsageAccess(context)) return null
-    val manager = context.getSystemService(UsageStatsManager::class.java) ?: return null
+  private val excludedInfrastructurePackages = setOf(
+    "android",
+    "com.android.systemui",
+    "com.android.settings",
+    "com.android.permissioncontroller",
+    "com.google.android.permissioncontroller",
+    "com.android.packageinstaller",
+    "com.google.android.packageinstaller",
+    "com.android.shell",
+    "com.android.keychain",
+    "com.android.documentsui",
+    "com.android.localtransport",
+    "com.google.android.backuptransport",
+    "com.google.android.gms",
+    "com.google.android.gsf",
+    "com.google.android.modulemetadata",
+    "com.google.android.as",
+    "com.google.android.as.oss"
+  )
+  private val excludedInfrastructurePrefixes = listOf(
+    "com.android.internal.",
+    "com.android.overlay.",
+    "com.android.providers.",
+    "com.google.android.overlay.",
+    "com.google.android.providers."
+  )
+  private val reportablePackageCache = ConcurrentHashMap<String, Boolean>()
+  @Volatile private var cachedExcludedPackages: Set<String>? = null
+
+  private data class VisibleAppUsage(
+    val totalByPackage: Map<String, Long>,
+    val dailyByPackage: Map<String, Map<String, Long>>
+  )
+
+  fun getRecentForegroundAppObservation(
+    context: Context,
+    lookbackMs: Long = 60_000L
+  ): ScreenForegroundAppObservation {
+    if (!ScreenAwarenessAccess.hasUsageAccess(context)) {
+      return ScreenForegroundAppObservation(changed = false, packageName = null)
+    }
+    val manager = context.getSystemService(UsageStatsManager::class.java)
+      ?: return ScreenForegroundAppObservation(changed = false, packageName = null)
     val end = System.currentTimeMillis()
     val events = try {
       manager.queryEvents(end - lookbackMs.coerceAtLeast(10_000L), end)
     } catch (_: Exception) {
-      return null
+      return ScreenForegroundAppObservation(changed = false, packageName = null)
     }
     val event = UsageEvents.Event()
-    var latestPackage: String? = null
-    var latestTimestamp = Long.MIN_VALUE
+    val excludedPackages = getExcludedPackages(context)
+    var changed = false
+    var visiblePackage: String? = null
     while (events.hasNextEvent()) {
       events.getNextEvent(event)
-      val isForeground = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        event.eventType == UsageEvents.Event.ACTIVITY_RESUMED
-      } else {
-        @Suppress("DEPRECATION")
-        event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
-      }
-      if (isForeground && event.timeStamp >= latestTimestamp) {
-        latestPackage = event.packageName
-        latestTimestamp = event.timeStamp
+      when {
+        isScreenHiddenEvent(event.eventType) -> {
+          changed = true
+          visiblePackage = null
+        }
+        isScreenShownEvent(event.eventType) -> {
+          changed = true
+          visiblePackage = null
+        }
+        isForegroundEvent(event.eventType) -> {
+          changed = true
+          val packageName = event.packageName?.trim().orEmpty()
+          visiblePackage = packageName.takeIf {
+            isReportableVisiblePackage(context, it, excludedPackages)
+          }
+        }
+        isBackgroundEvent(event.eventType) -> {
+          changed = true
+          if (visiblePackage == null || event.packageName == visiblePackage) {
+            visiblePackage = null
+          }
+        }
       }
     }
-    return latestPackage
+    return ScreenForegroundAppObservation(changed = changed, packageName = visiblePackage)
   }
 
   fun getCurrentSessionReport(context: Context): Map<String, Any?>? {
@@ -56,12 +118,18 @@ internal object ScreenAwarenessUsageRepository {
     val raw = state.toMap(SystemClock.elapsedRealtime())
     val appUsage = enrichAppUsage(context, raw["appUsageBreakdown"] as? List<*>)
     val currentPackage = raw["currentForegroundPackage"] as? String
+    val reportableCurrentPackage = currentPackage?.takeIf {
+      isReportableVisiblePackage(context, it, getExcludedPackages(context))
+    }
     return raw.toMutableMap().apply {
       put("startTime", raw["startedAt"])
       put("endTime", null)
       put("appUsageBreakdown", appUsage)
       put("topApp", appUsage.firstOrNull())
-      put("currentForegroundApp", currentPackage?.let { resolveSessionApp(context, it) })
+      put(
+        "currentForegroundApp",
+        reportableCurrentPackage?.let { resolveSessionApp(context, it) }
+      )
       put("sessionDateLocal", localDateKey(state.startedAtWallMs))
     }
   }
@@ -97,7 +165,8 @@ internal object ScreenAwarenessUsageRepository {
     }
     val startMs = startCalendar.timeInMillis
     val excludedPackages = getExcludedPackages(context)
-    val aggregate = queryPackageUsage(context, startMs, endMs, excludedPackages)
+    val visibleUsage = queryVisibleAppUsage(context, startMs, endMs, excludedPackages)
+    val aggregate = visibleUsage.totalByPackage
     val sorted = aggregate.entries
       .asSequence()
       .filter { it.value > 0L }
@@ -106,12 +175,11 @@ internal object ScreenAwarenessUsageRepository {
       .toList()
     val totalMs = aggregate.values.sum().coerceAtLeast(0L)
     val dailyByPackage = buildDailyUsage(
-      context = context,
       startCalendar = startCalendar,
       dayCount = dayCount,
       endMs = endMs,
-      excludedPackages = excludedPackages,
-      includedPackages = sorted.map { it.key }.toSet()
+      includedPackages = sorted.map { it.key }.toSet(),
+      source = visibleUsage.dailyByPackage
     )
 
     val apps = sorted.map { (packageName, durationMs) ->
@@ -276,6 +344,10 @@ internal object ScreenAwarenessUsageRepository {
       else -> emptyList()
     }
     return items
+      .filter { (packageName, _) ->
+        packageName != ScreenAwarenessContract.UNKNOWN_APP_PACKAGE &&
+          isReportableVisiblePackage(context, packageName, getExcludedPackages(context))
+      }
       .sortedByDescending { it.second }
       .map { (packageName, durationMs) ->
         resolveSessionApp(context, packageName).toMutableMap().apply {
@@ -285,12 +357,6 @@ internal object ScreenAwarenessUsageRepository {
   }
 
   private fun resolveSessionApp(context: Context, packageName: String): Map<String, Any?> {
-    if (packageName == ScreenAwarenessContract.UNKNOWN_APP_PACKAGE) {
-      return mapOf("packageName" to packageName, "appName" to "Other")
-    }
-    if (packageName in getLauncherPackages(context)) {
-      return mapOf("packageName" to packageName, "appName" to "Home screen")
-    }
     return mapOf(
       "packageName" to packageName,
       "appName" to resolveAppLabel(context, packageName)
@@ -308,36 +374,83 @@ internal object ScreenAwarenessUsageRepository {
     }
   }
 
-  private fun queryPackageUsage(
+  private fun queryVisibleAppUsage(
     context: Context,
     startMs: Long,
     endMs: Long,
     excludedPackages: Set<String>
-  ): Map<String, Long> {
-    val manager = context.getSystemService(UsageStatsManager::class.java) ?: return emptyMap()
-    val stats = try {
-      manager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, startMs, endMs)
+  ): VisibleAppUsage {
+    val empty = VisibleAppUsage(emptyMap(), emptyMap())
+    if (endMs <= startMs) return empty
+    val manager = context.getSystemService(UsageStatsManager::class.java) ?: return empty
+    val scanStartMs = (startMs - REPORT_LOOKBACK_MS).coerceAtLeast(0L)
+    val events = try {
+      manager.queryEvents(scanStartMs, endMs)
     } catch (_: Exception) {
-      emptyList()
+      return empty
     }
-    val result = mutableMapOf<String, Long>()
-    stats.orEmpty().forEach { item ->
-      val packageName = item.packageName?.trim().orEmpty()
-      val duration = item.totalTimeInForeground.coerceAtLeast(0L)
-      if (packageName.isNotEmpty() && packageName !in excludedPackages && duration > 0L) {
-        result[packageName] = (result[packageName] ?: 0L) + duration
+
+    val totals = mutableMapOf<String, Long>()
+    val daily = mutableMapOf<String, MutableMap<String, Long>>()
+    val event = UsageEvents.Event()
+    var screenVisible = true
+    var currentPackage: String? = null
+    var currentStartedAt = scanStartMs
+
+    fun closeCurrent(atMs: Long) {
+      val packageName = currentPackage
+      if (packageName != null && screenVisible) {
+        addVisibleInterval(
+          packageName = packageName,
+          fromMs = currentStartedAt,
+          toMs = atMs,
+          reportStartMs = startMs,
+          reportEndMs = endMs,
+          totals = totals,
+          daily = daily
+        )
+      }
+      currentStartedAt = atMs
+    }
+
+    while (events.hasNextEvent()) {
+      events.getNextEvent(event)
+      val timestamp = event.timeStamp.coerceIn(scanStartMs, endMs)
+      when {
+        isScreenHiddenEvent(event.eventType) -> {
+          closeCurrent(timestamp)
+          screenVisible = false
+          currentPackage = null
+        }
+        isScreenShownEvent(event.eventType) -> {
+          closeCurrent(timestamp)
+          screenVisible = true
+          currentPackage = null
+        }
+        isForegroundEvent(event.eventType) -> {
+          closeCurrent(timestamp)
+          val packageName = event.packageName?.trim().orEmpty()
+          currentPackage = packageName.takeIf {
+            screenVisible && isReportableVisiblePackage(context, it, excludedPackages)
+          }
+          currentStartedAt = timestamp
+        }
+        isBackgroundEvent(event.eventType) && event.packageName == currentPackage -> {
+          closeCurrent(timestamp)
+          currentPackage = null
+        }
       }
     }
-    return result
+    closeCurrent(endMs)
+    return VisibleAppUsage(totals, daily)
   }
 
   private fun buildDailyUsage(
-    context: Context,
     startCalendar: Calendar,
     dayCount: Int,
     endMs: Long,
-    excludedPackages: Set<String>,
-    includedPackages: Set<String>
+    includedPackages: Set<String>,
+    source: Map<String, Map<String, Long>>
   ): Map<String, List<Map<String, Any>>> {
     val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
     val result = includedPackages.associateWith { mutableListOf<Map<String, Any>>() }
@@ -352,11 +465,13 @@ internal object ScreenAwarenessUsageRepository {
       val from = dayStart.timeInMillis
       val to = minOf(dayEnd.timeInMillis, endMs)
       if (to <= from) continue
-      val usage = queryPackageUsage(context, from, to, excludedPackages)
       val dateKey = dateFormat.format(Date(from))
       includedPackages.forEach { packageName ->
         result.getOrPut(packageName) { mutableListOf() }.add(
-          mapOf("date" to dateKey, "durationMs" to (usage[packageName] ?: 0L))
+          mapOf(
+            "date" to dateKey,
+            "durationMs" to (source[packageName]?.get(dateKey) ?: 0L)
+          )
         )
       }
     }
@@ -376,10 +491,117 @@ internal object ScreenAwarenessUsageRepository {
     return packages
   }
 
-  private fun getExcludedPackages(context: Context): Set<String> =
-    mutableSetOf("android", "com.android.systemui").apply {
-      addAll(getLauncherPackages(context))
+  private fun addVisibleInterval(
+    packageName: String,
+    fromMs: Long,
+    toMs: Long,
+    reportStartMs: Long,
+    reportEndMs: Long,
+    totals: MutableMap<String, Long>,
+    daily: MutableMap<String, MutableMap<String, Long>>
+  ) {
+    var cursor = maxOf(fromMs, reportStartMs)
+    val intervalEnd = minOf(toMs, reportEndMs)
+    if (intervalEnd <= cursor) return
+    val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
+    while (cursor < intervalEnd) {
+      val currentDay = Calendar.getInstance().apply {
+        timeInMillis = cursor
+      }
+      val nextDay = (currentDay.clone() as Calendar).apply {
+        add(Calendar.DAY_OF_YEAR, 1)
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+      }
+      val segmentEnd = minOf(intervalEnd, nextDay.timeInMillis)
+      val duration = (segmentEnd - cursor).coerceAtLeast(0L)
+      if (duration > 0L) {
+        totals[packageName] = (totals[packageName] ?: 0L) + duration
+        val dateKey = dateFormat.format(Date(cursor))
+        val byDate = daily.getOrPut(packageName) { mutableMapOf() }
+        byDate[dateKey] = (byDate[dateKey] ?: 0L) + duration
+      }
+      cursor = segmentEnd
     }
+  }
+
+  private fun isReportableVisiblePackage(
+    context: Context,
+    packageName: String,
+    excludedPackages: Set<String>
+  ): Boolean {
+    if (
+      packageName.isBlank() ||
+      packageName == ScreenAwarenessContract.UNKNOWN_APP_PACKAGE ||
+      packageName in excludedPackages ||
+      excludedInfrastructurePrefixes.any(packageName::startsWith)
+    ) return false
+
+    return reportablePackageCache.getOrPut(packageName) {
+      try {
+        val packageManager = context.packageManager
+        @Suppress("DEPRECATION")
+        val info = packageManager.getApplicationInfo(packageName, 0)
+        val systemFlags = android.content.pm.ApplicationInfo.FLAG_SYSTEM or
+          android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP
+        val isSystemComponent = info.flags and systemFlags != 0
+        !isSystemComponent || packageManager.getLaunchIntentForPackage(packageName) != null
+      } catch (_: Exception) {
+        // UsageEvents can expose a visible package even when package visibility blocks metadata.
+        true
+      }
+    }
+  }
+
+  private fun isForegroundEvent(eventType: Int): Boolean =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      eventType == UsageEvents.Event.ACTIVITY_RESUMED
+    } else {
+      @Suppress("DEPRECATION")
+      eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
+    }
+
+  private fun isBackgroundEvent(eventType: Int): Boolean =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      eventType == UsageEvents.Event.ACTIVITY_PAUSED ||
+        eventType == UsageEvents.Event.ACTIVITY_STOPPED
+    } else {
+      @Suppress("DEPRECATION")
+      eventType == UsageEvents.Event.MOVE_TO_BACKGROUND
+    }
+
+  private fun isScreenHiddenEvent(eventType: Int): Boolean =
+    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+      eventType == UsageEvents.Event.SCREEN_NON_INTERACTIVE) ||
+      (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+        eventType == UsageEvents.Event.KEYGUARD_SHOWN)
+
+  private fun isScreenShownEvent(eventType: Int): Boolean =
+    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+      eventType == UsageEvents.Event.SCREEN_INTERACTIVE) ||
+      (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+        eventType == UsageEvents.Event.KEYGUARD_HIDDEN)
+
+  @Synchronized
+  private fun getExcludedPackages(context: Context): Set<String> {
+    cachedExcludedPackages?.let { return it }
+    val packages = excludedInfrastructurePackages.toMutableSet().apply {
+      addAll(getLauncherPackages(context))
+      try {
+        context.getSystemService(InputMethodManager::class.java)
+          ?.inputMethodList
+          ?.map { it.packageName.trim() }
+          ?.filter(String::isNotEmpty)
+          ?.let(::addAll)
+      } catch (_: Exception) {
+        // Input-method discovery is best effort; infrastructure filters still apply.
+      }
+    }
+    return packages.toSet().also { cachedExcludedPackages = it }
+  }
 
   private fun resolveAppIdentity(context: Context, packageName: String): Pair<String, String?> {
     return try {
