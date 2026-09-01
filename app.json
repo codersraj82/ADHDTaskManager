@@ -27,6 +27,8 @@
         "WAKE_LOCK",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_SPECIAL_USE",
+        "CAMERA",
+        "RECORD_AUDIO",
         "PACKAGE_USAGE_STATS",
         "SYSTEM_ALERT_WINDOW",
         "RECEIVE_BOOT_COMPLETED",
@@ -66,12 +68,22 @@
       "@react-native-community/datetimepicker",
       "expo-secure-store",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow ADHD Task Manager to choose photos and short videos for Brain Dump.",
+          "cameraPermission": "Allow ADHD Task Manager to capture photos and short videos for Brain Dump.",
+          "microphonePermission": "Allow ADHD Task Manager to include sound in short Brain Dump videos."
+        }
+      ],
+      [
         "expo-audio",
         {
-          "microphonePermission": false,
-          "recordAudioAndroid": false
+          "microphonePermission": "Allow ADHD Task Manager to record short Brain Dump voice notes.",
+          "recordAudioAndroid": true
         }
-      ]
+      ],
+      "expo-video",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true,

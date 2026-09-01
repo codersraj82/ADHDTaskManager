@@ -27,8 +27,9 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import { Feather } from "@expo/vector-icons";
-import { router, useFocusEffect } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import InspirationalMarquee from "../../components/header/InspirationalMarquee";
+import BrainDumpQuickCapture from "../../components/brain-dump/BrainDumpQuickCapture";
 
 import * as Notifications from "expo-notifications";
 import DatePickerModal from "../../components/DatePickerModal";
@@ -214,6 +215,12 @@ import {
   removeAttachmentFromTask,
   serializeTaskAttachments,
 } from "../../utils/taskAttachmentHelpers";
+import {
+  getBrainDumpById,
+  markBrainDumpConverted,
+} from "../../database/brainDumpRepository";
+import { copyBrainDumpMediaToTaskAttachment } from "../../services/brainDumpMediaService";
+import { getBrainDumpTaskPrefill } from "../../utils/brainDumpHelpers.mjs";
 import {
   ENERGY_TASK_FILTERS,
   ENERGY_TASK_SUGGESTION_COPY,
@@ -459,6 +466,7 @@ const affirmations = HEADER_AFFIRMATIONS;
 
 const MENU_ITEMS = [
   { key: "profile", label: "Profile Details", icon: "👤" },
+  { key: "brain-dump", label: "Brain Dump", icon: "🧠" },
   { key: "special", label: "Special Tasks", icon: "⭐" },
   { key: "tasks", label: "Tasks", icon: "🗓️" },
   { key: "mood-tracker", label: "Mood Tracker", icon: "🧠" },
@@ -1372,6 +1380,7 @@ const buildScheduledDateTimeForDay = (dayDate, sourceValue = null) => {
 //*************main component function********* */
 export default function Home() {
   const insets = useSafeAreaInsets();
+  const routeParams = useLocalSearchParams();
   const headerTopPadding = Math.max(insets.top, 8) + APP_HEADER_SAFE_TOP_GAP;
   const headerContainerHeight = headerTopPadding + APP_HEADER_CONTENT_HEIGHT;
   const floatingControlTop = Math.max(insets.top, 8) + 6;
@@ -1698,17 +1707,21 @@ export default function Home() {
   const footerBottomOffset = footerSafeBottom + backupProgressReservedHeight;
   const recoveryFabSize = 44;
   const addTaskFabApproxHeight = 56;
+  const brainDumpFabApproxHeight = 44;
   const returnToFocusFabApproxHeight = 44;
   const floatingBaseBottom = footerBottomOffset + footerHeight + 14;
   const recoveryFabBottom = floatingBaseBottom;
   const addTaskFabBottom = recoveryFabBottom + recoveryFabSize + 8;
-  const focusFabBottom = addTaskFabBottom + addTaskFabApproxHeight + 10;
+  const brainDumpFabBottom = addTaskFabBottom + addTaskFabApproxHeight + 10;
+  const focusFabBottom =
+    brainDumpFabBottom + brainDumpFabApproxHeight + 10;
   const returnToFocusFabReservedBottom = focusFabBottom + 112;
   const recoveryPromptBottom = recoveryFabBottom + 2;
   const maxFloatingStackBottom = Math.max(
     showReturnToFocusButton
       ? returnToFocusFabReservedBottom + returnToFocusFabApproxHeight
       : focusFabBottom + 48,
+    brainDumpFabBottom + brainDumpFabApproxHeight,
     addTaskFabBottom + addTaskFabApproxHeight,
     recoveryFabBottom + recoveryFabSize
   );
@@ -6845,6 +6858,13 @@ export default function Home() {
   }, [activeTaskId, currentAffirmation, progressPercentage, tasks]);
 
   const [modalVisible, setModalVisible] = useState(false);
+  const [brainDumpCaptureVisible, setBrainDumpCaptureVisible] = useState(false);
+  const [brainDumpSavedNoticeVisible, setBrainDumpSavedNoticeVisible] =
+    useState(false);
+  const [brainDumpConversionContext, setBrainDumpConversionContext] =
+    useState(null);
+  const brainDumpHandoffKeyRef = useRef("");
+  const brainDumpSavedNoticeTimerRef = useRef(null);
   const [taskName, setTaskName] = useState("");
   const [taskFirstAction, setTaskFirstAction] = useState("");
   const [taskMinimumVersion, setTaskMinimumVersion] = useState("");
@@ -6891,6 +6911,7 @@ export default function Home() {
   useEffect(() => {
     const hasBlockingOverlay = Boolean(
       modalVisible ||
+        brainDumpCaptureVisible ||
         deleteModalVisible ||
         sectionTimeModalVisible ||
         datePickerModal.visible ||
@@ -6921,6 +6942,7 @@ export default function Home() {
   }, [
     activePage,
     backupEmailModal.visible,
+    brainDumpCaptureVisible,
     celebration.visible,
     datePickerModal.visible,
     deleteModalVisible,
@@ -7618,6 +7640,13 @@ export default function Home() {
   };
 
   const openModal = useCallback(() => {
+    if (brainDumpConversionContext?.stagedAttachment) {
+      void removeAttachmentFileIfAppOwned(
+        brainDumpConversionContext.stagedAttachment
+      );
+    }
+    setBrainDumpConversionContext(null);
+
     // ? RESET EDIT STATE
     setEditingTask(null);
     setIsEditMode(false);
@@ -7651,13 +7680,19 @@ export default function Home() {
     setTodayPlanCreateContextActive(false);
 
     setModalVisible(true);
-  }, [resetEnergyEffortPromptState]);
+  }, [brainDumpConversionContext, resetEnergyEffortPromptState]);
 
   const closeTaskModal = useCallback(() => {
+    if (brainDumpConversionContext?.stagedAttachment) {
+      void removeAttachmentFileIfAppOwned(
+        brainDumpConversionContext.stagedAttachment
+      );
+    }
+    setBrainDumpConversionContext(null);
     setModalVisible(false);
     setTodayPlanCreateContextActive(false);
     resetEnergyEffortPromptState();
-  }, [resetEnergyEffortPromptState]);
+  }, [brainDumpConversionContext, resetEnergyEffortPromptState]);
 
   const openModalFromTodayPlan = useCallback(() => {
     const now = new Date();
@@ -7666,6 +7701,85 @@ export default function Home() {
     setSelectedSection(getSectionForCurrentTime(now));
     setScheduledDateTime(formatSqliteDateTime(now));
   }, [openModal]);
+
+  useEffect(() => {
+    const rawId = Array.isArray(routeParams.brainDumpId)
+      ? routeParams.brainDumpId[0]
+      : routeParams.brainDumpId;
+    const rawAction = Array.isArray(routeParams.brainDumpAction)
+      ? routeParams.brainDumpAction[0]
+      : routeParams.brainDumpAction;
+    const brainDumpId = Number(rawId);
+    const action = rawAction === "reminder" ? "reminder" : "task";
+    const handoffKey = `${brainDumpId}:${action}`;
+
+    if (!Number.isFinite(brainDumpId) || brainDumpId <= 0) {
+      brainDumpHandoffKeyRef.current = "";
+      return;
+    }
+    if (brainDumpHandoffKeyRef.current === handoffKey) return;
+    brainDumpHandoffKeyRef.current = handoffKey;
+
+    const openConversion = async () => {
+      const item = getBrainDumpById(brainDumpId);
+      if (!item) {
+        router.setParams({ brainDumpId: "", brainDumpAction: "" });
+        Alert.alert("Brain Dump", "This thought is no longer available.");
+        return;
+      }
+
+      let stagedAttachment = null;
+      if (item.mediaUri) {
+        try {
+          stagedAttachment = await copyBrainDumpMediaToTaskAttachment(item);
+        } catch {
+          Alert.alert(
+            "Media unavailable",
+            "The text can still be used. The original Brain Dump will remain available."
+          );
+        }
+      }
+
+      const prefill = getBrainDumpTaskPrefill(item);
+      openModal();
+      setTaskName(prefill.title);
+      setTaskDetails(prefill.details);
+      setTaskAttachments(stagedAttachment ? [stagedAttachment] : []);
+      setBrainDumpConversionContext({
+        brainDumpId: item.id,
+        action,
+        stagedAttachment,
+      });
+
+      if (action === "reminder") {
+        setTimeout(() => {
+          setDatePickerModal({
+            visible: true,
+            target: "task",
+            section: null,
+            title: "Set Reminder",
+            value: new Date(),
+          });
+        }, 220);
+      }
+      router.setParams({ brainDumpId: "", brainDumpAction: "" });
+    };
+
+    void openConversion();
+  }, [
+    openModal,
+    routeParams.brainDumpAction,
+    routeParams.brainDumpId,
+  ]);
+
+  useEffect(
+    () => () => {
+      if (brainDumpSavedNoticeTimerRef.current) {
+        clearTimeout(brainDumpSavedNoticeTimerRef.current);
+      }
+    },
+    []
+  );
 
   const startFocus = (taskId, durationOverride = null) => {
     const duration =
@@ -8080,6 +8194,27 @@ export default function Home() {
     },
     [focusTaskById, tasks]
   );
+
+  useEffect(() => {
+    const rawViewTaskId = Array.isArray(routeParams.brainDumpViewTaskId)
+      ? routeParams.brainDumpViewTaskId[0]
+      : routeParams.brainDumpViewTaskId;
+    const taskId = Number(rawViewTaskId);
+    if (!tasksHydrated || !Number.isFinite(taskId) || taskId <= 0) return;
+
+    const targetExists = tasks.some((task) => Number(task?.id) === taskId);
+    router.setParams({ brainDumpViewTaskId: "" });
+    if (!targetExists) {
+      Alert.alert(
+        "Task unavailable",
+        "That task may have been deleted. Your original Brain Dump is still available."
+      );
+      return;
+    }
+    setTimeout(() => {
+      scrollToTask(taskId, { highlight: true, allowCompleted: true });
+    }, 180);
+  }, [routeParams.brainDumpViewTaskId, scrollToTask, tasks, tasksHydrated]);
 
   const handleSelectProgressTask = useCallback(
     (task) => {
@@ -10019,6 +10154,26 @@ export default function Home() {
         scope,
         primaryTaskId: editingTask?.id ?? null,
       });
+      if (
+        saveResult?.mode === "create" &&
+        brainDumpConversionContext?.brainDumpId &&
+        savedTasks[0]?.id
+      ) {
+        try {
+          markBrainDumpConverted(
+            brainDumpConversionContext.brainDumpId,
+            brainDumpConversionContext.action,
+            savedTasks[0].id
+          );
+        } catch (conversionError) {
+          console.log("Brain Dump conversion relation update failed:", conversionError);
+          Alert.alert(
+            "Task saved",
+            "The task was saved, but the Brain Dump status could not be updated. The original thought is still safe."
+          );
+        }
+        setBrainDumpConversionContext(null);
+      }
       if (todayPlanCreateContextActive && source === "taskReminder") {
         const { start, end } = getDayBounds(new Date());
         const hasTodayTask = savedTasks.some((task) => {
@@ -10131,6 +10286,17 @@ export default function Home() {
 
   const handleSaveTask = async () => {
     if (!taskName.trim() || taskSaveInFlightRef.current) return;
+
+    if (
+      brainDumpConversionContext?.action === "reminder" &&
+      !scheduledDateTime
+    ) {
+      Alert.alert(
+        "Choose a reminder time",
+        "Select a date and time so the existing reminder system can schedule this gently."
+      );
+      return;
+    }
 
     const draft = buildTaskDraftPayload();
 
@@ -12016,6 +12182,11 @@ export default function Home() {
     if (pageKey === "profile") {
       Keyboard.dismiss();
       router.push("/profile/edit");
+      return;
+    }
+    if (pageKey === "brain-dump") {
+      Keyboard.dismiss();
+      router.push("/brain-dump" as never);
       return;
     }
     if (pageKey === "screen-awareness" || pageKey === "screen-usage") {
@@ -18085,6 +18256,22 @@ export default function Home() {
               {isEditMode ? "Edit Task ✏️" : "New Task ✨"}
             </Text>
 
+            {brainDumpConversionContext ? (
+              <View className="mb-4 rounded-2xl border border-[#66b9b9]/35 bg-[#123131]/65 p-3">
+                <Text className="text-[#66b9b9] text-[11px] font-black uppercase tracking-widest">
+                  From Brain Dump
+                </Text>
+                <Text className="text-[#E8F4F4] text-xs mt-1">
+                  {brainDumpConversionContext.action === "reminder"
+                    ? "Choose a date and time, then save using the normal reminder flow."
+                    : "Review anything you want, then save using the normal task flow."}
+                </Text>
+                <Text className="text-[#9FB5B5] text-[11px] mt-1">
+                  The original thought will stay in Brain Dump.
+                </Text>
+              </View>
+            ) : null}
+
             <TextInput
               placeholder="Enter task..."
               placeholderTextColor={COLORS.muted}
@@ -19066,6 +19253,23 @@ export default function Home() {
         </TouchableOpacity>
       ) : null}
 
+      {!isKeyboardVisible ? (
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Brain Dump"
+          accessibilityHint="Capture something before you forget it"
+          activeOpacity={0.86}
+          onPress={() => setBrainDumpCaptureVisible(true)}
+          style={{ bottom: brainDumpFabBottom }}
+          className="absolute right-5 flex-row items-center bg-[#123131] py-3 px-4 rounded-full shadow-xl shadow-[#66b9b9]/20 border border-[#66b9b9]/50"
+        >
+          <Feather name="edit-3" size={15} color="#66b9b9" />
+          <Text className="ml-2 text-[#66b9b9] font-black uppercase tracking-widest text-[11px]">
+            Brain Dump
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+
       <Animated.View
         style={{
           bottom: addTaskFabBottom,
@@ -19117,6 +19321,31 @@ export default function Home() {
           </View>
         ) : null}
       </TouchableOpacity>
+
+      {brainDumpSavedNoticeVisible ? (
+        <View
+          pointerEvents="none"
+          style={{ bottom: maxFloatingStackBottom + 10 }}
+          className="absolute right-5 rounded-2xl border border-[#7DFFB3]/40 bg-[#123131] px-4 py-3 shadow-xl shadow-[#7DFFB3]/15"
+        >
+          <Text className="text-[#7DFFB3] text-xs font-black">Thought saved</Text>
+        </View>
+      ) : null}
+
+      <BrainDumpQuickCapture
+        visible={brainDumpCaptureVisible}
+        onClose={() => setBrainDumpCaptureVisible(false)}
+        onSaved={() => {
+          setBrainDumpSavedNoticeVisible(true);
+          if (brainDumpSavedNoticeTimerRef.current) {
+            clearTimeout(brainDumpSavedNoticeTimerRef.current);
+          }
+          brainDumpSavedNoticeTimerRef.current = setTimeout(() => {
+            setBrainDumpSavedNoticeVisible(false);
+            brainDumpSavedNoticeTimerRef.current = null;
+          }, 2200);
+        }}
+      />
 
       <Modal visible={celebration.visible} transparent animationType="fade">
         <View className="flex-1 bg-[#061414]/95 justify-center items-center px-8">

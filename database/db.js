@@ -63,6 +63,33 @@ export const initDB = () => {
       createdAt TEXT,
       updatedAt TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS brain_dumps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      captureType TEXT NOT NULL DEFAULT 'text',
+      text TEXT,
+      transcript TEXT,
+      mediaUri TEXT,
+      mimeType TEXT,
+      fileName TEXT,
+      fileSize INTEGER,
+      audioDurationMs INTEGER,
+      videoDurationMs INTEGER,
+      width INTEGER,
+      height INTEGER,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'thought',
+      convertedTaskId INTEGER,
+      convertedReminderId INTEGER,
+      isArchived INTEGER NOT NULL DEFAULT 0,
+      deletedAt TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_brain_dumps_created_at
+      ON brain_dumps(createdAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_brain_dumps_status
+      ON brain_dumps(status, deletedAt);
   `);
 
   // 2️⃣ 🛡️ The Migration Loop (Improved with Defaults)
