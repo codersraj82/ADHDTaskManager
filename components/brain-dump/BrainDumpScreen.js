@@ -1,13 +1,15 @@
 import { Feather } from "@expo/vector-icons";
-import { router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Modal, SectionList } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+  clearBrainDumpReminder,
   getBrainDumpById,
   keepBrainDumpAsThought,
   listBrainDumps,
   listExpiredDeletedBrainDumps,
+  markBrainDumpReminderScheduled,
   permanentlyDeleteBrainDumpRecord,
   restoreBrainDump,
   softDeleteBrainDump,
@@ -17,6 +19,10 @@ import {
   purgeExpiredBrainDumpMedia,
   removeBrainDumpMedia,
 } from "../../services/brainDumpMediaService";
+import {
+  cancelBrainDumpReminder,
+  scheduleBrainDumpReminder,
+} from "../../services/brainDumpReminderService";
 import {
   BRAIN_DUMP_CAPTURE_TYPES,
   BRAIN_DUMP_DELETE_UNDO_MS,
@@ -35,6 +41,7 @@ import {
 import BrainDumpAudioPlayer from "./BrainDumpAudioPlayer";
 import BrainDumpQuickCapture from "./BrainDumpQuickCapture";
 import BrainDumpVideoPlayer from "./BrainDumpVideoPlayer";
+import DatePickerModal from "../DatePickerModal";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -67,8 +74,20 @@ const formatCapturedAt = (value) => {
   });
 };
 
+const formatReminderAt = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Reminder time unavailable";
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
 export default function BrainDumpScreen() {
   const insets = useSafeAreaInsets();
+  const routeParams = useLocalSearchParams();
   const [items, setItems] = useState([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -78,12 +97,26 @@ export default function BrainDumpScreen() {
   const [viewer, setViewer] = useState(null);
   const [missingMediaIds, setMissingMediaIds] = useState(() => new Set());
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [reminderTarget, setReminderTarget] = useState(null);
+  const [reminderSaving, setReminderSaving] = useState(false);
   const deleteTimerRef = useRef(null);
+  const sectionListRef = useRef(null);
+  const reminderHandoffKeyRef = useRef("");
+
+  const rawHighlightedId = Array.isArray(routeParams.highlightBrainDumpId)
+    ? routeParams.highlightBrainDumpId[0]
+    : routeParams.highlightBrainDumpId;
+  const highlightedId = Number(rawHighlightedId);
 
   const loadItems = useCallback(async () => {
     try {
       const expired = listExpiredDeletedBrainDumps();
       if (expired.length) {
+        await Promise.all(
+          expired.map((item) =>
+            cancelBrainDumpReminder(item.convertedReminderId)
+          )
+        );
         await purgeExpiredBrainDumpMedia(expired, permanentlyDeleteBrainDumpRecord);
       }
       setItems(listBrainDumps());
@@ -104,6 +137,28 @@ export default function BrainDumpScreen() {
     }, [loadItems])
   );
 
+  useEffect(() => {
+    const rawId = Array.isArray(routeParams.setReminderBrainDumpId)
+      ? routeParams.setReminderBrainDumpId[0]
+      : routeParams.setReminderBrainDumpId;
+    const brainDumpId = Number(rawId);
+    if (!Number.isFinite(brainDumpId) || brainDumpId <= 0) {
+      reminderHandoffKeyRef.current = "";
+      return;
+    }
+    const handoffKey = String(brainDumpId);
+    if (reminderHandoffKeyRef.current === handoffKey) return;
+    reminderHandoffKeyRef.current = handoffKey;
+
+    const item = getBrainDumpById(brainDumpId);
+    router.setParams({ setReminderBrainDumpId: "" });
+    if (!item) {
+      Alert.alert("Brain Dump", "This thought is no longer available.");
+      return;
+    }
+    setReminderTarget(item);
+  }, [routeParams.setReminderBrainDumpId]);
+
   const visibleItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return items.filter((item) => {
@@ -117,10 +172,34 @@ export default function BrainDumpScreen() {
 
   const sections = useMemo(() => groupBrainDumpsByTime(visibleItems), [visibleItems]);
 
+  useEffect(() => {
+    if (!Number.isFinite(highlightedId) || highlightedId <= 0) return;
+    setFilter("all");
+    setQuery("");
+
+    const sectionIndex = sections.findIndex((section) =>
+      section.data.some((item) => item.id === highlightedId)
+    );
+    if (sectionIndex < 0) return;
+    const itemIndex = sections[sectionIndex].data.findIndex(
+      (item) => item.id === highlightedId
+    );
+    const timer = setTimeout(() => {
+      sectionListRef.current?.scrollToLocation?.({
+        sectionIndex,
+        itemIndex,
+        viewPosition: 0.25,
+        animated: true,
+      });
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [highlightedId, sections]);
+
   const finalizeDelete = useCallback(async (item) => {
     if (!item?.id) return;
     const latest = getBrainDumpById(item.id, { includeDeleted: true });
     if (!latest?.deletedAt) return;
+    await cancelBrainDumpReminder(latest.convertedReminderId);
     await removeBrainDumpMedia(latest);
     permanentlyDeleteBrainDumpRecord(latest.id);
   }, []);
@@ -129,7 +208,7 @@ export default function BrainDumpScreen() {
     (item) => {
       Alert.alert(
         "Delete this thought?",
-        "You can undo for a few seconds. A task or reminder already created from it will stay available.",
+        "You can undo for a few seconds. Any task already created will stay available. This thought's reminder will be cancelled after the undo window.",
         [
           { text: "Keep thought", style: "cancel" },
           {
@@ -176,18 +255,88 @@ export default function BrainDumpScreen() {
     setViewer(item);
   }, []);
 
-  const startConversion = useCallback((item, action) => {
-    const relationId =
-      action === "reminder" ? item.convertedReminderId : item.convertedTaskId;
-    const alreadyConverted = Boolean(relationId);
-
+  const startTaskConversion = useCallback((item) => {
+    const relationId = item.convertedTaskId;
     router.replace({
       pathname: "/(tabs)",
-      params: alreadyConverted && relationId
+      params: relationId
         ? { brainDumpViewTaskId: String(relationId) }
-        : { brainDumpId: String(item.id), brainDumpAction: action },
+        : { brainDumpId: String(item.id), brainDumpAction: "task" },
     });
   }, []);
+
+  const openReminderPicker = useCallback((item) => {
+    setReminderTarget(item);
+  }, []);
+
+  const saveReminder = useCallback(
+    async (date) => {
+      const item = reminderTarget;
+      if (!item || reminderSaving) return;
+      if (!(date instanceof Date) || date.getTime() <= Date.now()) {
+        Alert.alert(
+          "Choose a future time",
+          "Pick a time ahead of now for this gentle reminder."
+        );
+        return;
+      }
+
+      setReminderSaving(true);
+      let newNotificationId = null;
+      try {
+        newNotificationId = await scheduleBrainDumpReminder({
+          brainDumpId: item.id,
+          date,
+        });
+        markBrainDumpReminderScheduled(
+          item.id,
+          newNotificationId,
+          date.toISOString()
+        );
+        if (
+          item.convertedReminderId &&
+          String(item.convertedReminderId) !== String(newNotificationId)
+        ) {
+          await cancelBrainDumpReminder(item.convertedReminderId);
+        }
+        setReminderTarget(null);
+        await loadItems();
+        Alert.alert(
+          "Reminder set",
+          `We will gently bring this thought back on ${formatReminderAt(
+            date
+          )}. It has not been turned into a task.`
+        );
+      } catch (error) {
+        if (newNotificationId) {
+          await cancelBrainDumpReminder(newNotificationId);
+        }
+        const message = String(error?.message || "");
+        Alert.alert(
+          message === "BRAIN_DUMP_REMINDER_PERMISSION_DENIED"
+            ? "Notifications are off"
+            : "Reminder not set",
+          message === "BRAIN_DUMP_REMINDER_PERMISSION_DENIED"
+            ? "Allow notifications in Android settings, then try setting this thought reminder again."
+            : "This thought is still safely saved. Please choose the reminder time again."
+        );
+      } finally {
+        setReminderSaving(false);
+      }
+    },
+    [loadItems, reminderSaving, reminderTarget]
+  );
+
+  const cancelReminderForItem = useCallback(
+    async (item, { keepStatus = false } = {}) => {
+      await cancelBrainDumpReminder(item?.convertedReminderId);
+      clearBrainDumpReminder(item.id);
+      if (keepStatus) keepBrainDumpAsThought(item.id);
+      setActionItem(null);
+      await loadItems();
+    },
+    [loadItems]
+  );
 
   const showMore = useCallback((item) => setActionItem(item), []);
 
@@ -255,11 +404,22 @@ export default function BrainDumpScreen() {
   const renderItem = ({ item }) => {
     const meta = CAPTURE_META[item.captureType] || CAPTURE_META.text;
     const displayText = getBrainDumpDisplayText(item);
-    const isTask = item.status === BRAIN_DUMP_STATUSES.CONVERTED_TASK;
-    const isReminder = item.status === BRAIN_DUMP_STATUSES.CONVERTED_REMINDER;
+    const isTask = Boolean(item.convertedTaskId);
+    const reminderTime = new Date(item.reminderScheduledAt || "").getTime();
+    const isReminderScheduled =
+      Boolean(item.convertedReminderId) &&
+      Number.isFinite(reminderTime) &&
+      reminderTime > Date.now();
+    const isHighlighted = item.id === highlightedId;
 
     return (
-      <View className="mx-4 mb-3 rounded-3xl border border-[#337a7a]/30 bg-[#0B1F1F] p-4">
+      <View
+        className={`mx-4 mb-3 rounded-3xl border p-4 ${
+          isHighlighted
+            ? "border-[#FFD166]/70 bg-[#123131]"
+            : "border-[#337a7a]/30 bg-[#0B1F1F]"
+        }`}
+      >
         <View className="flex-row items-start justify-between">
           <View className="flex-row items-center flex-1 pr-3">
             <View className="w-9 h-9 rounded-full bg-[#123131] border border-[#66b9b9]/30 items-center justify-center">
@@ -289,13 +449,22 @@ export default function BrainDumpScreen() {
         {displayText ? (
           <Text className="text-[#E8F4F4] text-sm leading-5 mt-3">{displayText}</Text>
         ) : null}
+        {item.reminderScheduledAt ? (
+          <View className="flex-row items-center mt-3">
+            <Feather name="bell" size={13} color="#9FB5B5" />
+            <Text className="text-[#9FB5B5] text-[11px] ml-2">
+              {isReminderScheduled ? "Reminder: " : "Reminder sent: "}
+              {formatReminderAt(item.reminderScheduledAt)}
+            </Text>
+          </View>
+        ) : null}
         {renderMedia(item)}
 
         <View className="flex-row mt-4">
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel={isTask ? "View created task" : "Convert thought to task"}
-            onPress={() => startConversion(item, "task")}
+            onPress={() => startTaskConversion(item)}
             className="flex-1 mr-2 rounded-full border border-[#66b9b9]/40 bg-[#123131]/70 py-2.5 items-center"
           >
             <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
@@ -304,12 +473,16 @@ export default function BrainDumpScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             accessibilityRole="button"
-            accessibilityLabel={isReminder ? "View created reminder" : "Set reminder from thought"}
-            onPress={() => startConversion(item, "reminder")}
+            accessibilityLabel={
+              isReminderScheduled
+                ? "Change thought reminder"
+                : "Set reminder for thought"
+            }
+            onPress={() => openReminderPicker(item)}
             className="flex-1 mr-2 rounded-full border border-[#66b9b9]/40 bg-[#123131]/70 py-2.5 items-center"
           >
             <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest">
-              {isReminder ? "View Reminder" : "Reminder"}
+              {isReminderScheduled ? "Change" : "Reminder"}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -396,6 +569,7 @@ export default function BrainDumpScreen() {
       </View>
 
       <SectionList
+        ref={sectionListRef}
         sections={sections}
         keyExtractor={(item) => String(item.id)}
         renderItem={renderItem}
@@ -469,6 +643,24 @@ export default function BrainDumpScreen() {
         onSaved={() => void loadItems()}
       />
 
+      <DatePickerModal
+        visible={Boolean(reminderTarget)}
+        value={
+          reminderTarget?.reminderScheduledAt ||
+          new Date(Date.now() + 5 * 60 * 1000)
+        }
+        title={
+          reminderTarget?.convertedReminderId
+            ? "Change Thought Reminder"
+            : "Remind Me About This"
+        }
+        confirmLabel={reminderSaving ? "Setting..." : "Set Reminder"}
+        onCancel={() => {
+          if (!reminderSaving) setReminderTarget(null);
+        }}
+        onConfirm={(date) => void saveReminder(date)}
+      />
+
       <Modal
         visible={Boolean(actionItem)}
         transparent
@@ -537,7 +729,12 @@ export default function BrainDumpScreen() {
                 accessibilityRole="button"
                 accessibilityLabel="Keep as thought"
                 onPress={() => {
-                  keepBrainDumpAsThought(actionItem.id);
+                  const item = actionItem;
+                  if (item.status === BRAIN_DUMP_STATUSES.CONVERTED_REMINDER) {
+                    void cancelReminderForItem(item, { keepStatus: true });
+                    return;
+                  }
+                  keepBrainDumpAsThought(item.id);
                   setActionItem(null);
                   void loadItems();
                 }}
@@ -545,6 +742,33 @@ export default function BrainDumpScreen() {
               >
                 <Feather name="bookmark" size={15} color="#66b9b9" />
                 <Text className="text-[#E8F4F4] text-sm font-bold ml-3">Keep as thought</Text>
+              </TouchableOpacity>
+            ) : null}
+
+            {actionItem?.convertedReminderId ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Cancel Brain Dump reminder"
+                onPress={() => {
+                  const item = actionItem;
+                  Alert.alert(
+                    "Cancel this reminder?",
+                    "The thought will stay safely in Brain Dump.",
+                    [
+                      { text: "Keep reminder", style: "cancel" },
+                      {
+                        text: "Cancel reminder",
+                        onPress: () => void cancelReminderForItem(item),
+                      },
+                    ]
+                  );
+                }}
+                className="flex-row items-center rounded-2xl border border-[#337a7a]/30 bg-[#123131]/60 p-3.5 mb-2"
+              >
+                <Feather name="bell-off" size={15} color="#66b9b9" />
+                <Text className="text-[#E8F4F4] text-sm font-bold ml-3">
+                  Cancel reminder
+                </Text>
               </TouchableOpacity>
             ) : null}
 

@@ -220,6 +220,7 @@ import {
   markBrainDumpConverted,
 } from "../../database/brainDumpRepository";
 import { copyBrainDumpMediaToTaskAttachment } from "../../services/brainDumpMediaService";
+import { BRAIN_DUMP_REMINDER_TYPE } from "../../services/brainDumpReminderService";
 import { getBrainDumpTaskPrefill } from "../../utils/brainDumpHelpers.mjs";
 import {
   ENERGY_TASK_FILTERS,
@@ -5900,6 +5901,23 @@ export default function Home() {
       if (hasHandledNotificationResponse(dedupeKey)) return;
       markNotificationResponseHandled(dedupeKey);
 
+      if (data?.type === BRAIN_DUMP_REMINDER_TYPE) {
+        const brainDumpId = Number(data?.brainDumpId);
+        if (Number.isFinite(brainDumpId) && brainDumpId > 0) {
+          router.push({
+            pathname: "/brain-dump",
+            params: { highlightBrainDumpId: String(brainDumpId) },
+          } as any);
+        } else {
+          Alert.alert(
+            "Brain Dump",
+            "This reminder could not identify its saved thought."
+          );
+        }
+        void Notifications.clearLastNotificationResponseAsync().catch(() => null);
+        return;
+      }
+
       if (data?.type === "planTodayReminder") {
         const section = normalizeTodayPlanSection(data?.section);
         setPendingTodayPlanSheet({ open: true, section });
@@ -7710,11 +7728,17 @@ export default function Home() {
       ? routeParams.brainDumpAction[0]
       : routeParams.brainDumpAction;
     const brainDumpId = Number(rawId);
-    const action = rawAction === "reminder" ? "reminder" : "task";
-    const handoffKey = `${brainDumpId}:${action}`;
+    const handoffKey = `${brainDumpId}:task`;
 
     if (!Number.isFinite(brainDumpId) || brainDumpId <= 0) {
       brainDumpHandoffKeyRef.current = "";
+      return;
+    }
+    if (rawAction === "reminder") {
+      router.replace({
+        pathname: "/brain-dump",
+        params: { setReminderBrainDumpId: String(brainDumpId) },
+      } as any);
       return;
     }
     if (brainDumpHandoffKeyRef.current === handoffKey) return;
@@ -7747,21 +7771,9 @@ export default function Home() {
       setTaskAttachments(stagedAttachment ? [stagedAttachment] : []);
       setBrainDumpConversionContext({
         brainDumpId: item.id,
-        action,
+        action: "task",
         stagedAttachment,
       });
-
-      if (action === "reminder") {
-        setTimeout(() => {
-          setDatePickerModal({
-            visible: true,
-            target: "task",
-            section: null,
-            title: "Set Reminder",
-            value: new Date(),
-          });
-        }, 220);
-      }
       router.setParams({ brainDumpId: "", brainDumpAction: "" });
     };
 
@@ -10162,7 +10174,7 @@ export default function Home() {
         try {
           markBrainDumpConverted(
             brainDumpConversionContext.brainDumpId,
-            brainDumpConversionContext.action,
+            "task",
             savedTasks[0].id
           );
         } catch (conversionError) {
@@ -10286,17 +10298,6 @@ export default function Home() {
 
   const handleSaveTask = async () => {
     if (!taskName.trim() || taskSaveInFlightRef.current) return;
-
-    if (
-      brainDumpConversionContext?.action === "reminder" &&
-      !scheduledDateTime
-    ) {
-      Alert.alert(
-        "Choose a reminder time",
-        "Select a date and time so the existing reminder system can schedule this gently."
-      );
-      return;
-    }
 
     const draft = buildTaskDraftPayload();
 
@@ -18262,9 +18263,7 @@ export default function Home() {
                   From Brain Dump
                 </Text>
                 <Text className="text-[#E8F4F4] text-xs mt-1">
-                  {brainDumpConversionContext.action === "reminder"
-                    ? "Choose a date and time, then save using the normal reminder flow."
-                    : "Review anything you want, then save using the normal task flow."}
+                  Review anything you want, then save using the normal task flow.
                 </Text>
                 <Text className="text-[#9FB5B5] text-[11px] mt-1">
                   The original thought will stay in Brain Dump.

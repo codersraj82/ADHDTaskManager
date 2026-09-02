@@ -81,7 +81,8 @@ export const initDB = () => {
       updatedAt TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'thought',
       convertedTaskId INTEGER,
-      convertedReminderId INTEGER,
+      convertedReminderId TEXT,
+      reminderScheduledAt TEXT,
       isArchived INTEGER NOT NULL DEFAULT 0,
       deletedAt TEXT
     );
@@ -156,6 +157,24 @@ export const initDB = () => {
       );
     } catch (_e) {
       // If error, it means column already exists - we ignore it.
+    }
+  });
+
+  const brainDumpMigrations = [
+    { name: "reminderScheduledAt", type: "TEXT" },
+  ];
+  const brainDumpColumns = db
+    .getAllSync("PRAGMA table_info(brain_dumps)")
+    .map((column) => column.name);
+
+  brainDumpMigrations.forEach((column) => {
+    if (brainDumpColumns.includes(column.name)) return;
+    try {
+      db.execSync(
+        `ALTER TABLE brain_dumps ADD COLUMN ${column.name} ${column.type};`
+      );
+    } catch (_e) {
+      // Existing installations may already have the column.
     }
   });
 

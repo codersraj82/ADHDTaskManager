@@ -15,6 +15,11 @@ const nullableText = (value) => {
   const normalized = normalizeBrainDumpText(value);
   return normalized || null;
 };
+const nullableIdentifier = (value) => {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+};
 const nullableNumber = (value) => {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : null;
@@ -39,7 +44,8 @@ export const ensureBrainDumpTable = () => {
       updatedAt TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'thought',
       convertedTaskId INTEGER,
-      convertedReminderId INTEGER,
+      convertedReminderId TEXT,
+      reminderScheduledAt TEXT,
       isArchived INTEGER NOT NULL DEFAULT 0,
       deletedAt TEXT
     );
@@ -48,6 +54,13 @@ export const ensureBrainDumpTable = () => {
     CREATE INDEX IF NOT EXISTS idx_brain_dumps_status
       ON brain_dumps(status, deletedAt);
   `);
+
+  const columns = db
+    .getAllSync("PRAGMA table_info(brain_dumps)")
+    .map((column) => column.name);
+  if (!columns.includes("reminderScheduledAt")) {
+    db.execSync("ALTER TABLE brain_dumps ADD COLUMN reminderScheduledAt TEXT;");
+  }
 };
 
 const normalizeRow = (row) =>
@@ -61,7 +74,7 @@ const normalizeRow = (row) =>
         width: nullableNumber(row.width),
         height: nullableNumber(row.height),
         convertedTaskId: nullableNumber(row.convertedTaskId),
-        convertedReminderId: nullableNumber(row.convertedReminderId),
+        convertedReminderId: nullableIdentifier(row.convertedReminderId),
         isArchived: Number(row.isArchived || 0) === 1,
       }
     : null;
@@ -109,7 +122,8 @@ const normalizePayload = (input = {}, existing = null) => {
     height: nullableNumber(input.height),
     status,
     convertedTaskId: nullableNumber(input.convertedTaskId),
-    convertedReminderId: nullableNumber(input.convertedReminderId),
+    convertedReminderId: nullableIdentifier(input.convertedReminderId),
+    reminderScheduledAt: nullableText(input.reminderScheduledAt),
     isArchived: input.isArchived === true,
   };
 };
@@ -123,8 +137,9 @@ export const createBrainDump = (input = {}) => {
     `INSERT INTO brain_dumps (
       captureType, text, transcript, mediaUri, mimeType, fileName, fileSize,
       audioDurationMs, videoDurationMs, width, height, createdAt, updatedAt,
-      status, convertedTaskId, convertedReminderId, isArchived, deletedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      status, convertedTaskId, convertedReminderId, reminderScheduledAt,
+      isArchived, deletedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     [
       payload.captureType,
       payload.text,
@@ -142,6 +157,7 @@ export const createBrainDump = (input = {}) => {
       payload.status,
       payload.convertedTaskId,
       payload.convertedReminderId,
+      payload.reminderScheduledAt,
       payload.isArchived ? 1 : 0,
     ]
   );
@@ -160,7 +176,7 @@ export const updateBrainDump = (id, input = {}) => {
       captureType = ?, text = ?, transcript = ?, mediaUri = ?, mimeType = ?,
       fileName = ?, fileSize = ?, audioDurationMs = ?, videoDurationMs = ?,
       width = ?, height = ?, updatedAt = ?, status = ?, convertedTaskId = ?,
-      convertedReminderId = ?, isArchived = ? WHERE id = ?`,
+      convertedReminderId = ?, reminderScheduledAt = ?, isArchived = ? WHERE id = ?`,
     [
       payload.captureType,
       payload.text,
@@ -177,6 +193,7 @@ export const updateBrainDump = (id, input = {}) => {
       payload.status,
       payload.convertedTaskId,
       payload.convertedReminderId,
+      payload.reminderScheduledAt,
       payload.isArchived ? 1 : 0,
       Number(id),
     ]
@@ -193,6 +210,32 @@ export const markBrainDumpConverted = (id, conversionType, relationId) => {
     ...(isReminder
       ? { convertedReminderId: relationId }
       : { convertedTaskId: relationId }),
+  });
+};
+
+export const markBrainDumpReminderScheduled = (
+  id,
+  notificationId,
+  scheduledAt
+) =>
+  updateBrainDump(id, {
+    status: BRAIN_DUMP_STATUSES.CONVERTED_REMINDER,
+    convertedReminderId: notificationId,
+    reminderScheduledAt: scheduledAt,
+  });
+
+export const clearBrainDumpReminder = (id) => {
+  const item = getBrainDumpById(id, { includeDeleted: true });
+  if (!item) return null;
+  return updateBrainDump(id, {
+    status:
+      item.status === BRAIN_DUMP_STATUSES.CONVERTED_REMINDER
+        ? item.convertedTaskId
+          ? BRAIN_DUMP_STATUSES.CONVERTED_TASK
+          : BRAIN_DUMP_STATUSES.THOUGHT
+        : item.status,
+    convertedReminderId: null,
+    reminderScheduledAt: null,
   });
 };
 
