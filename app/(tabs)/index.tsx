@@ -1444,6 +1444,8 @@ export default function Home() {
   const [focusCompletionCountdown, setFocusCompletionCountdown] = useState(0);
   const [focusStartTimestamp, setFocusStartTimestamp] = useState(null);
   const [focusEndTimestamp, setFocusEndTimestamp] = useState(null);
+  const [postFocusDecision, setPostFocusDecision] = useState(null);
+  const [isPostFocusDecisionBusy, setIsPostFocusDecisionBusy] = useState(false);
 
   const [activeTaskId, setActiveTaskId] = useState(null);
 
@@ -3024,6 +3026,7 @@ export default function Home() {
   const affirmationOpacity = useRef(new Animated.Value(1)).current;
   const drawerX = useRef(new Animated.Value(-320)).current;
   const focusDismissTimeoutRef = useRef(null);
+  const celebrationTimeoutRef = useRef(null);
   const welcomeVoiceTimeoutRef = useRef(null);
   const focusSessionRecordedRef = useRef(false);
   const hasAutoExpandedInitialSection = useRef(false);
@@ -3037,6 +3040,7 @@ export default function Home() {
   const focusCompletionNotificationIdRef = useRef(null);
   const focusLockScreenSessionIdRef = useRef(null);
   const timerCompletionStampRef = useRef(null);
+  const handledPostFocusCompletionRef = useRef(null);
   const focusStopInProgressRef = useRef(false);
   const lastFocusReminderBoundaryRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
@@ -6201,7 +6205,7 @@ export default function Home() {
   }, [editingTask, isEditMode]);
 
   useEffect(() => {
-    if (celebration.visible) {
+    if (celebration.visible || postFocusDecision) {
       Animated.spring(modalScale, {
         toValue: 1,
         useNativeDriver: true,
@@ -6209,7 +6213,7 @@ export default function Home() {
     } else {
       modalScale.setValue(0.8);
     }
-  }, [celebration.visible]);
+  }, [celebration.visible, modalScale, postFocusDecision]);
 
   useEffect(() => {
     if (
@@ -6323,6 +6327,61 @@ export default function Home() {
   ]);
 
   useEffect(() => {
+    if (!isFocusCompleted || activeTaskId === null || activeTaskId === undefined) {
+      return;
+    }
+
+    const task = tasks.find(
+      (candidate) =>
+        Number(candidate?.id) === Number(activeTaskId) &&
+        !candidate?.completed &&
+        !isTaskDeletedOrArchived(candidate)
+    );
+    if (!task) return;
+
+    const sessionKey =
+      timerCompletionStampRef.current ||
+      `restored-${String(activeTaskId)}-${String(currentDuration)}`;
+    if (handledPostFocusCompletionRef.current === sessionKey) return;
+
+    handledPostFocusCompletionRef.current = sessionKey;
+    setIsPostFocusDecisionBusy(false);
+    setPostFocusDecision({
+      sessionKey,
+      taskId: task.id,
+      taskTitle: task.title,
+    });
+  }, [activeTaskId, currentDuration, isFocusCompleted, tasks]);
+
+  useEffect(() => {
+    if (!postFocusDecision) return;
+
+    const task = tasks.find(
+      (candidate) =>
+        Number(candidate?.id) === Number(postFocusDecision.taskId) &&
+        !candidate?.completed &&
+        !isTaskDeletedOrArchived(candidate)
+    );
+
+    if (!task) {
+      setPostFocusDecision(null);
+      setIsPostFocusDecisionBusy(false);
+      if (celebrationTimeoutRef.current) {
+        clearTimeout(celebrationTimeoutRef.current);
+        celebrationTimeoutRef.current = null;
+      }
+      setCelebration((prev) => ({ ...prev, visible: false }));
+      return;
+    }
+
+    if (task.title !== postFocusDecision.taskTitle) {
+      setPostFocusDecision((prev) =>
+        prev ? { ...prev, taskTitle: task.title } : prev
+      );
+    }
+  }, [postFocusDecision, tasks]);
+
+  useEffect(() => {
     if (!activeTaskId) return;
 
     const activeTaskExists = tasks.some(
@@ -6374,6 +6433,10 @@ export default function Home() {
       if (welcomeVoiceTimeoutRef.current) {
         clearTimeout(welcomeVoiceTimeoutRef.current);
         welcomeVoiceTimeoutRef.current = null;
+      }
+      if (celebrationTimeoutRef.current) {
+        clearTimeout(celebrationTimeoutRef.current);
+        celebrationTimeoutRef.current = null;
       }
       if (startAssistVoiceHintTimeoutRef.current) {
         clearTimeout(startAssistVoiceHintTimeoutRef.current);
@@ -9178,13 +9241,83 @@ export default function Home() {
   };
 
   const showCelebration = useCallback((message, emoji = "🎉") => {
+    if (celebrationTimeoutRef.current) {
+      clearTimeout(celebrationTimeoutRef.current);
+    }
     setCelebration({ visible: true, message, emoji });
 
-    // auto close after 2.5 sec
-    setTimeout(() => {
+    // Auto close after the existing 5.5-second feedback window.
+    celebrationTimeoutRef.current = setTimeout(() => {
       setCelebration((prev) => ({ ...prev, visible: false }));
+      celebrationTimeoutRef.current = null;
     }, 5500);
   }, []);
+
+  const dismissCelebrationFeedback = useCallback(() => {
+    if (celebrationTimeoutRef.current) {
+      clearTimeout(celebrationTimeoutRef.current);
+      celebrationTimeoutRef.current = null;
+    }
+    setCelebration((prev) => ({ ...prev, visible: false }));
+  }, []);
+
+  const getPendingPostFocusTask = (taskId) =>
+    tasksRef.current.find(
+      (task) =>
+        Number(task?.id) === Number(taskId) &&
+        !task?.completed &&
+        !isTaskDeletedOrArchived(task)
+    ) || null;
+
+  const finishPostFocusDecision = () => {
+    if (isPostFocusDecisionBusy) return;
+    setPostFocusDecision(null);
+    setIsPostFocusDecisionBusy(false);
+    dismissCelebrationFeedback();
+  };
+
+  const handlePostFocusTaskCompleted = async () => {
+    if (!postFocusDecision || isPostFocusDecisionBusy) return;
+
+    setIsPostFocusDecisionBusy(true);
+    const task = getPendingPostFocusTask(postFocusDecision.taskId);
+    if (!task) {
+      setPostFocusDecision(null);
+      setIsPostFocusDecisionBusy(false);
+      dismissCelebrationFeedback();
+      return;
+    }
+
+    setPostFocusDecision(null);
+    dismissCelebrationFeedback();
+    try {
+      await toggleTask(task.id);
+    } finally {
+      setIsPostFocusDecisionBusy(false);
+    }
+  };
+
+  const handlePostFocusAgain = () => {
+    if (!postFocusDecision || isPostFocusDecisionBusy) return;
+
+    setIsPostFocusDecisionBusy(true);
+    const task = getPendingPostFocusTask(postFocusDecision.taskId);
+    setPostFocusDecision(null);
+    dismissCelebrationFeedback();
+
+    if (task) {
+      openFocusDurationSelector(task.id);
+    }
+    setIsPostFocusDecisionBusy(false);
+  };
+
+  const handleCelebrationRequestClose = () => {
+    if (postFocusDecision) {
+      finishPostFocusDecision();
+      return;
+    }
+    dismissCelebrationFeedback();
+  };
 
   const persistStrongAlarmTaskState = useCallback(
     (taskId, patch = {}) => {
@@ -19346,7 +19479,12 @@ export default function Home() {
         }}
       />
 
-      <Modal visible={celebration.visible} transparent animationType="fade">
+      <Modal
+        visible={celebration.visible || !!postFocusDecision}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCelebrationRequestClose}
+      >
         <View className="flex-1 bg-[#061414]/95 justify-center items-center px-8">
           <Animated.View
             style={[
@@ -19357,27 +19495,113 @@ export default function Home() {
             ]}
             className={themedClassName("bg-[#0B1F1F] p-8 rounded-[40px] items-center w-full border border-[#7DFFB3]/50 shadow-2xl shadow-[#7DFFB3]/20")}
           >
-            {/* Emoji */}
-            <Text className="text-5xl mb-4" style={CELEBRATION_EMOJI_TEXT_STYLE}>
-              {celebration.emoji}
-            </Text>
+            {postFocusDecision ? (
+              <>
+                <View className="w-14 h-14 rounded-full bg-[#66b9b9]/15 border border-[#66b9b9]/40 items-center justify-center mb-4">
+                  <Feather name="target" size={28} color="#66b9b9" />
+                </View>
 
-            {/* Message */}
-            <Text className="text-[#E8F4F4] text-xl text-center font-black tracking-tighter mb-6">
-              {celebration.message}
-            </Text>
+                <Text
+                  accessibilityRole="header"
+                  className="text-[#E8F4F4] text-xl text-center font-black tracking-tight"
+                >
+                  Focus Complete
+                </Text>
+                <Text className="text-[#9FB5B5] text-sm text-center font-semibold mt-2">
+                  Your focus session is finished.
+                </Text>
 
-            {/* Button */}
-            <TouchableOpacity
-              onPress={() =>
-                setCelebration((prev) => ({ ...prev, visible: false }))
-              }
-              className="bg-[#7DFFB3] py-3.5 px-8 rounded-2xl w-full shadow-lg shadow-[#7DFFB3]/25"
-            >
-              <Text className="text-[#061414] font-black text-center uppercase tracking-widest">
-                Continue
-              </Text>
-            </TouchableOpacity>
+                <View className="w-full bg-[#061414]/60 border border-[#337a7a]/35 rounded-2xl px-4 py-3 mt-5">
+                  <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest text-center mb-1.5">
+                    Focused task
+                  </Text>
+                  <Text
+                    numberOfLines={3}
+                    className="text-[#E8F4F4] text-base text-center font-black"
+                  >
+                    {postFocusDecision.taskTitle}
+                  </Text>
+                </View>
+
+                <Text className="text-[#E8F4F4] text-base text-center font-black mt-4">
+                  Did you complete this task?
+                </Text>
+                <Text className="text-[#9FB5B5] text-xs leading-5 text-center font-semibold mt-2 mb-5">
+                  Finishing a focus session does not automatically complete the
+                  task.
+                </Text>
+
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Yes, Task Completed"
+                  accessibilityState={{ disabled: isPostFocusDecisionBusy }}
+                  disabled={isPostFocusDecisionBusy}
+                  activeOpacity={0.84}
+                  onPress={() => void handlePostFocusTaskCompleted()}
+                  style={{ opacity: isPostFocusDecisionBusy ? 0.55 : 1 }}
+                  className="bg-[#7DFFB3] py-3.5 px-5 rounded-2xl w-full shadow-lg shadow-[#7DFFB3]/20 flex-row items-center justify-center"
+                >
+                  <Feather name="check" size={17} color="#061414" />
+                  <Text className="text-[#061414] font-black text-center uppercase tracking-widest text-xs ml-2">
+                    Yes, Task Completed
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="No, Focus Again"
+                  accessibilityHint="Opens the usual focus duration choices for this task"
+                  accessibilityState={{ disabled: isPostFocusDecisionBusy }}
+                  disabled={isPostFocusDecisionBusy}
+                  activeOpacity={0.84}
+                  onPress={handlePostFocusAgain}
+                  style={{ opacity: isPostFocusDecisionBusy ? 0.55 : 1 }}
+                  className="bg-[#66b9b9]/15 py-3.5 px-5 rounded-2xl w-full border border-[#66b9b9]/45 mt-3 flex-row items-center justify-center"
+                >
+                  <Feather name="rotate-cw" size={16} color="#66b9b9" />
+                  <Text className="text-[#66b9b9] font-black text-center uppercase tracking-widest text-xs ml-2">
+                    No, Focus Again
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Finish Focus"
+                  accessibilityState={{ disabled: isPostFocusDecisionBusy }}
+                  disabled={isPostFocusDecisionBusy}
+                  activeOpacity={0.82}
+                  onPress={finishPostFocusDecision}
+                  style={{ opacity: isPostFocusDecisionBusy ? 0.55 : 1 }}
+                  className="py-3 px-5 mt-2"
+                >
+                  <Text className="text-[#9FB5B5] font-black text-center uppercase tracking-widest text-xs">
+                    Finish Focus
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                {/* Emoji */}
+                <Text className="text-5xl mb-4" style={CELEBRATION_EMOJI_TEXT_STYLE}>
+                  {celebration.emoji}
+                </Text>
+
+                {/* Message */}
+                <Text className="text-[#E8F4F4] text-xl text-center font-black tracking-tighter mb-6">
+                  {celebration.message}
+                </Text>
+
+                {/* Button */}
+                <TouchableOpacity
+                  onPress={dismissCelebrationFeedback}
+                  className="bg-[#7DFFB3] py-3.5 px-8 rounded-2xl w-full shadow-lg shadow-[#7DFFB3]/25"
+                >
+                  <Text className="text-[#061414] font-black text-center uppercase tracking-widest">
+                    Continue
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
           </Animated.View>
         </View>
       </Modal>
