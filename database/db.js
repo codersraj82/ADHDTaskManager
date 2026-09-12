@@ -10,7 +10,8 @@ export const initDB = () => {
       title TEXT,
       section TEXT,
       completed INTEGER,
-      moodType TEXT DEFAULT ''
+      moodType TEXT DEFAULT '',
+      category TEXT DEFAULT 'UNCATEGORIZED'
     );
   `);
 
@@ -104,6 +105,7 @@ export const initDB = () => {
     { name: "notificationId", type: "TEXT DEFAULT '[]'" },
     { name: "usePhoneAlarm", type: "INTEGER DEFAULT 0" },
     { name: "moodType", type: "TEXT DEFAULT ''" },
+    { name: "category", type: "TEXT DEFAULT 'UNCATEGORIZED'" },
     { name: "firstAction", type: "TEXT DEFAULT ''" },
     { name: "minimumVersion", type: "TEXT DEFAULT ''" },
     { name: "energyRequired", type: "TEXT DEFAULT ''" },

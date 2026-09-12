@@ -101,6 +101,14 @@ import { createTaskDuplicateFromCompleted } from "../../utils/taskDuplicateHelpe
 import { formatRepeatLabel } from "../../utils/repeatLabelFormatter";
 import { buildRecurringDisplayTasksForDate } from "../../utils/recurringDisplayHelpers";
 import {
+  buildCategoryTaskGroups,
+  CATEGORY_VIEW_CONFIG,
+  getCategoryHeaderStats,
+  normalizeTaskCategory,
+  TASK_CATEGORIES,
+  TASK_CATEGORY_OPTIONS,
+} from "../../utils/taskCategoryHelpers.mjs";
+import {
   cancelNotificationById,
   scheduleFocusCompletionNotification,
   sendTaskCompletionNotification,
@@ -1404,6 +1412,7 @@ export default function Home() {
       lastStrongAlarmResult: null,
       isPinned: false,
       moodType: "",
+      category: TASK_CATEGORIES.UNCATEGORIZED,
     },
     {
       id: 2,
@@ -1419,6 +1428,7 @@ export default function Home() {
       lastStrongAlarmResult: null,
       isPinned: false,
       moodType: "",
+      category: TASK_CATEGORIES.UNCATEGORIZED,
     },
     {
       id: 3,
@@ -1434,6 +1444,7 @@ export default function Home() {
       lastStrongAlarmResult: null,
       isPinned: false,
       moodType: "",
+      category: TASK_CATEGORIES.UNCATEGORIZED,
     },
   ]);
   const [totalFocusTime, setTotalFocusTime] = useState(0); // seconds
@@ -1519,6 +1530,8 @@ export default function Home() {
   const [isSubtaskReordering, setIsSubtaskReordering] = useState(false);
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
+  const [taskViewMode, setTaskViewMode] = useState("block");
+  const [expandedCategories, setExpandedCategories] = useState({});
   const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const [energyDropdownVisible, setEnergyDropdownVisible] = useState(false);
   const [selectedEnergyMatchType, setSelectedEnergyMatchType] = useState(null);
@@ -2344,6 +2357,25 @@ export default function Home() {
 
   const visibleSectionTasksMap = sectionTasksMap;
   const visiblePinnedTasks = pinnedTasks;
+  const categoryTaskGroups = useMemo(() => {
+    const viewDate = parseDayKeyToDate(todayDateKey) || new Date();
+    return buildCategoryTaskGroups(
+      displayTasksForToday,
+      viewDate,
+      parseStoredDateTime
+    );
+  }, [displayTasksForToday, todayDateKey]);
+  const categoryHeaderStats = useMemo(() => {
+    const viewDate = parseDayKeyToDate(todayDateKey) || new Date();
+    return CATEGORY_VIEW_CONFIG.reduce((result, category) => {
+      result[category.key] = getCategoryHeaderStats(
+        categoryTaskGroups[category.key] || [],
+        viewDate,
+        parseStoredDateTime
+      );
+      return result;
+    }, {});
+  }, [categoryTaskGroups, todayDateKey]);
 
   const trimmedTaskSearchQuery = taskSearchQuery.trim();
   const isTaskSearchOpen = trimmedTaskSearchQuery.length > 0;
@@ -3036,6 +3068,12 @@ export default function Home() {
       return acc;
     }, {})
   ).current;
+  const categoryChevronAnims = useRef(
+    CATEGORY_VIEW_CONFIG.reduce((acc, category) => {
+      acc[category.key] = new Animated.Value(0);
+      return acc;
+    }, {})
+  ).current;
   const pinnedChevronAnim = useRef(new Animated.Value(0)).current;
   const focusCompletionNotificationIdRef = useRef(null);
   const focusLockScreenSessionIdRef = useRef(null);
@@ -3537,6 +3575,11 @@ export default function Home() {
       );
 
       const insertedId = result.lastInsertRowId;
+      const nextTaskCategory = normalizeTaskCategory(nextTask.category);
+      db.runSync("UPDATE tasks SET category = ? WHERE id = ?", [
+        nextTaskCategory,
+        insertedId,
+      ]);
       const scheduledIds = await scheduleProReminders(
         {
           ...nextTask,
@@ -3574,6 +3617,7 @@ export default function Home() {
         strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
         lastStrongAlarmResult: null,
         moodType: nextTask.moodType || "",
+        category: nextTaskCategory,
         firstAction: nextTask.firstAction || "",
         minimumVersion: nextTask.minimumVersion || "",
         energyRequired: normalizeEnergyRequiredValue(nextTask.energyRequired),
@@ -4934,6 +4978,7 @@ export default function Home() {
           strongAlarmSnoozeMinutes INTEGER DEFAULT 5,
           isPinned INTEGER DEFAULT 0,
           moodType TEXT DEFAULT '',
+          category TEXT DEFAULT 'UNCATEGORIZED',
           firstAction TEXT DEFAULT '',
           minimumVersion TEXT DEFAULT '',
           energyRequired TEXT DEFAULT '',
@@ -5061,6 +5106,11 @@ export default function Home() {
         if (!columnNames.includes("moodType")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN moodType TEXT DEFAULT '';");
         }
+        if (!columnNames.includes("category")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN category TEXT DEFAULT 'UNCATEGORIZED';"
+          );
+        }
         if (!columnNames.includes("firstAction")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN firstAction TEXT DEFAULT '';");
         }
@@ -5167,6 +5217,7 @@ export default function Home() {
             completedAt: t.completedAt || null,
             createdAt: t.createdAt || null,
             moodType: t.moodType || "",
+            category: normalizeTaskCategory(t.category),
             firstAction: t.firstAction || "",
             minimumVersion: t.minimumVersion || "",
             energyRequired: normalizeEnergyRequiredValue(t.energyRequired),
@@ -6953,6 +7004,9 @@ export default function Home() {
   const [taskFocusRequired, setTaskFocusRequired] = useState("");
   const [taskContext, setTaskContext] = useState("");
   const [taskEstimatedMinutes, setTaskEstimatedMinutes] = useState(null);
+  const [taskCategory, setTaskCategory] = useState<string>(
+    TASK_CATEGORIES.UNCATEGORIZED
+  );
   const [isEnergyEffortExpanded, setIsEnergyEffortExpanded] = useState(false);
   const [showEnergyEffortPrompt, setShowEnergyEffortPrompt] = useState(false);
   const [pendingEnergyEffortDraft, setPendingEnergyEffortDraft] = useState(null);
@@ -7159,6 +7213,28 @@ export default function Home() {
     });
   }, [animateSectionChevron, pinnedChevronAnim, runLayoutAnimation]);
 
+  const toggleCategoryExpansion = useCallback(
+    (categoryKey) => {
+      const categoryAnim = categoryChevronAnims[categoryKey];
+      if (!categoryAnim) return;
+
+      runLayoutAnimation();
+      setExpandedCategories((previous) => {
+        const nextExpanded = !previous[categoryKey];
+        Animated.timing(categoryAnim, {
+          toValue: nextExpanded ? 1 : 0,
+          duration: 180,
+          useNativeDriver: true,
+        }).start();
+        return {
+          ...previous,
+          [categoryKey]: nextExpanded,
+        };
+      });
+    },
+    [categoryChevronAnims, runLayoutAnimation]
+  );
+
   useEffect(() => {
     if (!isPinnedSectionExpanded || pinnedTaskCount > 0) return;
     runLayoutAnimation();
@@ -7294,6 +7370,11 @@ export default function Home() {
       );
 
       const insertedId = result.lastInsertRowId;
+      const nextTaskCategory = normalizeTaskCategory(nextTask.category);
+      db.runSync("UPDATE tasks SET category = ? WHERE id = ?", [
+        nextTaskCategory,
+        insertedId,
+      ]);
       const scheduledIds = await scheduleProReminders({
         ...nextTask,
         id: insertedId,
@@ -7329,6 +7410,7 @@ export default function Home() {
           strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
           lastStrongAlarmResult: null,
           moodType: nextTask.moodType || "",
+          category: nextTaskCategory,
           firstAction: nextTask.firstAction || "",
           minimumVersion: nextTask.minimumVersion || "",
           energyRequired: normalizeEnergyRequiredValue(nextTask.energyRequired),
@@ -7628,6 +7710,11 @@ export default function Home() {
       );
 
       const newTaskId = result.lastInsertRowId;
+      const duplicateCategory = normalizeTaskCategory(duplicateDraft.category);
+      db.runSync("UPDATE tasks SET category = ? WHERE id = ?", [
+        duplicateCategory,
+        newTaskId,
+      ]);
       const recreatedTask = {
         ...duplicateDraft,
         id: newTaskId,
@@ -7648,6 +7735,7 @@ export default function Home() {
           STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
         lastStrongAlarmResult: null,
         moodType: "",
+        category: duplicateCategory,
         firstAction: task.firstAction || "",
         minimumVersion: task.minimumVersion || "",
         energyRequired: normalizeEnergyRequiredValue(task.energyRequired),
@@ -7696,6 +7784,7 @@ export default function Home() {
     setTaskFocusRequired("");
     setTaskContext("");
     setTaskEstimatedMinutes(null);
+    setTaskCategory(TASK_CATEGORIES.UNCATEGORIZED);
     setIsEnergyEffortExpanded(false);
     setIsRepeatTaskExpanded(false);
     setScheduledDateTime("");
@@ -7741,6 +7830,7 @@ export default function Home() {
     setTaskFocusRequired("");
     setTaskContext("");
     setTaskEstimatedMinutes(null);
+    setTaskCategory(TASK_CATEGORIES.UNCATEGORIZED);
     setIsEnergyEffortExpanded(false);
     setIsRepeatTaskExpanded(false);
     setSelectedSection("Morning");
@@ -8151,6 +8241,12 @@ export default function Home() {
       }
 
       let changedExpansion = false;
+      if (taskViewMode !== "block") {
+        changedExpansion = true;
+        runLayoutAnimation();
+        taskPositions.current = {};
+        setTaskViewMode("block");
+      }
       const targetSectionKey = targetTask.isPinned ? "Pinned" : targetTask.section;
       setExpandedTaskId(targetTask.id);
       setCurrentFocusedTaskId(targetTask.id);
@@ -8242,6 +8338,7 @@ export default function Home() {
       pinnedChevronAnim,
       runLayoutAnimation,
       tasks,
+      taskViewMode,
       triggerTaskHighlight,
     ]
   );
@@ -8755,6 +8852,7 @@ export default function Home() {
       setTaskFocusRequired(normalizedFocusRequired);
       setTaskContext(normalizedTaskContext);
       setTaskEstimatedMinutes(normalizedEstimatedMinutes);
+      setTaskCategory(normalizeTaskCategory(task.category));
       setIsEnergyEffortExpanded(
         Boolean(
           normalizedEnergyRequired ||
@@ -9880,6 +9978,7 @@ export default function Home() {
     const normalizedFocusRequired = normalizeFocusRequiredValue(taskFocusRequired);
     const normalizedTaskContext = normalizeTaskContextValue(taskContext);
     const normalizedEstimatedMinutes = normalizeEstimatedMinutesValue(taskEstimatedMinutes);
+    const normalizedCategory = normalizeTaskCategory(taskCategory);
     const baseSubtasks =
       isEditMode && Array.isArray(editingTask?.subtasks) ? editingTask.subtasks : [];
     const firstActionAlreadyInSubtasks = baseSubtasks.some(
@@ -9911,6 +10010,7 @@ export default function Home() {
       focusRequired: normalizedFocusRequired,
       taskContext: normalizedTaskContext,
       estimatedMinutes: normalizedEstimatedMinutes,
+      category: normalizedCategory,
       subtasksToSave,
       attachmentsToSave,
     };
@@ -9933,6 +10033,7 @@ export default function Home() {
       focusRequired: draftFocusRequired,
       taskContext: draftTaskContext,
       estimatedMinutes: draftEstimatedMinutes,
+      category: draftCategory = TASK_CATEGORIES.UNCATEGORIZED,
       subtasksToSave,
       attachmentsToSave,
     } = draft;
@@ -10032,7 +10133,8 @@ export default function Home() {
                  focusRequired = ?,
                  taskContext = ?,
                  estimatedMinutes = ?,
-                 moodType = ?
+                 moodType = ?,
+                 category = ?
              WHERE id = ?`,
           [
             taskName,
@@ -10058,6 +10160,7 @@ export default function Home() {
             draftTaskContext,
             draftEstimatedMinutes,
             targetTask.moodType || "",
+            draftCategory,
             targetTask.id,
           ]
         );
@@ -10098,6 +10201,7 @@ export default function Home() {
           taskContext: draftTaskContext,
           estimatedMinutes: draftEstimatedMinutes,
           moodType: targetTask.moodType || "",
+          category: draftCategory,
         });
       }
 
@@ -10162,6 +10266,7 @@ export default function Home() {
         isPinned,
         usePhoneAlarm,
         moodType,
+        category,
         firstAction,
         minimumVersion,
         energyRequired,
@@ -10173,7 +10278,7 @@ export default function Home() {
         stuckCount,
         lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         taskName,
         selectedSection,
@@ -10195,6 +10300,7 @@ export default function Home() {
         0,
         draftUsePhoneAlarm ? 1 : 0,
         "",
+        draftCategory,
         draftFirstAction,
         draftMinimumVersion,
         draftEnergyRequired,
@@ -10249,6 +10355,7 @@ export default function Home() {
       strongAlarmSnoozeMinutes: STRONG_ALARM_DEFAULT_SNOOZE_MINUTES,
       lastStrongAlarmResult: null,
       moodType: "",
+      category: draftCategory,
       firstAction: draftFirstAction,
       minimumVersion: draftMinimumVersion,
       energyRequired: draftEnergyRequired,
@@ -10612,6 +10719,10 @@ export default function Home() {
         lastDeletedTask.lastRescheduledAt || null,
       ]
     );
+    db.runSync("UPDATE tasks SET category = ? WHERE id = ?", [
+      normalizeTaskCategory(lastDeletedTask.category),
+      lastDeletedTask.id,
+    ]);
 
     setTasks((prev) => [
       ...prev,
@@ -16251,17 +16362,29 @@ export default function Home() {
     </Modal>
   );
 
-  const renderSection = (title, section) => {
+  const renderSection = (
+    title,
+    section,
+    options: { categoryConfig?: any } = {}
+  ) => {
+    const categoryConfig = options.categoryConfig || null;
+    const isCategorySection = Boolean(categoryConfig);
     const isPinnedVirtualSection = section === "Pinned";
-    const sectionTasks = isPinnedVirtualSection
-      ? visiblePinnedTasks
-      : visibleSectionTasksMap[section] || [];
-    const isSectionExpanded = isPinnedVirtualSection
-      ? isPinnedSectionExpanded
-      : expandedSection === section;
-    const chevronAnim = isPinnedVirtualSection
-      ? pinnedChevronAnim
-      : sectionChevronAnims[section];
+    const sectionTasks = isCategorySection
+      ? categoryTaskGroups[categoryConfig.key] || []
+      : isPinnedVirtualSection
+        ? visiblePinnedTasks
+        : visibleSectionTasksMap[section] || [];
+    const isSectionExpanded = isCategorySection
+      ? Boolean(expandedCategories[categoryConfig.key])
+      : isPinnedVirtualSection
+        ? isPinnedSectionExpanded
+        : expandedSection === section;
+    const chevronAnim = isCategorySection
+      ? categoryChevronAnims[categoryConfig.key]
+      : isPinnedVirtualSection
+        ? pinnedChevronAnim
+        : sectionChevronAnims[section];
     const chevronRotation = chevronAnim.interpolate({
       inputRange: [0, 1],
       outputRange: ["0deg", "180deg"],
@@ -16270,13 +16393,17 @@ export default function Home() {
       inputRange: [0, 1],
       outputRange: [1, 0],
     });
-    const sectionSurfaceClass =
-      SECTION_SURFACE_CLASSES[section] || SECTION_SURFACE_CLASSES.Work;
-    const sectionHeaderClass =
-      SECTION_HEADER_CLASSES[section] || SECTION_HEADER_CLASSES.Work;
-    const sectionStats = isPinnedVirtualSection
-      ? pinnedHeaderStats
-      : sectionHeaderStats[section] || {
+    const sectionSurfaceClass = isCategorySection
+      ? categoryConfig.surfaceClass
+      : SECTION_SURFACE_CLASSES[section] || SECTION_SURFACE_CLASSES.Work;
+    const sectionHeaderClass = isCategorySection
+      ? categoryConfig.headerClass
+      : SECTION_HEADER_CLASSES[section] || SECTION_HEADER_CLASSES.Work;
+    const sectionStats = isCategorySection
+      ? categoryHeaderStats[categoryConfig.key]
+      : isPinnedVirtualSection
+        ? pinnedHeaderStats
+        : sectionHeaderStats[section] || {
           pendingCount: 0,
           todayPendingCount: 0,
           todayCompletedCount: 0,
@@ -16286,15 +16413,20 @@ export default function Home() {
     const hasCollapsedSummary = !isSectionExpanded;
     const nextUpcomingLabel =
       sectionStats?.nearestUpcomingTaskTitle || "No upcoming tasks";
-    const sectionSupportMessage =
-      sectionAffirmations[section] ||
-      getRandomAffirmation(SECTION_HEADER_AFFIRMATIONS);
+    const sectionSupportMessage = isCategorySection
+      ? ""
+      : sectionAffirmations[section] ||
+        getRandomAffirmation(SECTION_HEADER_AFFIRMATIONS);
+    const sectionPositionKey = isCategorySection
+      ? `Category:${categoryConfig.key}`
+      : section;
 
     return (
       <View
+        key={isCategorySection ? categoryConfig.key : section}
         className="px-4 mb-4"
         onLayout={(event) => {
-          sectionPositions.current[section] = event.nativeEvent.layout.y;
+          sectionPositions.current[sectionPositionKey] = event.nativeEvent.layout.y;
         }}
       >
         <View
@@ -16302,30 +16434,54 @@ export default function Home() {
         >
           <TouchableOpacity
             activeOpacity={0.85}
-            onPress={() =>
-              isPinnedVirtualSection
-                ? togglePinnedSection()
-                : toggleSectionExpansion(section)
-            }
+            onPress={() => {
+              if (isCategorySection) {
+                toggleCategoryExpansion(categoryConfig.key);
+              } else if (isPinnedVirtualSection) {
+                togglePinnedSection();
+              } else {
+                toggleSectionExpansion(section);
+              }
+            }}
             className={`px-4 py-3 flex-row items-start justify-between border-b border-[#337a7a]/25 ${sectionHeaderClass}`}
           >
             <View className="flex-1 pr-3">
-              <Text className="text-[#E8F4F4] text-lg font-black tracking-widest uppercase">
-                {title}
-              </Text>
+              {isCategorySection ? (
+                <View className="flex-row items-center">
+                  <Feather
+                    name={categoryConfig.icon}
+                    size={17}
+                    color={categoryConfig.accentColor}
+                  />
+                  <Text
+                    className="text-lg font-black tracking-widest uppercase ml-2"
+                    style={{ color: categoryConfig.accentColor }}
+                  >
+                    {title}
+                  </Text>
+                </View>
+              ) : (
+                <Text className="text-[#E8F4F4] text-lg font-black tracking-widest uppercase">
+                  {title}
+                </Text>
+              )}
               {hasCollapsedSummary ? (
                 <Animated.View style={{ opacity: collapsedSummaryOpacity }} className="mt-1.5">
                   <Text className="text-[#99bdbd] text-[10px] font-bold">
                     Pending: {sectionStats?.pendingCount ?? pendingCount} | Today: {sectionStats?.todayPendingCount ?? 0} | Done: {sectionStats?.todayCompletedCount ?? 0}
                   </Text>
-                  <Text numberOfLines={1} className="text-[#9FB5B5] text-[10px] font-semibold mt-0.5">
-                    Next: {nextUpcomingLabel}
-                  </Text>
+                  {!isCategorySection ? (
+                    <Text numberOfLines={1} className="text-[#9FB5B5] text-[10px] font-semibold mt-0.5">
+                      Next: {nextUpcomingLabel}
+                    </Text>
+                  ) : null}
                 </Animated.View>
               ) : null}
-              <Text className="text-[#E8F4F4] text-[10px] font-semibold mt-2">
-                {sectionSupportMessage}
-              </Text>
+              {!isCategorySection ? (
+                <Text className="text-[#E8F4F4] text-[10px] font-semibold mt-2">
+                  {sectionSupportMessage}
+                </Text>
+              ) : null}
             </View>
             <View className="flex-row items-center pt-1">
               {isPinnedVirtualSection || pendingCount > 0 ? (
@@ -16334,13 +16490,26 @@ export default function Home() {
                 </Text>
               ) : null}
               <Animated.View style={{ transform: [{ rotate: chevronRotation }] }}>
-                <Feather name="chevron-down" size={16} color={COLORS.accent} />
+                <Feather
+                  name="chevron-down"
+                  size={16}
+                  color={
+                    isCategorySection ? categoryConfig.accentColor : COLORS.accent
+                  }
+                />
               </Animated.View>
             </View>
           </TouchableOpacity>
 
           {isSectionExpanded && (
             <View className="px-3 pb-3">
+              {isCategorySection && sectionTasks.length === 0 ? (
+                <View className="rounded-2xl border border-[#337a7a]/25 bg-[#061414]/45 px-4 py-5 mt-3">
+                  <Text className="text-[#9FB5B5] text-sm font-semibold text-center leading-5">
+                    {categoryConfig.empty}
+                  </Text>
+                </View>
+              ) : null}
               {sectionTasks.map((task) => {
             const isEarlyRecurringPreview = isEarlyRecurringPreviewTask(task);
             const earlyPreviewTag = task.earlyTag || "Tomorrow";
@@ -17258,6 +17427,11 @@ export default function Home() {
               </Animated.View>
             );
               })}
+              {isCategorySection ? (
+                <Text className="text-[#9FB5B5] text-[11px] font-semibold text-center leading-5 mt-1 px-2">
+                  {categoryConfig.footer}
+                </Text>
+              ) : null}
             </View>
           )}
         </View>
@@ -17885,11 +18059,55 @@ export default function Home() {
           ) : null}
         </View>
 
-        {renderSection("📌 Pinned Tasks", "Pinned")}
+        <View
+          accessibilityRole="tablist"
+          accessibilityLabel="Task view"
+          className="mx-4 mb-4 rounded-2xl border border-[#337a7a]/35 bg-[#0B1F1F] p-1 flex-row"
+        >
+          {[
+            { key: "block", label: "Block" },
+            { key: "category", label: "Category" },
+          ].map((viewOption) => {
+            const isSelected = taskViewMode === viewOption.key;
+            return (
+              <TouchableOpacity
+                key={viewOption.key}
+                accessibilityRole="tab"
+                accessibilityLabel={`${viewOption.label} view`}
+                accessibilityState={{ selected: isSelected }}
+                activeOpacity={0.84}
+                onPress={() => setTaskViewMode(viewOption.key)}
+                className={`flex-1 rounded-xl px-3 py-2.5 ${
+                  isSelected ? "bg-[#66b9b9]" : "bg-transparent"
+                }`}
+              >
+                <Text
+                  className={`text-center text-[11px] font-black uppercase tracking-widest ${
+                    isSelected ? "text-[#061414]" : "text-[#9FB5B5]"
+                  }`}
+                >
+                  {viewOption.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
-        {renderSection("Morning ☀️", "Morning")}
-        {renderSection("Work 💼", "Work")}
-        {renderSection("Evening 🌙", "Evening")}
+        {taskViewMode === "block" ? (
+          <>
+            {renderSection("📌 Pinned Tasks", "Pinned")}
+
+            {renderSection("Morning ☀️", "Morning")}
+            {renderSection("Work 💼", "Work")}
+            {renderSection("Evening 🌙", "Evening")}
+          </>
+        ) : (
+          CATEGORY_VIEW_CONFIG.map((category) =>
+            renderSection(category.title, category.key, {
+              categoryConfig: category,
+            })
+          )
+        )}
       </Reanimated.ScrollView>
       {renderFixedFooter()}
       {renderDrawer()}
@@ -18469,6 +18687,43 @@ export default function Home() {
                   </Text>
                 </TouchableOpacity>
               ))}
+            </View>
+
+            <View className="mb-4">
+              <Text className="text-[#66b9b9] text-[10px] font-black uppercase tracking-widest mb-2">
+                Category
+              </Text>
+              <View className="flex-row flex-wrap">
+                {TASK_CATEGORY_OPTIONS.map((option) => {
+                  const isSelected = taskCategory === option.key;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${option.label} category`}
+                      accessibilityState={{ selected: isSelected }}
+                      activeOpacity={0.84}
+                      onPress={() => setTaskCategory(option.key)}
+                      className={`mr-2 mb-2 px-3 py-2 rounded-full border ${
+                        isSelected
+                          ? "bg-[#66b9b9] border-[#66b9b9]"
+                          : "bg-[#123131]/80 border-[#337a7a]/40"
+                      }`}
+                    >
+                      <Text
+                        className={`text-[10px] font-black uppercase tracking-widest ${
+                          isSelected ? "text-[#061414]" : "text-[#9FB5B5]"
+                        }`}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <Text className="text-[#6D8787] text-[10px] leading-4">
+                Due-Date is shown automatically when this task is scheduled for today.
+              </Text>
             </View>
 
             <TouchableOpacity
