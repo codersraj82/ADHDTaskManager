@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import {
   buildCategoryTaskGroups,
   DERIVED_DUE_DATE_CATEGORY,
+  getPreferredCategoryTaskLocation,
   getCategoryHeaderStats,
   isTaskDueToday,
   normalizeTaskCategory,
+  PINNED_TASK_LOCATION,
   sortManualCategoryTasks,
   TASK_CATEGORIES,
 } from "../utils/taskCategoryHelpers.mjs";
@@ -22,6 +24,40 @@ const task = (id, category, scheduledTime = "", extra = {}) => ({
 assert.equal(normalizeTaskCategory(null), TASK_CATEGORIES.UNCATEGORIZED);
 assert.equal(normalizeTaskCategory("lovable"), TASK_CATEGORIES.LOVABLE);
 assert.equal(normalizeTaskCategory("DUE_DATE"), TASK_CATEGORIES.UNCATEGORIZED);
+assert.equal(normalizeTaskCategory("PINNED"), TASK_CATEGORIES.UNCATEGORIZED);
+
+assert.equal(
+  getPreferredCategoryTaskLocation(
+    task(100, "IMPORTANT", "2026-09-12 09:00 AM", { isPinned: 1 }),
+    now
+  ),
+  PINNED_TASK_LOCATION
+);
+assert.equal(
+  getPreferredCategoryTaskLocation(
+    task(101, "IMPORTANT", "2026-09-12 09:00 AM"),
+    now
+  ),
+  DERIVED_DUE_DATE_CATEGORY
+);
+assert.equal(
+  getPreferredCategoryTaskLocation(
+    task(102, "BORING", "2026-09-13 09:00 AM"),
+    now
+  ),
+  TASK_CATEGORIES.BORING
+);
+assert.equal(
+  getPreferredCategoryTaskLocation(task(103, null, ""), now),
+  TASK_CATEGORIES.UNCATEGORIZED
+);
+assert.equal(
+  getPreferredCategoryTaskLocation(
+    task(104, "URGENT", "2026-09-11 09:00 AM"),
+    now
+  ),
+  TASK_CATEGORIES.URGENT
+);
 
 const urgentToday = task(1, "URGENT", "2026-09-12 09:00 AM");
 const groups = buildCategoryTaskGroups(

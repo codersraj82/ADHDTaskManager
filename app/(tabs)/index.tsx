@@ -103,8 +103,10 @@ import { buildRecurringDisplayTasksForDate } from "../../utils/recurringDisplayH
 import {
   buildCategoryTaskGroups,
   CATEGORY_VIEW_CONFIG,
+  getPreferredCategoryTaskLocation,
   getCategoryHeaderStats,
   normalizeTaskCategory,
+  PINNED_TASK_LOCATION,
   TASK_CATEGORIES,
   TASK_CATEGORY_OPTIONS,
 } from "../../utils/taskCategoryHelpers.mjs";
@@ -8240,18 +8242,56 @@ export default function Home() {
         taskNavigationTimeoutRef.current = null;
       }
 
+      const isCategoryView = taskViewMode === "category";
+      const categoryViewDate = parseDayKeyToDate(todayDateKey) || new Date();
+      const targetCategoryLocation = isCategoryView
+        ? getPreferredCategoryTaskLocation(
+            targetTask,
+            categoryViewDate,
+            parseStoredDateTime
+          )
+        : null;
+      const targetSectionKey = isCategoryView
+        ? targetCategoryLocation === PINNED_TASK_LOCATION
+          ? PINNED_TASK_LOCATION
+          : `Category:${targetCategoryLocation}`
+        : targetTask.isPinned
+          ? "Pinned"
+          : targetTask.section;
+      const targetTaskPositionKey = `${targetSectionKey}:${taskIdKey}`;
       let changedExpansion = false;
-      if (taskViewMode !== "block") {
-        changedExpansion = true;
-        runLayoutAnimation();
-        taskPositions.current = {};
-        setTaskViewMode("block");
-      }
-      const targetSectionKey = targetTask.isPinned ? "Pinned" : targetTask.section;
+
       setExpandedTaskId(targetTask.id);
       setCurrentFocusedTaskId(targetTask.id);
 
-      if (targetTask.isPinned) {
+      if (isCategoryView) {
+        if (targetCategoryLocation === PINNED_TASK_LOCATION) {
+          if (!isPinnedSectionExpanded) {
+            changedExpansion = true;
+            runLayoutAnimation();
+            delete taskPositions.current[targetTaskPositionKey];
+            setIsPinnedSectionExpanded(true);
+            Animated.timing(pinnedChevronAnim, {
+              toValue: 1,
+              duration: 180,
+              useNativeDriver: true,
+            }).start();
+          }
+        } else if (!expandedCategories[targetCategoryLocation]) {
+          changedExpansion = true;
+          runLayoutAnimation();
+          delete taskPositions.current[targetTaskPositionKey];
+          setExpandedCategories((current) => ({
+            ...current,
+            [targetCategoryLocation]: true,
+          }));
+          Animated.timing(categoryChevronAnims[targetCategoryLocation], {
+            toValue: 1,
+            duration: 180,
+            useNativeDriver: true,
+          }).start();
+        }
+      } else if (targetTask.isPinned) {
         if (!isPinnedSectionExpanded) {
           changedExpansion = true;
           runLayoutAnimation();
@@ -8295,8 +8335,12 @@ export default function Home() {
 
       const navigateToTask = (attempt = 0) => {
         const sectionY = sectionPositions.current[targetSectionKey] || 0;
-        const taskY = taskPositions.current[targetTask.id] || 0;
-        const hasTaskPosition = Number.isFinite(taskY) && taskY > 0;
+        const taskY = isCategoryView
+          ? taskPositions.current[targetTaskPositionKey]
+          : taskPositions.current[targetTask.id] || 0;
+        const hasTaskPosition = isCategoryView
+          ? Number.isFinite(taskY) && taskY >= 0
+          : Number.isFinite(taskY) && taskY > 0;
 
         if (!hasTaskPosition && attempt < TASK_NAVIGATION_MAX_RETRIES) {
           taskNavigationTimeoutRef.current = setTimeout(() => {
@@ -8334,11 +8378,14 @@ export default function Home() {
     },
     [
       animateSectionChevron,
+      categoryChevronAnims,
+      expandedCategories,
       isPinnedSectionExpanded,
       pinnedChevronAnim,
       runLayoutAnimation,
       tasks,
       taskViewMode,
+      todayDateKey,
       triggerTaskHighlight,
     ]
   );
@@ -16604,7 +16651,13 @@ export default function Home() {
               <Animated.View
                 key={task.displayKey || task.id}
                 onLayout={(event) => {
-                  taskPositions.current[task.id] = event.nativeEvent.layout.y;
+                  const taskY = event.nativeEvent.layout.y;
+                  const taskIdKey = getTaskIdentityKey(task.id);
+                  taskPositions.current[task.id] = taskY;
+                  if (taskIdKey) {
+                    taskPositions.current[`${sectionPositionKey}:${taskIdKey}`] =
+                      taskY;
+                  }
                 }}
                 style={[
                   themedStyle(taskCardClassName),
@@ -18102,11 +18155,15 @@ export default function Home() {
             {renderSection("Evening 🌙", "Evening")}
           </>
         ) : (
-          CATEGORY_VIEW_CONFIG.map((category) =>
-            renderSection(category.title, category.key, {
-              categoryConfig: category,
-            })
-          )
+          <>
+            {renderSection("📌 Pinned Tasks", "Pinned")}
+
+            {CATEGORY_VIEW_CONFIG.map((category) =>
+              renderSection(category.title, category.key, {
+                categoryConfig: category,
+              })
+            )}
+          </>
         )}
       </Reanimated.ScrollView>
       {renderFixedFooter()}

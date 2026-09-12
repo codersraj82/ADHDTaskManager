@@ -7,6 +7,7 @@ export const TASK_CATEGORIES = Object.freeze({
 });
 
 export const DERIVED_DUE_DATE_CATEGORY = "DUE_DATE";
+export const PINNED_TASK_LOCATION = "Pinned";
 
 export const TASK_CATEGORY_OPTIONS = Object.freeze([
   { key: TASK_CATEGORIES.URGENT, label: "Urgent" },
@@ -173,6 +174,23 @@ export const isTaskDueToday = (task, now = new Date(), parseDateTime) => {
   if (scheduledTime === null) return false;
   const { start, end } = getDayBounds(now);
   return scheduledTime >= start && scheduledTime <= end;
+};
+
+export const getPreferredCategoryTaskLocation = (
+  task,
+  now = new Date(),
+  parseDateTime
+) => {
+  const pinnedValue = task?.isPinned ?? task?.pinned;
+  if (pinnedValue === true || pinnedValue === 1 || pinnedValue === "1") {
+    return PINNED_TASK_LOCATION;
+  }
+
+  if (isTaskDueToday(task, now, parseDateTime)) {
+    return DERIVED_DUE_DATE_CATEGORY;
+  }
+
+  return normalizeTaskCategory(task?.category);
 };
 
 export const isTaskVisibleInCategoryView = (
