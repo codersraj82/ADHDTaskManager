@@ -107,6 +107,11 @@ import {
 } from "../../utils/repeatTaskHelpers";
 import { createTaskDuplicateFromCompleted } from "../../utils/taskDuplicateHelpers";
 import { formatRepeatLabel } from "../../utils/repeatLabelFormatter";
+import {
+  normalizeTaskViewMode,
+  readTaskViewPreference,
+  TASK_VIEW_MODE_SETTING_KEY,
+} from "../../utils/taskViewPreference.mjs";
 import { buildRecurringDisplayTasksForDate } from "../../utils/recurringDisplayHelpers";
 import {
   buildCategoryTaskGroups,
@@ -1552,7 +1557,9 @@ export default function Home() {
   const [isSubtaskReordering, setIsSubtaskReordering] = useState(false);
   const [isPinnedSectionExpanded, setIsPinnedSectionExpanded] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
-  const [taskViewMode, setTaskViewMode] = useState("block");
+  const [taskViewMode, setTaskViewMode] = useState(() =>
+    readTaskViewPreference(db)
+  );
   const [expandedCategories, setExpandedCategories] = useState({});
   const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const [energyDropdownVisible, setEnergyDropdownVisible] = useState(false);
@@ -3166,6 +3173,16 @@ export default function Home() {
       String(value),
     ]);
   }, []);
+
+  const handleTaskViewChange = useCallback((value) => {
+    const nextView = normalizeTaskViewMode(value);
+    try {
+      saveSetting(TASK_VIEW_MODE_SETTING_KEY, nextView);
+    } catch (error) {
+      console.log("Task view preference save error:", error);
+    }
+    setTaskViewMode(nextView);
+  }, [saveSetting]);
 
   const getSettingsMap = () => {
     const rows = db.getAllSync("SELECT key, value FROM app_settings") || [];
@@ -18261,7 +18278,7 @@ export default function Home() {
                 accessibilityLabel={`${viewOption.label} view`}
                 accessibilityState={{ selected: isSelected }}
                 activeOpacity={0.84}
-                onPress={() => setTaskViewMode(viewOption.key)}
+                onPress={() => handleTaskViewChange(viewOption.key)}
                 className={`flex-1 rounded-xl px-3 py-2.5 ${
                   isSelected ? "bg-[#66b9b9]" : "bg-transparent"
                 }`}

@@ -8,6 +8,7 @@
     "test:screen-patterns": "node ./scripts/validateScreenPatternAnalyzer.mjs",
     "test:brain-dump": "node ./scripts/validateBrainDumpHelpers.mjs",
     "test:task-categories": "node ./scripts/validateTaskCategoryHelpers.mjs",
+    "test:task-view": "node ./scripts/validateTaskViewPreference.mjs",
     "test:custom-repeat": "node ./scripts/validateCustomRepeat.mjs",
     "android": "expo run:android",
     "generate-focus-beeps": "node ./scripts/generateFocusBeeps.mjs",
