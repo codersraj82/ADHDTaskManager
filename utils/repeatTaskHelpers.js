@@ -1,4 +1,4 @@
-import { parseStoredDateTime } from "./formatDateTime";
+import { parseStoredDateTime } from "./formatDateTime.js";
 
 export const REPEAT_TYPES = {
   NONE: "none",
@@ -6,7 +6,28 @@ export const REPEAT_TYPES = {
   WEEKLY: "weekly",
   MONTHLY: "monthly",
   YEARLY: "yearly",
+  CUSTOM: "custom",
 };
+
+export const CUSTOM_REPEAT_UNITS = Object.freeze([
+  "minutes",
+  "hours",
+  "days",
+  "weeks",
+  "months",
+  "years",
+]);
+
+export const CUSTOM_REPEAT_UNIT_OPTIONS = Object.freeze([
+  { label: "Minutes", value: "minutes" },
+  { label: "Hours", value: "hours" },
+  { label: "Days", value: "days" },
+  { label: "Weeks", value: "weeks" },
+  { label: "Months", value: "months" },
+  { label: "Years", value: "years" },
+]);
+
+export const MAX_CUSTOM_REPEAT_INTERVAL = 100000;
 
 export const MONTHLY_REPEAT_TYPES = {
   FIRST: "first",
@@ -38,6 +59,104 @@ export const normalizeMonthlyType = (value) => {
   return Object.values(MONTHLY_REPEAT_TYPES).includes(next)
     ? next
     : MONTHLY_REPEAT_TYPES.FIRST;
+};
+
+export const normalizeCustomRepeatUnit = (value) => {
+  const next = String(value || "").trim().toLowerCase();
+  return CUSTOM_REPEAT_UNITS.includes(next) ? next : "";
+};
+
+export const normalizeCustomRepeatInterval = (value) => {
+  const rawValue =
+    typeof value === "number" ? String(value) : String(value || "").trim();
+  if (!/^\d+$/.test(rawValue)) return 0;
+
+  const interval = Number(rawValue);
+  return Number.isSafeInteger(interval) &&
+    interval > 0 &&
+    interval <= MAX_CUSTOM_REPEAT_INTERVAL
+    ? interval
+    : 0;
+};
+
+export const validateCustomRepeat = (intervalValue, unitValue) => {
+  const rawValue =
+    typeof intervalValue === "number"
+      ? String(intervalValue)
+      : String(intervalValue || "").trim();
+
+  if (!rawValue) {
+    return {
+      valid: false,
+      message: "Enter a valid repeat interval.",
+      interval: null,
+      unit: normalizeCustomRepeatUnit(unitValue),
+    };
+  }
+
+  if (!/^\d+$/.test(rawValue)) {
+    return {
+      valid: false,
+      message: "Enter a whole number.",
+      interval: null,
+      unit: normalizeCustomRepeatUnit(unitValue),
+    };
+  }
+
+  const interval = Number(rawValue);
+  const unit = normalizeCustomRepeatUnit(unitValue);
+
+  if (!Number.isSafeInteger(interval)) {
+    return {
+      valid: false,
+      message: "Enter a valid repeat interval.",
+      interval: null,
+      unit,
+    };
+  }
+
+  if (interval > MAX_CUSTOM_REPEAT_INTERVAL) {
+    return {
+      valid: false,
+      message: "Enter a smaller repeat interval.",
+      interval: null,
+      unit,
+    };
+  }
+
+  if (!unit) {
+    return {
+      valid: false,
+      message: "Choose a repeat period.",
+      interval,
+      unit: "",
+    };
+  }
+
+  if (unit === "minutes" && interval < 5) {
+    return {
+      valid: false,
+      message: "Minimum custom repeat interval is 5 minutes.",
+      interval,
+      unit,
+    };
+  }
+
+  if (unit !== "minutes" && interval < 2) {
+    return {
+      valid: false,
+      message: `Minimum custom repeat interval is 2 ${unit}.`,
+      interval,
+      unit,
+    };
+  }
+
+  return {
+    valid: true,
+    message: "",
+    interval,
+    unit,
+  };
 };
 
 export const parseRepeatDays = (value) => {
@@ -96,11 +215,20 @@ export const getMonthAndDay = (value, fallbackDate = new Date()) => {
   };
 };
 
-export const normalizeTaskRepeatSettings = (task) => ({
-  repeatType: normalizeRepeatType(task?.repeatType),
-  repeatDays: parseRepeatDays(task?.repeatDays),
-  repeatMonthlyType: normalizeMonthlyType(task?.repeatMonthlyType),
-  repeatCustomDate: task?.repeatCustomDate || "",
-  repeatYearlyDate: task?.repeatYearlyDate || "",
-  repeatGroupId: task?.repeatGroupId || "",
-});
+export const normalizeTaskRepeatSettings = (task) => {
+  const repeatType = normalizeRepeatType(task?.repeatType);
+  const isCustom = repeatType === REPEAT_TYPES.CUSTOM;
+
+  return {
+    repeatType,
+    repeatDays: parseRepeatDays(task?.repeatDays),
+    repeatMonthlyType: normalizeMonthlyType(task?.repeatMonthlyType),
+    repeatCustomDate: task?.repeatCustomDate || "",
+    repeatYearlyDate: task?.repeatYearlyDate || "",
+    repeatInterval: isCustom
+      ? normalizeCustomRepeatInterval(task?.repeatInterval)
+      : 0,
+    repeatUnit: isCustom ? normalizeCustomRepeatUnit(task?.repeatUnit) : "",
+    repeatGroupId: task?.repeatGroupId || "",
+  };
+};

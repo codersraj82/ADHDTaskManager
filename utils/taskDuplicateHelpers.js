@@ -81,6 +81,8 @@ export const createTaskDuplicateFromCompleted = (task, options = {}) => {
     repeatMonthlyType: "",
     repeatCustomDate: "",
     repeatYearlyDate: "",
+    repeatInterval: 0,
+    repeatUnit: "",
     repeatGroupId: "",
     attachment: options.primaryAttachmentUri || "",
     attachments,

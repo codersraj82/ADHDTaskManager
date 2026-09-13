@@ -1,4 +1,4 @@
-import { formatSqliteDateTime, parseStoredDateTime } from "./formatDateTime";
+import { formatSqliteDateTime, parseStoredDateTime } from "./formatDateTime.js";
 import {
   MONTHLY_REPEAT_TYPES,
   REPEAT_TYPES,
@@ -6,8 +6,10 @@ import {
   getMonthAndDay,
   normalizeMonthlyType,
   normalizeRepeatType,
+  normalizeTaskRepeatSettings,
   parseRepeatDays,
-} from "./repeatTaskHelpers";
+  validateCustomRepeat,
+} from "./repeatTaskHelpers.js";
 
 const cloneDate = (date) =>
   new Date(
@@ -64,12 +66,21 @@ const getNextWeeklyDate = (baseDate, repeatDays) => {
   return fallback;
 };
 
-const getNextMonthlyDate = (baseDate, repeatMonthlyType, repeatCustomDate) => {
+const getNextMonthlyDate = (
+  baseDate,
+  repeatMonthlyType,
+  repeatCustomDate,
+  monthInterval = 1
+) => {
   const monthlyType = normalizeMonthlyType(repeatMonthlyType);
-  const year = baseDate.getFullYear();
-  const month = baseDate.getMonth() + 1;
-  const targetYear = month > 11 ? year + 1 : year;
-  const targetMonth = month > 11 ? 0 : month;
+  const safeInterval = Math.max(1, Math.floor(Number(monthInterval) || 1));
+  const targetMonthStart = new Date(
+    baseDate.getFullYear(),
+    baseDate.getMonth() + safeInterval,
+    1
+  );
+  const targetYear = targetMonthStart.getFullYear();
+  const targetMonth = targetMonthStart.getMonth();
 
   if (monthlyType === MONTHLY_REPEAT_TYPES.FIRST) {
     return copyTime(new Date(targetYear, targetMonth, 1), baseDate);
@@ -85,15 +96,20 @@ const getNextMonthlyDate = (baseDate, repeatMonthlyType, repeatCustomDate) => {
   return copyTime(new Date(targetYear, targetMonth, safeDay), baseDate);
 };
 
-const getNextYearlyDate = (baseDate, repeatYearlyDate) => {
+const getNextYearlyDate = (
+  baseDate,
+  repeatYearlyDate,
+  yearInterval = 1
+) => {
   const year = baseDate.getFullYear();
   const { month, day } = getMonthAndDay(repeatYearlyDate, baseDate);
+  const safeInterval = Math.max(1, Math.floor(Number(yearInterval) || 1));
 
   const candidateDay = clampDay(year, month, day);
   let candidate = copyTime(new Date(year, month, candidateDay), baseDate);
 
   if (candidate.getTime() <= baseDate.getTime()) {
-    const nextYear = year + 1;
+    const nextYear = year + safeInterval;
     const nextDay = clampDay(nextYear, month, day);
     candidate = copyTime(new Date(nextYear, month, nextDay), baseDate);
   }
@@ -101,11 +117,54 @@ const getNextYearlyDate = (baseDate, repeatYearlyDate) => {
   return candidate;
 };
 
+const getNextCustomDate = (baseDate, interval, unit, task) => {
+  const next = cloneDate(baseDate);
+
+  switch (unit) {
+    case "minutes":
+      next.setMinutes(next.getMinutes() + interval);
+      return next;
+    case "hours":
+      next.setHours(next.getHours() + interval);
+      return next;
+    case "days":
+      next.setDate(next.getDate() + interval);
+      return next;
+    case "weeks":
+      next.setDate(next.getDate() + interval * 7);
+      return next;
+    case "months":
+      return getNextMonthlyDate(
+        baseDate,
+        MONTHLY_REPEAT_TYPES.CUSTOM,
+        task?.repeatCustomDate || task?.scheduledTime || baseDate,
+        interval
+      );
+    case "years":
+      return getNextYearlyDate(
+        baseDate,
+        task?.repeatYearlyDate || task?.scheduledTime || baseDate,
+        interval
+      );
+    default:
+      return null;
+  }
+};
+
+const isValidDate = (date) =>
+  date instanceof Date && !Number.isNaN(date.getTime());
+
 export const getNextRecurringDate = (task, now = new Date()) => {
   const repeatType = normalizeRepeatType(task?.repeatType);
   if (repeatType === REPEAT_TYPES.NONE) return null;
 
   const baseDate = getBaseDate(task, now);
+  const customRepeat =
+    repeatType === REPEAT_TYPES.CUSTOM
+      ? validateCustomRepeat(task?.repeatInterval, task?.repeatUnit)
+      : null;
+  if (customRepeat && !customRepeat.valid) return null;
+
   const stepToNextDate = (fromDate) => {
     switch (repeatType) {
       case REPEAT_TYPES.DAILY:
@@ -120,6 +179,13 @@ export const getNextRecurringDate = (task, now = new Date()) => {
         );
       case REPEAT_TYPES.YEARLY:
         return getNextYearlyDate(fromDate, task?.repeatYearlyDate);
+      case REPEAT_TYPES.CUSTOM:
+        return getNextCustomDate(
+          fromDate,
+          customRepeat.interval,
+          customRepeat.unit,
+          task
+        );
       default:
         return null;
     }
@@ -128,13 +194,40 @@ export const getNextRecurringDate = (task, now = new Date()) => {
   // Ensure the generated occurrence is always in the future,
   // even when the current task was completed late.
   const nowTime = now.getTime();
+  if (
+    repeatType === REPEAT_TYPES.CUSTOM &&
+    (customRepeat.unit === "minutes" || customRepeat.unit === "hours")
+  ) {
+    const unitMilliseconds =
+      customRepeat.unit === "minutes" ? 60 * 1000 : 60 * 60 * 1000;
+    const intervalMilliseconds = customRepeat.interval * unitMilliseconds;
+    const elapsedMilliseconds = Math.max(0, nowTime - baseDate.getTime());
+    const intervalsToAdvance = Math.floor(
+      elapsedMilliseconds / intervalMilliseconds
+    ) + 1;
+    const candidate = new Date(
+      baseDate.getTime() + intervalsToAdvance * intervalMilliseconds
+    );
+    return isValidDate(candidate) ? candidate : null;
+  }
+
   let candidate = stepToNextDate(baseDate);
   let guard = 0;
   const maxIterations = 2000;
 
-  while (candidate && candidate.getTime() <= nowTime && guard < maxIterations) {
+  while (
+    isValidDate(candidate) &&
+    candidate.getTime() <= nowTime &&
+    guard < maxIterations
+  ) {
     candidate = stepToNextDate(candidate);
     guard += 1;
+  }
+
+  if (repeatType === REPEAT_TYPES.CUSTOM) {
+    return isValidDate(candidate) && candidate.getTime() > nowTime
+      ? candidate
+      : null;
   }
 
   return candidate;
@@ -145,6 +238,18 @@ export const buildNextRecurringTask = (task, now = new Date()) => {
   if (!nextDate) return null;
 
   const scheduledTime = formatSqliteDateTime(nextDate);
+  const repeatSettings = normalizeTaskRepeatSettings(task);
+  const sourceAnchor = formatSqliteDateTime(getBaseDate(task, now));
+  const repeatCustomDate =
+    repeatSettings.repeatType === REPEAT_TYPES.CUSTOM &&
+    repeatSettings.repeatUnit === "months"
+      ? repeatSettings.repeatCustomDate || sourceAnchor
+      : repeatSettings.repeatCustomDate;
+  const repeatYearlyDate =
+    repeatSettings.repeatType === REPEAT_TYPES.CUSTOM &&
+    repeatSettings.repeatUnit === "years"
+      ? repeatSettings.repeatYearlyDate || sourceAnchor
+      : repeatSettings.repeatYearlyDate;
   const subtasks = Array.isArray(task?.subtasks)
     ? task.subtasks.map((subtask) => ({
         ...subtask,
@@ -158,6 +263,10 @@ export const buildNextRecurringTask = (task, now = new Date()) => {
     completedAt: null,
     isPinned: false,
     scheduledTime,
+    repeatInterval: repeatSettings.repeatInterval,
+    repeatUnit: repeatSettings.repeatUnit,
+    repeatCustomDate,
+    repeatYearlyDate,
     subtasks,
     notificationId: [],
   };

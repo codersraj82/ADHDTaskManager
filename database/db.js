@@ -11,7 +11,9 @@ export const initDB = () => {
       section TEXT,
       completed INTEGER,
       moodType TEXT DEFAULT '',
-      category TEXT DEFAULT 'UNCATEGORIZED'
+      category TEXT DEFAULT 'UNCATEGORIZED',
+      repeatInterval INTEGER DEFAULT 0,
+      repeatUnit TEXT DEFAULT ''
     );
   `);
 
@@ -106,6 +108,8 @@ export const initDB = () => {
     { name: "usePhoneAlarm", type: "INTEGER DEFAULT 0" },
     { name: "moodType", type: "TEXT DEFAULT ''" },
     { name: "category", type: "TEXT DEFAULT 'UNCATEGORIZED'" },
+    { name: "repeatInterval", type: "INTEGER DEFAULT 0" },
+    { name: "repeatUnit", type: "TEXT DEFAULT ''" },
     { name: "firstAction", type: "TEXT DEFAULT ''" },
     { name: "minimumVersion", type: "TEXT DEFAULT ''" },
     { name: "energyRequired", type: "TEXT DEFAULT ''" },

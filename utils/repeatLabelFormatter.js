@@ -1,11 +1,13 @@
-import { parseStoredDateTime } from "./formatDateTime";
+import { parseStoredDateTime } from "./formatDateTime.js";
 import {
+  CUSTOM_REPEAT_UNIT_OPTIONS,
   MONTHLY_REPEAT_TYPES,
   REPEAT_TYPES,
   normalizeMonthlyType,
   normalizeRepeatType,
   parseRepeatDays,
-} from "./repeatTaskHelpers";
+  validateCustomRepeat,
+} from "./repeatTaskHelpers.js";
 
 const WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_SHORT = [
@@ -99,6 +101,21 @@ export const formatRepeatLabel = (task) => {
     return `Every year - ${yearlyDate.getDate()} ${
       MONTH_SHORT[yearlyDate.getMonth()]
     }`;
+  }
+
+  if (repeatType === REPEAT_TYPES.CUSTOM) {
+    const customRepeat = validateCustomRepeat(
+      task?.repeatInterval,
+      task?.repeatUnit
+    );
+    if (!customRepeat.valid) return "Custom Period";
+
+    const unitLabel = CUSTOM_REPEAT_UNIT_OPTIONS.find(
+      (option) => option.value === customRepeat.unit
+    )?.label;
+    return unitLabel
+      ? `Every ${customRepeat.interval} ${unitLabel}`
+      : "Custom Period";
   }
 
   return "Custom Repeat";

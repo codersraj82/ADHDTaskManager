@@ -12,6 +12,10 @@
   Keyboard,
   Switch,
   Image as NativeImage,
+  type TextInputProps,
+  type TextProps,
+  type TouchableOpacityProps,
+  type ViewProps,
 } from "react-native";
 import {
   useState,
@@ -19,6 +23,7 @@ import {
   useRef,
   useCallback,
   useMemo,
+  type ComponentType,
 } from "react";
 import { db, initDB } from "../../database/db";
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from "react-native-svg";
@@ -87,15 +92,18 @@ import {
   buildNextRecurringTask,
 } from "../../utils/repeatTaskGenerator";
 import {
+  CUSTOM_REPEAT_UNIT_OPTIONS,
   MONTHLY_REPEAT_TYPES,
   REPEAT_TYPES,
   WEEKDAY_OPTIONS,
   createRepeatGroupId,
   isRepeatingTask,
+  normalizeCustomRepeatUnit,
   normalizeRepeatType,
   normalizeTaskRepeatSettings,
   parseRepeatDays,
   serializeRepeatDays,
+  validateCustomRepeat,
 } from "../../utils/repeatTaskHelpers";
 import { createTaskDuplicateFromCompleted } from "../../utils/taskDuplicateHelpers";
 import { formatRepeatLabel } from "../../utils/repeatLabelFormatter";
@@ -666,7 +674,19 @@ const REPEAT_TYPE_OPTIONS = [
   { key: REPEAT_TYPES.WEEKLY, label: "Weekly" },
   { key: REPEAT_TYPES.MONTHLY, label: "Monthly" },
   { key: REPEAT_TYPES.YEARLY, label: "Yearly" },
+  { key: REPEAT_TYPES.CUSTOM, label: "Custom Period" },
 ];
+
+// Keep native prop typing local to the new form; the shared JS theme wrappers
+// forward these props correctly but do not retain their TypeScript definitions.
+const CustomRepeatView = View as ComponentType<ViewProps & { className?: string }>;
+const CustomRepeatText = Text as ComponentType<TextProps & { className?: string }>;
+const CustomRepeatInput = TextInput as ComponentType<
+  TextInputProps & { className?: string }
+>;
+const CustomRepeatButton = TouchableOpacity as ComponentType<
+  TouchableOpacityProps & { className?: string }
+>;
 
 const ENERGY_REQUIRED_OPTIONS = Object.freeze([
   { value: "low", label: "Low" },
@@ -4970,6 +4990,8 @@ export default function Home() {
           repeatMonthlyType TEXT DEFAULT '',
           repeatCustomDate TEXT DEFAULT '',
           repeatYearlyDate TEXT DEFAULT '',
+          repeatInterval INTEGER DEFAULT 0,
+          repeatUnit TEXT DEFAULT '',
           repeatGroupId TEXT DEFAULT '',
           scheduledTime TEXT, details TEXT, attachment TEXT, attachments TEXT DEFAULT '[]',
           subtasks TEXT DEFAULT '[]', notificationId TEXT DEFAULT '[]',
@@ -5102,6 +5124,16 @@ export default function Home() {
             "ALTER TABLE tasks ADD COLUMN repeatYearlyDate TEXT DEFAULT '';"
           );
         }
+        if (!columnNames.includes("repeatInterval")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN repeatInterval INTEGER DEFAULT 0;"
+          );
+        }
+        if (!columnNames.includes("repeatUnit")) {
+          db.execSync(
+            "ALTER TABLE tasks ADD COLUMN repeatUnit TEXT DEFAULT '';"
+          );
+        }
         if (!columnNames.includes("repeatGroupId")) {
           db.execSync("ALTER TABLE tasks ADD COLUMN repeatGroupId TEXT DEFAULT '';");
         }
@@ -5210,6 +5242,7 @@ export default function Home() {
         const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
         const loadedTasks = taskResult.map((t) => {
           const normalizedAttachments = normalizeTaskAttachments(t);
+          const customRepeatSettings = normalizeTaskRepeatSettings(t);
 
           return {
             ...t,
@@ -5248,6 +5281,8 @@ export default function Home() {
             repeatMonthlyType: t.repeatMonthlyType || "",
             repeatCustomDate: t.repeatCustomDate || "",
             repeatYearlyDate: t.repeatYearlyDate || "",
+            repeatInterval: customRepeatSettings.repeatInterval,
+            repeatUnit: customRepeatSettings.repeatUnit,
             repeatGroupId: t.repeatGroupId || "",
             subtasks: JSON.parse(t.subtasks || "[]"),
             notificationId: JSON.parse(t.notificationId || "[]"),
@@ -7030,6 +7065,10 @@ export default function Home() {
   );
   const [repeatCustomDate, setRepeatCustomDate] = useState("");
   const [repeatYearlyDate, setRepeatYearlyDate] = useState("");
+  const [customRepeatInterval, setCustomRepeatInterval] = useState("");
+  const [customRepeatUnit, setCustomRepeatUnit] = useState("minutes");
+  const [customRepeatError, setCustomRepeatError] = useState("");
+  const [isCustomRepeatUnitExpanded, setIsCustomRepeatUnitExpanded] = useState(false);
   const [usePhoneAlarm, setUsePhoneAlarm] = useState(false);
   const [isPhoneAlarmAvailable, setIsPhoneAlarmAvailable] = useState(false);
   const [canScheduleExactAlarmNow, setCanScheduleExactAlarmNow] = useState(
@@ -7289,6 +7328,7 @@ export default function Home() {
       };
       const nextTask = buildNextRecurringTask(sourceWithRepeat);
       if (!nextTask?.scheduledTime) return;
+      const nextRepeatSettings = normalizeTaskRepeatSettings(nextTask);
 
       const repeatGroupId = normalized.repeatGroupId || createRepeatGroupId();
       const existing =
@@ -7315,6 +7355,8 @@ export default function Home() {
           repeatMonthlyType,
           repeatCustomDate,
           repeatYearlyDate,
+          repeatInterval,
+          repeatUnit,
           repeatGroupId,
           scheduledTime,
           details,
@@ -7336,7 +7378,7 @@ export default function Home() {
           stuckCount,
           lastStuckAt
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nextTask.title || "Task",
           nextTask.section || "Morning",
@@ -7345,9 +7387,11 @@ export default function Home() {
           createdAt,
           normalized.repeatType,
           serializeRepeatDays(normalized.repeatDays),
-          normalized.repeatMonthlyType || "",
-          normalized.repeatCustomDate || "",
-          normalized.repeatYearlyDate || "",
+          nextRepeatSettings.repeatMonthlyType || "",
+          nextRepeatSettings.repeatCustomDate || "",
+          nextRepeatSettings.repeatYearlyDate || "",
+          nextRepeatSettings.repeatInterval || 0,
+          nextRepeatSettings.repeatUnit || "",
           repeatGroupId,
           nextTask.scheduledTime || "",
           nextTask.details || "",
@@ -7394,11 +7438,13 @@ export default function Home() {
           id: insertedId,
           attachment: nextTaskAttachmentUri,
           attachments: nextTaskAttachments,
-          repeatType: normalized.repeatType,
-          repeatDays: normalized.repeatDays,
-          repeatMonthlyType: normalized.repeatMonthlyType,
-          repeatCustomDate: normalized.repeatCustomDate,
-          repeatYearlyDate: normalized.repeatYearlyDate,
+          repeatType: nextRepeatSettings.repeatType,
+          repeatDays: nextRepeatSettings.repeatDays,
+          repeatMonthlyType: nextRepeatSettings.repeatMonthlyType,
+          repeatCustomDate: nextRepeatSettings.repeatCustomDate,
+          repeatYearlyDate: nextRepeatSettings.repeatYearlyDate,
+          repeatInterval: nextRepeatSettings.repeatInterval,
+          repeatUnit: nextRepeatSettings.repeatUnit,
           repeatGroupId,
           notificationId: scheduledIds,
           completed: false,
@@ -7561,6 +7607,8 @@ export default function Home() {
           repeatMonthlyType: normalizedRepeat.repeatMonthlyType,
           repeatCustomDate: normalizedRepeat.repeatCustomDate,
           repeatYearlyDate: normalizedRepeat.repeatYearlyDate,
+          repeatInterval: normalizedRepeat.repeatInterval,
+          repeatUnit: normalizedRepeat.repeatUnit,
           repeatGroupId,
           isPinned: nextPinned,
           strongAlarmId: nextStrongAlarmId,
@@ -7796,6 +7844,10 @@ export default function Home() {
     setRepeatMonthlyType(MONTHLY_REPEAT_TYPES.FIRST);
     setRepeatCustomDate("");
     setRepeatYearlyDate("");
+    setCustomRepeatInterval("");
+    setCustomRepeatUnit("minutes");
+    setCustomRepeatError("");
+    setIsCustomRepeatUnitExpanded(false);
     setUsePhoneAlarm(false);
     setTaskAttachments([]);
     setTimeAdjusted(false);
@@ -7842,6 +7894,10 @@ export default function Home() {
     setRepeatMonthlyType(MONTHLY_REPEAT_TYPES.FIRST);
     setRepeatCustomDate("");
     setRepeatYearlyDate("");
+    setCustomRepeatInterval("");
+    setCustomRepeatUnit("minutes");
+    setCustomRepeatError("");
+    setIsCustomRepeatUnitExpanded(false);
     setUsePhoneAlarm(false);
     setTaskAttachments([]);
     setTimeAdjusted(false);
@@ -8916,6 +8972,14 @@ export default function Home() {
       setRepeatMonthlyType(repeatSettings.repeatMonthlyType);
       setRepeatCustomDate(repeatSettings.repeatCustomDate);
       setRepeatYearlyDate(repeatSettings.repeatYearlyDate);
+      setCustomRepeatInterval(
+        repeatSettings.repeatInterval > 0
+          ? String(repeatSettings.repeatInterval)
+          : ""
+      );
+      setCustomRepeatUnit(repeatSettings.repeatUnit || "minutes");
+      setCustomRepeatError("");
+      setIsCustomRepeatUnitExpanded(false);
       setUsePhoneAlarm(Boolean(task.usePhoneAlarm ?? task.useStrongAlarm));
       setTaskAttachments(normalizeTaskAttachments(task));
       setStartAssistEditHint(assistHint || "");
@@ -10008,15 +10072,34 @@ export default function Home() {
         ? repeatMonthlyType || MONTHLY_REPEAT_TYPES.FIRST
         : "";
 
+    const customRepeatValidation =
+      normalizedType === REPEAT_TYPES.CUSTOM
+        ? validateCustomRepeat(customRepeatInterval, customRepeatUnit)
+        : null;
+    const normalizedRepeatInterval =
+      normalizedType === REPEAT_TYPES.CUSTOM
+        ? customRepeatValidation?.interval || 0
+        : 0;
+    const normalizedRepeatUnit =
+      normalizedType === REPEAT_TYPES.CUSTOM
+        ? normalizeCustomRepeatUnit(customRepeatUnit)
+        : "";
+
     const normalizedCustomDate =
       normalizedType === REPEAT_TYPES.MONTHLY &&
       normalizedMonthlyType === MONTHLY_REPEAT_TYPES.CUSTOM
         ? repeatCustomDate || finalTime || ""
+        : normalizedType === REPEAT_TYPES.CUSTOM &&
+            normalizedRepeatUnit === "months"
+          ? repeatCustomDate || finalTime || ""
         : "";
 
     const normalizedYearlyDate =
       normalizedType === REPEAT_TYPES.YEARLY
         ? repeatYearlyDate || finalTime || ""
+        : normalizedType === REPEAT_TYPES.CUSTOM &&
+            normalizedRepeatUnit === "years"
+          ? repeatYearlyDate || finalTime || ""
         : "";
 
     const normalizedFirstAction = (taskFirstAction || "").trim();
@@ -10050,6 +10133,8 @@ export default function Home() {
       repeatMonthlyType: normalizedMonthlyType,
       repeatCustomDate: normalizedCustomDate,
       repeatYearlyDate: normalizedYearlyDate,
+      repeatInterval: normalizedRepeatInterval,
+      repeatUnit: normalizedRepeatUnit,
       usePhoneAlarm: Boolean(usePhoneAlarm),
       firstAction: normalizedFirstAction,
       minimumVersion: normalizedMinimumVersion,
@@ -10073,6 +10158,8 @@ export default function Home() {
       repeatMonthlyType: draftRepeatMonthlyType,
       repeatCustomDate: draftRepeatCustomDate,
       repeatYearlyDate: draftRepeatYearlyDate,
+      repeatInterval: draftRepeatInterval = 0,
+      repeatUnit: draftRepeatUnit = "",
       usePhoneAlarm: draftUsePhoneAlarm,
       firstAction: draftFirstAction,
       minimumVersion: draftMinimumVersion,
@@ -10084,6 +10171,19 @@ export default function Home() {
       subtasksToSave,
       attachmentsToSave,
     } = draft;
+
+    if (draftRepeatType === REPEAT_TYPES.CUSTOM) {
+      const validation = validateCustomRepeat(
+        draftRepeatInterval,
+        draftRepeatUnit
+      );
+      if (!validation.valid) {
+        setCustomRepeatError(validation.message);
+        setIsRepeatTaskExpanded(true);
+        return null;
+      }
+    }
+
     const serializedAttachments = serializeTaskAttachments(attachmentsToSave);
     const legacyAttachmentUri = getPrimaryAttachmentUri(attachmentsToSave);
 
@@ -10173,6 +10273,8 @@ export default function Home() {
                 repeatMonthlyType = ?,
                 repeatCustomDate = ?,
                 repeatYearlyDate = ?,
+                repeatInterval = ?,
+                repeatUnit = ?,
                  repeatGroupId = ?,
                  firstAction = ?,
                  minimumVersion = ?,
@@ -10199,6 +10301,8 @@ export default function Home() {
             draftRepeatMonthlyType || "",
             draftRepeatCustomDate || "",
             draftRepeatYearlyDate || "",
+            draftRepeatInterval || 0,
+            draftRepeatUnit || "",
             nextGroupId,
             draftFirstAction,
             draftMinimumVersion,
@@ -10240,6 +10344,8 @@ export default function Home() {
           repeatMonthlyType: draftRepeatMonthlyType,
           repeatCustomDate: draftRepeatCustomDate,
           repeatYearlyDate: draftRepeatYearlyDate,
+          repeatInterval: draftRepeatInterval,
+          repeatUnit: draftRepeatUnit,
           repeatGroupId: nextGroupId,
           firstAction: draftFirstAction,
           minimumVersion: draftMinimumVersion,
@@ -10303,6 +10409,8 @@ export default function Home() {
         repeatMonthlyType,
         repeatCustomDate,
         repeatYearlyDate,
+        repeatInterval,
+        repeatUnit,
         repeatGroupId,
         scheduledTime,
         details,
@@ -10325,7 +10433,7 @@ export default function Home() {
         stuckCount,
         lastStuckAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         taskName,
         selectedSection,
@@ -10337,6 +10445,8 @@ export default function Home() {
         draftRepeatMonthlyType || "",
         draftRepeatCustomDate || "",
         draftRepeatYearlyDate || "",
+        draftRepeatInterval || 0,
+        draftRepeatUnit || "",
         repeatGroupId,
         finalTime,
         taskDetails,
@@ -10386,6 +10496,8 @@ export default function Home() {
       repeatMonthlyType: draftRepeatMonthlyType,
       repeatCustomDate: draftRepeatCustomDate,
       repeatYearlyDate: draftRepeatYearlyDate,
+      repeatInterval: draftRepeatInterval,
+      repeatUnit: draftRepeatUnit,
       repeatGroupId,
       createdAt,
       scheduledTime: finalTime,
@@ -10586,6 +10698,19 @@ export default function Home() {
   const handleSaveTask = async () => {
     if (!taskName.trim() || taskSaveInFlightRef.current) return;
 
+    if (normalizeRepeatType(repeatType) === REPEAT_TYPES.CUSTOM) {
+      const validation = validateCustomRepeat(
+        customRepeatInterval,
+        customRepeatUnit
+      );
+      if (!validation.valid) {
+        setCustomRepeatError(validation.message);
+        setIsRepeatTaskExpanded(true);
+        return;
+      }
+      setCustomRepeatError("");
+    }
+
     const draft = buildTaskDraftPayload();
 
     if (
@@ -10685,6 +10810,8 @@ export default function Home() {
         repeatMonthlyType,
         repeatCustomDate,
         repeatYearlyDate,
+        repeatInterval,
+        repeatUnit,
         repeatGroupId,
         scheduledTime,
         details,
@@ -10717,7 +10844,7 @@ export default function Home() {
         lastSnoozedAt,
         rescheduleCount,
         lastRescheduledAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         lastDeletedTask.id,
         lastDeletedTask.title,
@@ -10730,6 +10857,8 @@ export default function Home() {
         lastDeletedTask.repeatMonthlyType || "",
         lastDeletedTask.repeatCustomDate || "",
         lastDeletedTask.repeatYearlyDate || "",
+        normalizeTaskRepeatSettings(lastDeletedTask).repeatInterval,
+        normalizeTaskRepeatSettings(lastDeletedTask).repeatUnit,
         lastDeletedTask.repeatGroupId || "",
         lastDeletedTask.scheduledTime || "",
         lastDeletedTask.details || "",
@@ -11327,6 +11456,7 @@ export default function Home() {
     const taskResult = db.getAllSync("SELECT * FROM tasks") || [];
     return taskResult.map((t) => {
       const normalizedAttachments = normalizeTaskAttachments(t);
+      const customRepeatSettings = normalizeTaskRepeatSettings(t);
 
       return {
         ...t,
@@ -11364,6 +11494,8 @@ export default function Home() {
         repeatMonthlyType: t.repeatMonthlyType || "",
         repeatCustomDate: t.repeatCustomDate || "",
         repeatYearlyDate: t.repeatYearlyDate || "",
+        repeatInterval: customRepeatSettings.repeatInterval,
+        repeatUnit: customRepeatSettings.repeatUnit,
         repeatGroupId: t.repeatGroupId || "",
         subtasks: Array.isArray(t.subtasks)
           ? t.subtasks
@@ -18886,7 +19018,11 @@ export default function Home() {
                     {REPEAT_TYPE_OPTIONS.map((option) => (
                       <TouchableOpacity
                         key={option.key}
-                        onPress={() => setRepeatType(option.key)}
+                        onPress={() => {
+                          setRepeatType(option.key);
+                          setCustomRepeatError("");
+                          setIsCustomRepeatUnitExpanded(false);
+                        }}
                         className={`px-3 py-1.5 rounded-full border mr-2 mb-2 ${
                           repeatType === option.key
                             ? "bg-[#66b9b9] border-[#66b9b9]"
@@ -18905,6 +19041,99 @@ export default function Home() {
                       </TouchableOpacity>
                     ))}
                   </View>
+
+                  {repeatType === REPEAT_TYPES.CUSTOM && (
+                    <CustomRepeatView className="mt-1">
+                      <CustomRepeatText className="text-[#9FB5B5] text-xs font-semibold mb-2">
+                        Repeat task for every
+                      </CustomRepeatText>
+                      <CustomRepeatView className="flex-row items-center">
+                        <CustomRepeatInput
+                          accessibilityLabel="Custom repeat interval"
+                          accessibilityHint="Enter a positive whole number"
+                          keyboardType="number-pad"
+                          value={customRepeatInterval}
+                          placeholder={customRepeatUnit === "minutes" ? "5" : "2"}
+                          placeholderTextColor={COLORS.muted}
+                          onChangeText={(value) => {
+                            if (!/^\d*$/.test(value)) {
+                              setCustomRepeatError("Enter a whole number.");
+                              return;
+                            }
+                            setCustomRepeatInterval(value);
+                            setCustomRepeatError("");
+                          }}
+                          onBlur={() => {
+                            const validation = validateCustomRepeat(
+                              customRepeatInterval,
+                              customRepeatUnit
+                            );
+                            setCustomRepeatError(validation.message);
+                          }}
+                          className="w-24 bg-[#061414]/45 text-[#E8F4F4] p-3 rounded-xl border border-[#66b9b9]/25 font-semibold text-sm mr-2"
+                        />
+                        <CustomRepeatButton
+                          accessibilityRole="button"
+                          accessibilityLabel="Custom repeat period"
+                          accessibilityState={{ expanded: isCustomRepeatUnitExpanded }}
+                          activeOpacity={0.82}
+                          onPress={() =>
+                            setIsCustomRepeatUnitExpanded((previous) => !previous)
+                          }
+                          className="flex-1 flex-row items-center justify-between bg-[#123131]/70 p-3 rounded-xl border border-[#337a7a]/35"
+                        >
+                          <CustomRepeatText className="text-[#E8F4F4] font-semibold text-xs">
+                            {CUSTOM_REPEAT_UNIT_OPTIONS.find(
+                              (option) => option.value === customRepeatUnit
+                            )?.label || "Choose period"}
+                          </CustomRepeatText>
+                          <Feather
+                            name={isCustomRepeatUnitExpanded ? "chevron-up" : "chevron-down"}
+                            size={14}
+                            color={COLORS.accent}
+                          />
+                        </CustomRepeatButton>
+                      </CustomRepeatView>
+                      {isCustomRepeatUnitExpanded ? (
+                        <CustomRepeatView className="flex-row flex-wrap mt-2">
+                          {CUSTOM_REPEAT_UNIT_OPTIONS.map((option) => (
+                            <CustomRepeatButton
+                              key={option.value}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Custom repeat period, ${option.label}`}
+                              accessibilityState={{ selected: customRepeatUnit === option.value }}
+                              onPress={() => {
+                                setCustomRepeatUnit(option.value);
+                                setCustomRepeatError("");
+                                setIsCustomRepeatUnitExpanded(false);
+                              }}
+                              className={`px-3 py-2 rounded-full border mr-2 mb-2 ${
+                                customRepeatUnit === option.value
+                                  ? "bg-[#66b9b9]/20 border-[#66b9b9]/60"
+                                  : "bg-[#101416] border-[#337a7a]/35"
+                              }`}
+                            >
+                              <CustomRepeatText className={`text-[10px] font-bold ${
+                                customRepeatUnit === option.value
+                                  ? "text-[#66b9b9]"
+                                  : "text-[#9FB5B5]"
+                              }`}>
+                                {option.label}
+                              </CustomRepeatText>
+                            </CustomRepeatButton>
+                          ))}
+                        </CustomRepeatView>
+                      ) : null}
+                      {customRepeatError ? (
+                        <CustomRepeatText
+                          accessibilityLiveRegion="polite"
+                          className="text-[#FFD166] text-[11px] font-semibold mt-2"
+                        >
+                          {customRepeatError}
+                        </CustomRepeatText>
+                      ) : null}
+                    </CustomRepeatView>
+                  )}
 
                   {repeatType === REPEAT_TYPES.WEEKLY && (
                     <View className="flex-row flex-wrap mt-1">
